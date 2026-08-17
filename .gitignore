@@ -1,0 +1,47 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# --- Virtual environments ---
+venv/
+.venv/
+env/
+ENV/
+
+# --- Secrets & local config ---
+.env
+.env.*
+!.env.example
+
+# --- Vector index / binary artifacts ---
+*.faiss
+*.pkl
+*.index
+
+# --- Model weights (downloaded on demand, never committed) ---
+weights/
+models/
+*.safetensors
+*.gguf
+*.bin
+
+# --- Data files (keep sources documented in each module instead) ---
+data/
+*.csv
+*.parquet
+*.xlsx
+*.db
+*.sqlite
+
+# --- Large media / course material ---
+*.pdf
+*.zip
+
+# --- Editor / OS ---
+.vscode/
+.idea/
+.DS_Store
+.specstory/
+.cursorindexingignore

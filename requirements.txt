@@ -1,0 +1,53 @@
+# =============================================================================
+# ai-playground — Unified Dependencies
+# =============================================================================
+# Install all dependencies at once:  pip install -r requirements.txt
+# Each section is tagged by module so you can install selectively if needed.
+
+# --- Core (All Modules) ---
+openai>=1.0.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+
+# --- 01-llm-foundation: Local Models ---
+# Imported lazily inside 07/08, so scripts 01-06 run without any of these.
+fastapi>=0.110.0          # 07_ollama_local_chat.py -> build_api_app()
+uvicorn>=0.29.0           # 07_ollama_local_chat.py -> serving the gateway
+pydantic>=2.0.0           # 07_ollama_local_chat.py -> request model
+huggingface_hub>=0.23.0   # 08_transformers_inference.py -> ensure_weights()
+transformers>=4.40.0      # 08_transformers_inference.py -> load_model()
+accelerate>=0.30.0        # 08_transformers_inference.py -> required by device_map
+# torch                   # 08: pick the build matching your GPU, see pytorch.org.
+#                         # Blackwell (RTX 50xx, sm_120) needs cu128 or newer:
+#                         #   pip install torch --index-url https://download.pytorch.org/whl/cu128
+#                         # Older CUDA GPUs: .../whl/cu124   CPU-only: pip install torch
+
+# --- 02-rag (Planned) ---
+# chromadb
+# sentence-transformers
+# faiss-cpu
+
+# --- 03-langchain-toolchain (Planned) ---
+# langchain
+# langchain-openai
+
+# --- 05-fine-tuning (Planned) ---
+# transformers
+# peft
+# datasets
+# accelerate
+
+# --- 06-multimodal-vision (Planned) ---
+# torch
+# torchvision
+# ultralytics              # YOLO
+
+# --- 07-ml-dl-foundation (Planned) ---
+# scikit-learn
+# xgboost
+# lightgbm
+# prophet
+# tensorflow
+# matplotlib
+# pandas
+# numpy
