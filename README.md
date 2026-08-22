@@ -80,8 +80,10 @@ ai-playground/
 │
 ├── 01-llm-foundation/            LLM basics, prompt engineering, tool calling, local deployment
 │   ├── LLM-Foundation.md         topic write-up
-│   └── 01..08_*.py               numbered, runnable scripts
-├── 02-rag/                       embeddings, vector DB, RAG pipelines
+│   └── 01..08_*.py               scripts
+├── 02-rag/                       embeddings, vector DB, RAG pipelines, advanced recall
+│   ├── RAG-Retrieval-Augmented-Generation.md   topic write-up
+│   └── 01..13_*.py               scripts
 ├── 03-langchain-toolchain/       LangChain, Text2SQL, function calling
 ├── 04-agents/                    agent design, MCP/A2A, multi-agent
 ├── 05-fine-tuning/               SFT / LoRA fine-tuning
@@ -107,3 +109,25 @@ ai-playground/
 | 08 | `08_transformers_inference.py` | Raw-weight inference with Transformers — HF download, GPU placement, chat template, throughput |
 
 See [LLM-Foundation.md](01-llm-foundation/LLM-Foundation.md) for the concepts behind these scripts.
+
+---
+
+## Module 02 Scripts
+
+| # | Script | Feature |
+|---|--------|---------|
+| 01 | `01_tfidf_hotel_recommender.py` | TF-IDF + n-grams — content-based recommendation over hotel descriptions |
+| 02 | `02_word2vec_similarity.py` | Word2Vec training, persistence and vector arithmetic |
+| 03 | `03_embedding_faiss_metadata.py` | Embeddings into FAISS with metadata, Matryoshka dimensions, persistence |
+| 04 | `04_embedding_models_compare.py` | Two local models compared — pooling is a property of the model |
+| 05 | `05_chunking_strategies.py` | Five chunking strategies scored side by side |
+| 06 | `06_chatpdf_langchain_faiss.py` | PDF question answering with LangChain, FAISS and page-level citations |
+| 07 | `07_disney_multimodal_rag.py` | Multimodal RAG by hand — dual indexes, CLIP, OCR, vision fallback |
+| 08 | `08_query_rewriting.py` | Five rewrite types, single-prompt intent detection, search-engine rewriting |
+| 09 | `09_rerank_and_multiquery.py` | Two-stage retrieval — BM25 recall then cross-encoder rerank, with query expansion |
+| 10 | `10_kb_question_generation.py` | Doc2Query — generated questions as a second retrieval index |
+| 11 | `11_kb_curation.py` | Conversation distillation and knowledge-base health auditing |
+| 12 | `12_kb_version_management.py` | Version hashing, set-based diffing, A/B and regression testing |
+| 13 | `13_graphrag_vs_vector.py` | One multi-hop question asked of a vector index and of a knowledge graph |
+
+See [RAG-Retrieval-Augmented-Generation.md](02-rag/RAG-Retrieval-Augmented-Generation.md) for the concepts behind these scripts.

@@ -22,27 +22,73 @@ accelerate>=0.30.0        # 08_transformers_inference.py -> required by device_m
 #                         #   pip install torch --index-url https://download.pytorch.org/whl/cu128
 #                         # Older CUDA GPUs: .../whl/cu124   CPU-only: pip install torch
 
-# --- 02-rag (Planned) ---
-# chromadb
-# sentence-transformers
-# faiss-cpu
+# --- 02-rag: Embeddings, Vector Stores, Chunking, Multimodal ---
+# Classical NLP baselines (01, 02)
+scikit-learn>=1.4.0       # 01_tfidf_hotel_recommender.py -> TfidfVectorizer, linear_kernel
+pandas>=2.0.0             # 01_tfidf_hotel_recommender.py -> reading the hotel CSV
+jieba>=0.42.1             # 01, 02 -> Chinese word segmentation
+gensim>=4.3.0             # 02_word2vec_similarity.py -> Word2Vec training
+numpy>=1.24.0             # 03, 07 -> vector maths
+faiss-cpu>=1.8.0          # 03, 06, 07 -> vector index (GPU: conda install -c conda-forge faiss-gpu)
 
-# --- 03-langchain-toolchain (Planned) ---
-# langchain
-# langchain-openai
+# Embedding model comparison (04). Imported lazily; skip if you only run 01-03.
+modelscope>=1.15.0        # 04 -> ensure_model() downloads the weights
+sentence-transformers>=3.0.0  # 04 -> the high-level encode() path
+#                         # 04 also needs transformers + torch, listed under 01 above.
+#                         # Downloads ~319 MB of weights on first run (bge-small-en-v1.5,
+#                         # 255 MB, CLS pooling + an English GTE small model, 64 MB, mean
+#                         # pooling), cached under 02-rag/weights/. The pair is chosen
+#                         # because their pooling strategies differ.
 
-# --- 05-fine-tuning (Planned) ---
+# ChatPDF with LangChain (06)
+langchain>=0.2.0          # 06 -> RecursiveCharacterTextSplitter and the LCEL stuff chain
+#                         # (langchain.chains was removed in 1.3.15, so the chain is written by hand)
+langchain-community>=0.2.0  # 06 -> FAISS vector store wrapper
+langchain-openai>=0.1.0   # 06 -> OpenAIEmbeddings, ChatOpenAI
+PyPDF2>=3.0.0             # 06 -> per-page text extraction
+
+# Multimodal assistant (07)
+python-docx>=1.1.0        # 07 -> parse_docx(), paragraphs and tables
+Pillow>=10.0.0            # 07 -> loading images for CLIP
+rapidocr-onnxruntime>=1.3.0  # 07 -> OCR. Pure pip, no external binary required.
+#                         # Optional but recommended: with it, asking about the
+#                         # Halloween poster returns the text printed on it; without
+#                         # it the model can only say it has no description.
+#                         # Chosen over pytesseract because that is only a wrapper
+#                         # and additionally needs a separate Tesseract system install.
+
+# Keyword retrieval and reranking (09, 10)
+rank_bm25>=0.2.2          # 09, 10 -> BM25Okapi, the cheap first-stage recall
+#                         # 09 also needs sentence-transformers (listed under 04) for
+#                         # CrossEncoder, and python-docx (listed under 07) to read the
+#                         # knowledge base.
+
+# Knowledge-base operations (11, 12)
+# 11 needs nothing beyond Core.
+# 12 reuses numpy + faiss-cpu, both listed above.
+
+# Graph retrieval (13)
+# graphrag is NOT installed here: it pins numpy 1.x / pandas 2.x and would conflict
+# with the rest of this file. The script drives it through a separate interpreter at
+# .venv-graphrag and reads the parquet output with pandas, so only pandas is needed
+# in this environment (listed under 01 above). To create that environment:
+#   python -m venv .venv-graphrag && .venv-graphrag/Scripts/pip install graphrag
+
+# --- 03-langchain-toolchain ---
+# langgraph
+
+# --- 05-fine-tuning ---
 # transformers
 # peft
 # datasets
 # accelerate
 
-# --- 06-multimodal-vision (Planned) ---
+# --- 06-multimodal-vision ---
 # torch
 # torchvision
 # ultralytics              # YOLO
 
-# --- 07-ml-dl-foundation (Planned) ---
+# --- 07-ml-dl-foundation ---
 # scikit-learn
 # xgboost
 # lightgbm

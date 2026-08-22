@@ -1,0 +1,118 @@
+The Northgate Archive: A Short History of Latch Encoding
+
+Mira Delaunay began her career at the Coastal Institute in 1978, working on signal
+compression for weather buoys. She was known less for her own publications than for
+the students she trained. Among them was Tomas Ek, who joined her group in 1983 and
+stayed for six years. Delaunay passed on to Ek a habit she had picked up from her
+own supervisor: never trust a measurement that cannot be reproduced from its own record.
+
+Ek left the Coastal Institute in 1989 and founded Northgate Lab in the town of
+Ashfield. Northgate was small, never more than twenty people, and it survived on
+contracts from harbour authorities. Its first hire was Priya Raman, a graduate of the
+Ashfield Polytechnic who had written her thesis on error correction in noisy channels.
+Raman spent eleven years at Northgate and became its head of research in 1996.
+
+The work Northgate is remembered for is Latch Encoding. Raman and Ek developed it
+between 1993 and 1997 as a way of storing sensor readings so that any corrupted
+segment could be reconstructed from the segments around it. The idea came directly
+from Delaunay's rule about reproducible measurements, though neither Raman nor Ek
+described it that way at the time. Latch Encoding was published in 1997 and licensed
+freely to anyone who asked.
+
+Latch Encoding made the Orrery system possible. Orrery was a harbour monitoring
+platform built by Northgate between 1998 and 2001, and it was the first system that
+could keep running through a storm without losing its record of what had happened
+during the storm. Orrery was deployed at Port Halbrook in 2002 and remained in
+service there for nineteen years. Port Halbrook credited Orrery with the change in
+its accident statistics after 2003.
+
+Priya Raman left Northgate in 2001, shortly before the Port Halbrook deployment. She
+joined Vellum Instruments, a manufacturer of marine sensors based two hundred
+kilometres up the coast. Vellum licensed Latch Encoding from Northgate in 2004 and
+built it into every product it shipped from 2006 onwards. Raman became Vellum's chief
+engineer in 2009 and retired in 2018.
+
+Tomas Ek stayed at Northgate until it closed in 2011. In its last years the lab took
+on a single student at a time, a practice Ek had copied from Delaunay. The last of
+them was Julian Adeyemi, who arrived in 2008 and worked on extending Latch Encoding
+to video. Adeyemi never finished that work at Northgate. He took it to the Coastal
+Institute in 2012, which is where Delaunay had started thirty-four years earlier, and
+completed it there in 2015 under the name Latch-V.
+
+Latch-V is used today in three places: the Orrery successor system at Port Halbrook,
+the Vellum sensor line, and the Coastal Institute's own buoy network. All three trace
+back through Latch Encoding to a rule about reproducible measurements that Mira
+Delaunay never wrote down.
+
+Delaunay died in 2007. The Northgate Archive, held at the Ashfield Polytechnic
+library, contains her correspondence with Ek between 1989 and 2006, Raman's laboratory
+notebooks from the Latch Encoding period, and the full deployment record of Orrery at
+Port Halbrook. The archive was catalogued by Julian Adeyemi in 2013 and has been open
+to researchers since 2014.
+
+Two disputes are recorded in the archive. The first, in 1999, was between Ek and the
+Ashfield Polytechnic over whether Northgate could use the Polytechnic's name in its
+contracts; it was settled out of court. The second, in 2005, was between Northgate and
+Vellum Instruments over the scope of the Latch Encoding licence. Raman, by then at
+Vellum, argued against her former employer. The dispute was resolved when Ek agreed to
+widen the licence, and the two organisations continued to work together afterwards.
+
+Other holdings of the archive
+
+The Ashfield Polytechnic library acquired three further collections alongside the
+Northgate material, and researchers frequently confuse them. The first is the Halvard
+Collection, donated in 1994 by the estate of Ingrid Halvard, a metallurgist who spent
+her career at the Ashfield Foundry and had no connection to Northgate Lab. It contains
+her working notes on corrosion in harbour fittings, a subject that overlaps with
+Orrery's deployment site without overlapping with Orrery itself. Halvard corresponded
+briefly with the Coastal Institute in 1981, though the letters concern a materials
+supply contract and nothing else.
+
+The second is the Ashfield Polytechnic instructional collection, which holds the working
+papers of Professor Alan Broch, who ran the Polytechnic's signals programme from 1975
+to 1998. Broch supervised Priya Raman's undergraduate thesis. He never worked at
+Northgate, never met Mira Delaunay, and his notes make no reference to Latch Encoding.
+Researchers looking for the origins of Latch Encoding often start with Broch because
+of the Raman connection and the word "signals", and the archive catalogue carries a
+note warning against this.
+
+The third is the Port Halbrook Harbour Board minute books, transferred in 2016 when
+the Board reorganised. These run from 1954 to 2014 and record every procurement
+decision the Board made, including the Orrery contract in 2002. The minutes for the
+Orrery decision are unusually thin: two paragraphs recording that the Board accepted a
+recommendation, with no discussion of what the system did or where the technology had
+come from. The technical evaluation the Board relied on was prepared by an outside
+consultant, Denis Farrow, and no copy of it survives in the minute books.
+
+Storm records and the reason Orrery mattered
+
+Port Halbrook sits at the mouth of a tidal estuary and takes the weather from the
+south-west. Between 1980 and 2002 the harbour lost monitoring data during eleven
+named storms; in four of those the loss covered the exact hours when the harbour most
+needed the record. The Board's own review in 1999 concluded that the problem was not
+the sensors, which usually survived, but the recording chain behind them, which did
+not. That review is the reason the Board went looking for a replacement system, and
+it is quoted in the minutes for the 2002 decision.
+
+The 1999 review was written by the Harbour Board's engineering officer, Clare Whitlow.
+Whitlow had no contact with Northgate Lab and recommended no specific supplier. Her
+report describes the requirement in general terms: a monitoring system that keeps its
+record intact when part of the record is damaged. That description matches what Latch
+Encoding does, but Whitlow arrived at it from the harbour's failures rather than from
+any knowledge of the technology.
+
+Cataloguing notes
+
+Julian Adeyemi's 2013 catalogue divides the Northgate material into four series.
+Series A holds Ek's correspondence. Series B holds Raman's notebooks. Series C holds
+the Orrery deployment records, including the maintenance logs Port Halbrook returned
+to Northgate each year until 2011. Series D holds administrative papers, including
+both disputes and the terms of the 2004 Vellum licence. Adeyemi's introduction to the
+catalogue notes that Series B and Series C were originally stored together and that
+the separation is his, not Northgate's.
+
+The catalogue also lists what is absent. There is no record of the Coastal Institute
+years beyond what Delaunay's letters mention in passing, no copy of Delaunay's own
+doctoral work, and nothing at all from the period between Raman's departure in 2001
+and the Vellum licence in 2004. Adeyemi describes that three-year gap as the single
+largest hole in the collection.
