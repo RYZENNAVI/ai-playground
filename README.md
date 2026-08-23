@@ -88,6 +88,8 @@ ai-playground/
 │   ├── Text2SQL-Natural-Language-to-SQL.md     topic write-up
 │   └── 01..06_*.py               scripts
 ├── 04-agents/                    chain orchestration, ReAct, MCP/A2A, LangGraph
+│   ├── Agent-Systems-Loops-Protocols-and-Topologies.md   topic write-up
+│   └── 01..07_*.py               scripts
 ├── 05-fine-tuning/               SFT / LoRA fine-tuning
 ├── 06-multimodal-vision/         VLM, document parsing, PyTorch CNN, detection
 ├── 07-ml-dl-foundation/          classical ML, time series, TensorFlow
@@ -148,3 +150,19 @@ See [RAG-Retrieval-Augmented-Generation.md](02-rag/RAG-Retrieval-Augmented-Gener
 | 06 | `06_sql_agent_with_tools.py` | Tool-calling agent — query, chart, linear fit and driver ranking in one loop |
 
 See [Text2SQL-Natural-Language-to-SQL.md](03-text2sql/Text2SQL-Natural-Language-to-SQL.md) for the concepts behind these scripts.
+
+---
+
+## Module 04 Scripts
+
+| # | Script | Feature |
+|---|--------|---------|
+| 01 | `01_prompt_templates_and_memory.py` | Templates, role-split messages, and a conversation that survives between calls |
+| 02 | `02_lcel_composition.py` | Pipe-operator composition — retries, local steps, parallel branches, routing, streaming |
+| 03 | `03_react_loop_from_scratch.py` | Reason-and-act by hand — no framework, plus the run where the tool list is withheld |
+| 04 | `04_tool_agent_diagnosis.py` | The same loop inside a framework — typed tools, step budget, and vague descriptions compared |
+| 05 | `05_mcp_client_and_server.py` | Both halves of the Model Context Protocol — stdio server, handshake, schema translation |
+| 06 | `06_a2a_agent_protocol.py` | Agent-to-agent delegation — capability card, task submission, schema and auth rejections |
+| 07 | `07_langgraph_topologies.py` | One state, five nodes, two topologies — fixed pipeline against a conditional router |
+
+See [Agent-Systems-Loops-Protocols-and-Topologies.md](04-agents/Agent-Systems-Loops-Protocols-and-Topologies.md) for the concepts behind these scripts.

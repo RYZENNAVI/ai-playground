@@ -1,0 +1,10 @@
+Incident summary: checkout failures
+
+Impact lasted 41 minutes. The billing host stopped accepting connections on
+port 5432 while the hostname continued to resolve normally, so the first
+responder spent 20 minutes checking DNS before testing reachability.
+
+Root cause: the database container was evicted during a node drain and the
+scheduler had no capacity left in that availability zone.
+
+Follow-up: add a reachability probe ahead of the DNS probe in the runbook.

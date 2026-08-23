@@ -41,8 +41,10 @@ sentence-transformers>=3.0.0  # 04 -> the high-level encode() path
 #                         # because their pooling strategies differ.
 
 # ChatPDF with LangChain (06)
-langchain>=0.2.0          # 06 -> RecursiveCharacterTextSplitter and the LCEL stuff chain
+langchain>=1.3.0          # 06 -> RecursiveCharacterTextSplitter and the LCEL stuff chain
 #                         # (langchain.chains was removed in 1.3.15, so the chain is written by hand)
+#                         # The 1.3 floor is what 04-agents needs: create_agent lives in
+#                         # langchain.agents from 1.3 onwards.
 langchain-community>=0.2.0  # 06 -> FAISS vector store wrapper
 langchain-openai>=0.1.0   # 06 -> OpenAIEmbeddings, ChatOpenAI
 PyPDF2>=3.0.0             # 06 -> per-page text extraction
@@ -104,6 +106,25 @@ vanna[chromadb]>=2.0.0    # 04_vanna_text2sql.py -> ChromaDB_VectorStore + OpenA
 #                         # package became an agent framework.
 #                         # The vector store it writes is a runtime artefact, rebuilt
 #                         # on first run, and stays out of git.
+
+# --- 04-agents: Composition, Agent Loops, Protocols, Graph Topologies ---
+# 03 and 06 need nothing beyond Core: 03 drives the loop with the OpenAI client alone,
+# and 06 uses only urllib on the caller side.
+# langchain, langchain-core and langchain-openai are already listed under 02-rag above
+# and are reused here:
+#   01 -> PromptTemplate, ChatPromptTemplate, MessagesPlaceholder, StrOutputParser
+#   02 -> RunnableLambda, RunnableParallel, RunnableBranch
+#   04 -> create_agent, @tool, ChatOpenAI, message classes
+#   07 -> ChatPromptTemplate, ChatOpenAI
+langgraph>=1.0.0          # 01 -> StateGraph + InMemorySaver (conversation state)
+#                         # 07 -> StateGraph, add_conditional_edges, both topologies
+mcp>=2.0.0                # 05_mcp_client_and_server.py -> MCPServer (server half),
+#                         # ClientSession + stdio_client (client half). The script
+#                         # launches itself with --serve, so both halves need it.
+# fastapi, uvicorn and pydantic are already listed under 01-llm-foundation above and
+# are reused here:
+#   06_a2a_agent_protocol.py -> the provider that publishes the capability card and
+#                               handles task submissions on 127.0.0.1:8931
 
 # --- 05-fine-tuning ---
 # transformers

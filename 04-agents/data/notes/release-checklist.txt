@@ -1,0 +1,9 @@
+Release checklist for the billing service
+
+1. Freeze the schema migration branch by Tuesday 17:00.
+2. Run the full regression suite against the staging database.
+3. Confirm the risk reserve report generated cleanly for the quarter.
+4. Announce the maintenance window at least 48 hours ahead.
+5. Keep the previous container image tagged for one week after cutover.
+
+Owner: platform team. Last reviewed on 12 March.

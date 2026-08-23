@@ -1,0 +1,7 @@
+Onboarding notes for new engineers
+
+Read the runbook before taking your first on-call shift. Ask for read access
+to the staging database on day one; production access is granted only after
+the second week. The deployment pipeline runs from the main branch only.
+
+Useful contacts: platform team for infrastructure, data team for reporting.
