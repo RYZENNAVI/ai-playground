@@ -74,8 +74,36 @@ rank_bm25>=0.2.2          # 09, 10 -> BM25Okapi, the cheap first-stage recall
 # in this environment (listed under 01 above). To create that environment:
 #   python -m venv .venv-graphrag && .venv-graphrag/Scripts/pip install graphrag
 
-# --- 03-langchain-toolchain ---
-# langgraph
+# --- 03-text2sql: SQLite, Prompting, SQL Agents, Modelling ---
+# The database itself needs nothing: 01 uses sqlite3 from the standard library and
+# generates its own data from a fixed seed. 02 and 05 need only Core plus the
+# scikit-learn already listed under 02-rag.
+# scikit-learn is reused here:
+#   02_prompt_to_sql.py       -> TfidfVectorizer, cosine_similarity (example retrieval)
+#   06_sql_agent_with_tools.py -> LinearRegression, DecisionTreeRegressor (the two
+#                                 modelling tools). Imported lazily inside each tool.
+matplotlib>=3.8.0         # 06_sql_agent_with_tools.py -> tool_plot_chart()
+#                         # Uses the non-interactive Agg backend, selected before
+#                         # pyplot is imported so a machine with no display does not
+#                         # fail at import time.
+
+# SQL agent over a reflected schema (03). Imported lazily inside build_agent().
+# langchain-community and langchain-openai are already listed under 02-rag above and
+# are reused here:
+#   03_langchain_sql_agent.py -> SQLDatabase, SQLDatabaseToolkit, create_sql_agent,
+#                                ChatOpenAI
+#                         # These import paths move between releases: create_sql_agent
+#                         # left langchain.agents for
+#                         # langchain_community.agent_toolkits.sql in 1.3, and
+#                         # ChatOpenAI moved to langchain_openai.
+
+# Retrieval-trained Text2SQL (04). Imported lazily inside build_client().
+vanna[chromadb]>=2.0.0    # 04_vanna_text2sql.py -> ChromaDB_VectorStore + OpenAI_Chat
+#                         # Pulls ~35 packages / 98 MB. The 0.x classes this script
+#                         # uses live under vanna.legacy in 2.x, where the top-level
+#                         # package became an agent framework.
+#                         # The vector store it writes is a runtime artefact, rebuilt
+#                         # on first run, and stays out of git.
 
 # --- 05-fine-tuning ---
 # transformers
@@ -94,6 +122,6 @@ rank_bm25>=0.2.2          # 09, 10 -> BM25Okapi, the cheap first-stage recall
 # lightgbm
 # prophet
 # tensorflow
-# matplotlib
+# matplotlib             # already active under 03-text2sql above
 # pandas
 # numpy

@@ -54,3 +54,9 @@ models/
 .DS_Store
 .specstory/
 .cursorindexingignore
+
+# Runtime artefacts rebuilt by 03-text2sql/01_build_insurance_db.py and the
+# scripts that follow it. Nothing here is source.
+03-text2sql/data/schema.sql
+03-text2sql/data/vanna_store/
+03-text2sql/data/charts/

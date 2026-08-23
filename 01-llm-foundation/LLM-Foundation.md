@@ -237,7 +237,7 @@ deepseek-r1:671b —— 496 GB
 
 ---
 
-## 9. The Industry Landscape: Applications, Rankings and Hardware Restrictions
+## 9. The Industry Landscape: Applications, Rankings and Accelerators
 
 ### 9.1 DeepSeek's Market Impact
 *   **Release timeline**: V3 on 2024-12-26 (a muted market reaction) → R1 on 2025-01-20, which is when it truly broke out.
@@ -259,23 +259,22 @@ deepseek-r1:671b —— 496 GB
 | E-commerce | Review sentiment analysis | Rapid build-out of review analytics systems |
 | Logistics | Intelligent parsing of shipping addresses | —— |
 
-### 9.3 Global AI Landscape (Artificial Analysis Intelligence Index)
-*   **Overall picture**: the US retains the overall lead (o3 scores 94, o1 scores 90), but **China is no longer far behind** (DeepSeek R1 scores 89, third place).
-*   **Chinese models**: by early 2025 **seven** Chinese models had reasoning capability, including DeepSeek R1/V3, Kimi k1.5 (87), Step-R-mini (84), Baichuan M1-Preview (83) and Alibaba's Qwen.
-*   **Differences in enterprise adoption**: foreign firms enforce strict IT security review and ban some Chinese models; Chinese firms mainly use domestic models such as DeepSeek and Qwen and cannot access the GPT series.
-*   **Practical recommendations**: Kimi's K2 stands out on coding; Qwen offers strong value for money.
+### 9.3 Where the Reasoning Models Stand (Artificial Analysis Intelligence Index)
+*   **Top of the index**: o3 scores 94 and o1 scores 90, with DeepSeek R1 close behind at 89 — the gap between the leading closed models and the strongest open-weight one is narrow enough that the licence, not the score, is often the deciding factor.
+*   **Open-weight reasoning models**: by early 2025 the field included DeepSeek R1/V3, Kimi k1.5 (87), Step-R-mini (84), Baichuan M1-Preview (83) and the Qwen series — enough choice that self-hosting no longer means settling for a much weaker model.
+*   **Practical recommendations**: Kimi K2 stands out on coding; Qwen offers strong value for money.
 
-### 9.4 Export Restrictions and Hardware Impact
-*   **Timeline**: first restrictions in October 2022 (H100, A100) → tightened in October 2023 (H800, A800 restricted) → the "**AI Diffusion Rule**" added in January 2025 (a three-tier licensing framework strictly limiting advanced AI accelerators flowing to China).
-*   **Current state**: only low-performance chips such as the H20 and L20 may be exported to China.
+### 9.4 Accelerator Capacity and What It Means for Self-Hosting
+*   **Why this matters here**: the choice of accelerator sets the ceiling on which model sizes are practical to serve, and the two figures that decide it are raw compute and memory bandwidth.
 
-| Chip | Compute | Bandwidth | Notes |
-| :--- | :--- | :--- | :--- |
-| NVIDIA H100 | 989 TFLOPs | 3.35 TB/s | Restricted |
-| NVIDIA H20 | 148 TFLOPs | 4 TB/s | **Designed specifically for the Chinese market; only 15% of H100 compute** |
-| AMD MI300X | 1307 TFLOPs | 5.3 TB/s | Unrestricted |
+| Accelerator | Compute | Bandwidth |
+| :--- | :--- | :--- |
+| NVIDIA H100 | 989 TFLOPs | 3.35 TB/s |
+| NVIDIA H20 | 148 TFLOPs | 4 TB/s |
+| AMD MI300X | 1307 TFLOPs | 5.3 TB/s |
 
-*   **Consequence**: China relies on domestic chips (such as Huawei Ascend) or downgraded NVIDIA parts. The common enterprise stack is Huawei Ascend hardware plus self-hosted models.
+*   **Reading the table**: compute and bandwidth do not move together. The H20 has only about 15% of the H100's compute yet slightly more bandwidth — which matters because token generation is **bandwidth-bound rather than compute-bound**, so a part that looks far weaker on paper can still serve inference respectably while being a poor choice for training.
+*   **Consequence for sizing**: pair this with the deployment-cost table in section 8 — the accelerator decides what fits, quantisation decides how much of it you need.
 
 ---
 
@@ -612,7 +611,6 @@ All cases use the wrapper `get_completion(prompt, model="deepseek-v3")` with `te
 *   Prefer self-hosted models, accessed through a gateway to internal model services, keeping the API calling convention uniform.
 *   **Deployment tiers**: the full model needs a GPU cluster; a mid-tier configuration runs on an ordinary server; a lightweight version runs on a personal computer. Small models need only CPU and RAM, large models need a GPU; Docker can simplify the deployment process.
 *   **Limits of self-hosting**: constrained model size, potentially constrained internet access, and high system-integration complexity.
-*   **Questions about vLLM's security posture**: as a product from Berkeley (US), it needs to be assessed against domestic enterprise information-security audit requirements; **domestic vendors such as Moonshot have developed their own underlying deployment stacks** as alternatives.
 
 ### 19.4 The Prompt Engineer's Responsibilities
 *   **In essence**: a prompt is the instruction for talking to an AI, comprising a pre-set system role and the user's concrete question.
@@ -622,12 +620,6 @@ All cases use the wrapper `get_completion(prompt, model="deepseek-v3")` with `te
 *   **Frontier application (chip design)**: use LLMs for paper comprehension (arXiv), CAD drawing analysis and requirements-document collaboration. **KV Cache techniques** can be applied to on-device smart-speaker deployment to improve response speed.
 *   **The white-text injection attack**: attackers embed text invisible to the human eye (white on white) in a document, carrying hidden malicious instructions that induce the AI to give a faulty review or a fake endorsement.
 *   **Enterprise defence**: establish a hybrid defence of "**IT security review + private knowledge base**" to guard against prompt injection.
-
-### 19.6 Hands-On Exercises
-*   **Exercise 1 (API usage)**: write an example using an LLM API in your own business context — pick one of: ① sentiment classification; ② article summarisation; ③ function calling for a complex business flow. Any API works: Qwen, DeepSeek, ChatGLM, ERNIE, KIMI.
-*   **Exercise 2 (self-hosting)**: pick any open-weight model (deepseek-r1 or the qwen3 series) and any deployment method (vLLM / Ollama / local Python GPU), and get it working.
-*   **Exercise 3 (prompt engineering)**: pick one of four in your own business context — complete a task with a prompt / return JSON / step-by-step CoT reasoning / use a prompt to tune a prompt.
-*   **Difficulty adjustment**: beginners can reproduce the examples; more advanced practitioners can extend them to their own domain.
 
 ---
 
@@ -676,9 +668,6 @@ All cases use the wrapper `get_completion(prompt, model="deepseek-v3")` with `te
 
 *   **Q: Among the user, the application developer and the model, who writes the prompt? Why does the prompt-engineer role exist?**
     *   **A**: **A prompt is written by a person**, and the user's question can be backed by a persona built into the LLM. Anyone can instruct an LLM, but doing it **programmatically** is what the prompt-engineer role is for. The typical division: `system_prompt: act as an assistant that names companies` + `user_prompt: colourful flowers`.
-
-*   **Q: vLLM comes from Berkeley in the US — does it satisfy domestic information-security audits? Are there alternatives?**
-    *   **A**: **Moonshot has developed its own underlying deployment stack**, which works as a domestic alternative.
 
 *   **A learner's takeaway**: *"Self-hosting is a process of getting familiar with the model, and it pays off later when you get to real fine-tuning."*
 

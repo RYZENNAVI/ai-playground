@@ -14,12 +14,12 @@ so switching vendors is a matter of changing `base_url`.
 |--------|--------|
 | [01-llm-foundation](01-llm-foundation/) | LLM fundamentals · OpenAI SDK · prompt engineering · function calling · local deployment (Ollama, Transformers) |
 | [02-rag](02-rag/) | Embeddings · vector databases · RAG pipelines · rerank · query rewrite · GraphRAG |
-| [03-langchain-toolchain](03-langchain-toolchain/) | LangChain · Text2SQL · tool-chain orchestration |
-| [04-agents](04-agents/) | Agent architecture · MCP / A2A · multi-agent collaboration |
+| [03-text2sql](03-text2sql/) | Natural language to SQL · schema prompting · SQL agents · query safety · result evaluation |
+| [04-agents](04-agents/) | Chain orchestration · ReAct agents · MCP / A2A · LangGraph architectures |
 | [05-fine-tuning](05-fine-tuning/) | SFT / LoRA / QLoRA fine-tuning |
-| [06-multimodal-vision](06-multimodal-vision/) | Vision-language models · PyTorch · YOLO object detection |
+| [06-multimodal-vision](06-multimodal-vision/) | Vision-language models · document parsing · PyTorch CNN · object detection |
 | [07-ml-dl-foundation](07-ml-dl-foundation/) | Classical ML · time series · neural networks · TensorFlow |
-| [08-lowcode-platforms](08-lowcode-platforms/) | Coze workflows · Dify self-hosted deployment |
+| [08-lowcode-platforms](08-lowcode-platforms/) | Coze workflows & plugins · Dify self-hosted deployment |
 | [09-projects](09-projects/) | Capstones: enterprise knowledge base · ChatBI · AIOps assistant · AI search |
 
 ---
@@ -84,12 +84,14 @@ ai-playground/
 ├── 02-rag/                       embeddings, vector DB, RAG pipelines, advanced recall
 │   ├── RAG-Retrieval-Augmented-Generation.md   topic write-up
 │   └── 01..13_*.py               scripts
-├── 03-langchain-toolchain/       LangChain, Text2SQL, function calling
-├── 04-agents/                    agent design, MCP/A2A, multi-agent
+├── 03-text2sql/                  natural language to SQL, SQL agents, query safety
+│   ├── Text2SQL-Natural-Language-to-SQL.md     topic write-up
+│   └── 01..06_*.py               scripts
+├── 04-agents/                    chain orchestration, ReAct, MCP/A2A, LangGraph
 ├── 05-fine-tuning/               SFT / LoRA fine-tuning
-├── 06-multimodal-vision/         VLM, PyTorch, YOLO detection
+├── 06-multimodal-vision/         VLM, document parsing, PyTorch CNN, detection
 ├── 07-ml-dl-foundation/          classical ML, time series, TensorFlow
-├── 08-lowcode-platforms/         Coze workflows, Dify deployment
+├── 08-lowcode-platforms/         Coze workflows & plugins, Dify deployment
 └── 09-projects/                  end-to-end capstone projects
 ```
 
@@ -131,3 +133,18 @@ See [LLM-Foundation.md](01-llm-foundation/LLM-Foundation.md) for the concepts be
 | 13 | `13_graphrag_vs_vector.py` | One multi-hop question asked of a vector index and of a knowledge graph |
 
 See [RAG-Retrieval-Augmented-Generation.md](02-rag/RAG-Retrieval-Augmented-Generation.md) for the concepts behind these scripts.
+
+---
+
+## Module 03 Scripts
+
+| # | Script | Feature |
+|---|--------|---------|
+| 01 | `01_build_insurance_db.py` | Local SQLite from a fixed seed — five tables, commented DDL, idempotent rebuild |
+| 02 | `02_prompt_to_sql.py` | Three prompt styles scored on rows *and* on stored-literal use, then retrieval-augmented |
+| 03 | `03_langchain_sql_agent.py` | LangChain SQLDatabaseToolkit — what reflection gains, and the comments it drops |
+| 04 | `04_vanna_text2sql.py` | Vanna over a local vector store — DDL, documentation and verified pairs, with corrections |
+| 05 | `05_sql_quality_gate.py` | Screening, static rules, second-opinion review, read-only execution, benchmark by join depth |
+| 06 | `06_sql_agent_with_tools.py` | Tool-calling agent — query, chart, linear fit and driver ranking in one loop |
+
+See [Text2SQL-Natural-Language-to-SQL.md](03-text2sql/Text2SQL-Natural-Language-to-SQL.md) for the concepts behind these scripts.
