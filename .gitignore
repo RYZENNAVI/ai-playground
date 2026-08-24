@@ -60,3 +60,8 @@ models/
 03-text2sql/data/schema.sql
 03-text2sql/data/vanna_store/
 03-text2sql/data/charts/
+
+# Runtime artefacts rebuilt by the 05-fine-tuning scripts: rendered images,
+# trained adapters and the generated training split. Nothing here is source.
+05-fine-tuning/outputs/
+05-fine-tuning/data/underwriting_triage.jsonl

@@ -127,10 +127,23 @@ mcp>=2.0.0                # 05_mcp_client_and_server.py -> MCPServer (server hal
 #                               handles task submissions on 127.0.0.1:8931
 
 # --- 05-fine-tuning ---
-# transformers
-# peft
-# datasets
-# accelerate
+scipy>=1.11.0             # 01 -> scipy.linalg.svd for the decomposition and rank-k rebuild
+#                         # 02 -> singular values of the interaction matrix
+peft>=0.17.0              # 04, 05, 07 -> LoraConfig + get_peft_model; 04 also PeftModel
+#                         #   for the reload check and merge_and_unload()
+#                         # 05 -> disable_adapter() supplies the reference policy for the
+#                         #   KL term, so the base is never loaded a second time
+torchvision>=0.20.0       # 07 -> the image processor of the vision-language checkpoint
+#                         #   imports it even on the PIL backend. Match it to your torch:
+#                         #   pip install torchvision --no-deps
+#                         #   --index-url https://download.pytorch.org/whl/cu128
+# numpy, Pillow, transformers, accelerate and huggingface_hub are listed above and reused:
+#   01 -> numpy + Pillow render and decompose the test image; no model, no GPU
+#   02 -> numpy only; no model, no GPU
+#   03-06 -> transformers + huggingface_hub. HF_CACHE_DIR points at the weights already
+#            pulled by 01-llm-foundation, so nothing is downloaded twice.
+# datasets and trl are deliberately NOT used: the training loops are written out, which
+# keeps prompt masking, group advantages and the KL term visible in the scripts.
 
 # --- 06-multimodal-vision ---
 # torch

@@ -16,11 +16,12 @@ so switching vendors is a matter of changing `base_url`.
 | [02-rag](02-rag/) | Embeddings · vector databases · RAG pipelines · rerank · query rewrite · GraphRAG |
 | [03-text2sql](03-text2sql/) | Natural language to SQL · schema prompting · SQL agents · query safety · result evaluation |
 | [04-agents](04-agents/) | Chain orchestration · ReAct agents · MCP / A2A · LangGraph architectures |
-| [05-fine-tuning](05-fine-tuning/) | SFT / LoRA / QLoRA fine-tuning |
+| [05-fine-tuning](05-fine-tuning/) | Low-rank adaptation · supervised fine-tuning · reward-driven training · vision adapters |
 | [06-multimodal-vision](06-multimodal-vision/) | Vision-language models · document parsing · PyTorch CNN · object detection |
-| [07-ml-dl-foundation](07-ml-dl-foundation/) | Classical ML · time series · neural networks · TensorFlow |
-| [08-lowcode-platforms](08-lowcode-platforms/) | Coze workflows & plugins · Dify self-hosted deployment |
-| [09-projects](09-projects/) | Capstones: enterprise knowledge base · ChatBI · AIOps assistant · AI search |
+| [07-ml-dl-foundation](07-ml-dl-foundation/) | Classical ML · gradient boosting · neural networks · TensorFlow |
+| [08-time-series](08-time-series/) | Stationarity · ARIMA / Prophet · seasonal decomposition · changepoint detection |
+| [09-lowcode-platforms](09-lowcode-platforms/) | Coze workflows & plugins · Dify self-hosted deployment |
+| [10-projects](10-projects/) | Capstones: enterprise knowledge base · ChatBI · AIOps assistant · AI search |
 
 ---
 
@@ -90,11 +91,14 @@ ai-playground/
 ├── 04-agents/                    chain orchestration, ReAct, MCP/A2A, LangGraph
 │   ├── Agent-Systems-Loops-Protocols-and-Topologies.md   topic write-up
 │   └── 01..07_*.py               scripts
-├── 05-fine-tuning/               SFT / LoRA fine-tuning
+├── 05-fine-tuning/               low-rank adaptation, SFT, reward-driven training, vision adapters
+│   ├── Fine-Tuning-Low-Rank-Adaptation.md      topic write-up
+│   └── 01..07_*.py               scripts
 ├── 06-multimodal-vision/         VLM, document parsing, PyTorch CNN, detection
-├── 07-ml-dl-foundation/          classical ML, time series, TensorFlow
-├── 08-lowcode-platforms/         Coze workflows & plugins, Dify deployment
-└── 09-projects/                  end-to-end capstone projects
+├── 07-ml-dl-foundation/          classical ML, gradient boosting, TensorFlow
+├── 08-time-series/               stationarity, ARIMA/Prophet, seasonality, changepoints
+├── 09-lowcode-platforms/         Coze workflows & plugins, Dify deployment
+└── 10-projects/                  end-to-end capstone projects
 ```
 
 ---
@@ -166,3 +170,19 @@ See [Text2SQL-Natural-Language-to-SQL.md](03-text2sql/Text2SQL-Natural-Language-
 | 07 | `07_langgraph_topologies.py` | One state, five nodes, two topologies — fixed pipeline against a conditional router |
 
 See [Agent-Systems-Loops-Protocols-and-Topologies.md](04-agents/Agent-Systems-Loops-Protocols-and-Topologies.md) for the concepts behind these scripts.
+
+---
+
+## Module 05 Scripts
+
+| # | Script | Feature |
+|---|--------|---------|
+| 01 | `01_svd_image_compression.py` | Rank-k reconstruction, paired sign flips, storage accounting, and why energy share flatters |
+| 02 | `02_als_low_rank_factorization.py` | Alternating least squares on a masked matrix — the penalised objective against the printed error |
+| 03 | `03_lora_low_rank_hypothesis.py` | An unconstrained weight update, decomposed and compared against the frozen weight and noise |
+| 04 | `04_lora_sft_instruction_tuning.py` | Supervised tuning end to end — rule-made labels, prompt masking, save, reload, merge |
+| 05 | `05_grpo_reward_shaping.py` | Group-relative policy optimisation by hand — five rewards, advantages, KL against the base |
+| 06 | `06_thinking_budget_control.py` | Capping and extending a reasoning model's deliberation at decode time, without training |
+| 07 | `07_vision_lora_gauge_reading.py` | A vision-language adapter on rendered panels, scored field by field |
+
+See [Fine-Tuning-Low-Rank-Adaptation.md](05-fine-tuning/Fine-Tuning-Low-Rank-Adaptation.md) for the concepts behind these scripts.
