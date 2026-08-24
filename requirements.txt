@@ -146,9 +146,20 @@ torchvision>=0.20.0       # 07 -> the image processor of the vision-language che
 # keeps prompt masking, group advantages and the KL term visible in the scripts.
 
 # --- 06-multimodal-vision ---
-# torch
-# torchvision
-# ultralytics              # YOLO
+pymupdf>=1.24.0           # 04 -> builds the two-column PDF and reads it back as positioned
+#                         #   spans, which is what makes the heading audit checkable
+opencv-python>=4.9.0      # 03 -> VideoWriter encodes the synthesised clip, VideoCapture
+#                         #   reads it back, imencode makes the JPEG sent per keyframe
+ultralytics>=8.3.0        # 07 -> YOLO(...).train() and .predict() on the generated dataset
+#                         #   Pulls polars as a transitive dependency; torch is not touched.
+# torch and torchvision are listed under 05-fine-tuning and reused:
+#   05 -> nn.Conv2d with fixed weights, checked against a hand-written convolution
+#   06 -> torchvision.models.resnet50 for the stem trace and the training comparison
+# numpy, Pillow, openai and python-dotenv are listed above and reused:
+#   01-03 -> openai + python-dotenv reach the vision model; Pillow renders every input
+#   05-07 -> numpy + Pillow render the test image, the samples and the defect plates
+# No script here reads a spreadsheet, a downloaded dataset or a shipped photograph:
+# each one generates its own inputs into outputs/ on first run.
 
 # --- 07-ml-dl-foundation ---
 # scikit-learn

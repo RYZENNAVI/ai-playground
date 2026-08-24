@@ -16,12 +16,14 @@ so switching vendors is a matter of changing `base_url`.
 | [02-rag](02-rag/) | Embeddings · vector databases · RAG pipelines · rerank · query rewrite · GraphRAG |
 | [03-text2sql](03-text2sql/) | Natural language to SQL · schema prompting · SQL agents · query safety · result evaluation |
 | [04-agents](04-agents/) | Chain orchestration · ReAct agents · MCP / A2A · LangGraph architectures |
-| [05-fine-tuning](05-fine-tuning/) | Low-rank adaptation · supervised fine-tuning · reward-driven training · vision adapters |
-| [06-multimodal-vision](06-multimodal-vision/) | Vision-language models · document parsing · PyTorch CNN · object detection |
+| [05-fine-tuning](05-fine-tuning/) *(draft)* | Low-rank adaptation · supervised fine-tuning · reward-driven training · vision adapters |
+| [06-multimodal-vision](06-multimodal-vision/) *(draft)* | Vision-language auditing · grounding · keyframe sampling · convolution · detection metrics |
 | [07-ml-dl-foundation](07-ml-dl-foundation/) | Classical ML · gradient boosting · neural networks · TensorFlow |
 | [08-time-series](08-time-series/) | Stationarity · ARIMA / Prophet · seasonal decomposition · changepoint detection |
 | [09-lowcode-platforms](09-lowcode-platforms/) | Coze workflows & plugins · Dify self-hosted deployment |
 | [10-projects](10-projects/) | Capstones: enterprise knowledge base · ChatBI · AIOps assistant · AI search |
+
+Modules marked *(draft)* are still being revised.
 
 ---
 
@@ -94,7 +96,9 @@ ai-playground/
 ├── 05-fine-tuning/               low-rank adaptation, SFT, reward-driven training, vision adapters
 │   ├── Fine-Tuning-Low-Rank-Adaptation.md      topic write-up
 │   └── 01..07_*.py               scripts
-├── 06-multimodal-vision/         VLM, document parsing, PyTorch CNN, detection
+├── 06-multimodal-vision/         vision-language auditing, grounding, keyframes, detection
+│   ├── Multimodal-Vision-Calling-Models-and-Training-Them.md   topic write-up
+│   └── 01..07_*.py               scripts
 ├── 07-ml-dl-foundation/          classical ML, gradient boosting, TensorFlow
 ├── 08-time-series/               stationarity, ARIMA/Prophet, seasonality, changepoints
 ├── 09-lowcode-platforms/         Coze workflows & plugins, Dify deployment
@@ -186,3 +190,19 @@ See [Agent-Systems-Loops-Protocols-and-Topologies.md](04-agents/Agent-Systems-Lo
 | 07 | `07_vision_lora_gauge_reading.py` | A vision-language adapter on rendered panels, scored field by field |
 
 See [Fine-Tuning-Low-Rank-Adaptation.md](05-fine-tuning/Fine-Tuning-Low-Rank-Adaptation.md) for the concepts behind these scripts.
+
+---
+
+## Module 06 Scripts
+
+| # | Script | Feature |
+|---|--------|---------|
+| 01 | `01_vlm_field_extraction_audit.py` | Forms rendered with five traps, scored field by field on a clean page and a photograph of it |
+| 02 | `02_vlm_grounding_and_failure_modes.py` | A returned box scored under every coordinate convention, plus repetition and image-in-history checks |
+| 03 | `03_video_keyframe_understanding.py` | A synthesised clip read by keyframe sampling, with the localisation error the stride buys |
+| 04 | `04_document_layout_audit.py` | A PDF built from a known structure, parsed back, and its headings reconciled |
+| 05 | `05_conv_kernels_and_feature_maps.py` | One kernel checked against nn.Conv2d by hand, then convolution, activation and pooling |
+| 06 | `06_cnn_input_resolution_mismatch.py` | A 224-shaped stem on a 32x32 input — what the mismatch costs, and what it does not |
+| 07 | `07_yolo_split_audit_and_submission.py` | A detection split audited before training, and two submission edits that move no box |
+
+See [Multimodal-Vision-Calling-Models-and-Training-Them.md](06-multimodal-vision/Multimodal-Vision-Calling-Models-and-Training-Them.md) for the concepts behind these scripts.

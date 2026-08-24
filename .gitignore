@@ -65,3 +65,12 @@ models/
 # trained adapters and the generated training split. Nothing here is source.
 05-fine-tuning/outputs/
 05-fine-tuning/data/underwriting_triage.jsonl
+
+# Runtime artefacts rebuilt by the 06-multimodal-vision scripts: rendered forms,
+# the synthesised clip, the generated detection dataset and its training run.
+# Every script regenerates its own inputs, so nothing here is source.
+06-multimodal-vision/outputs/
+
+# Detector weights the trainer fetches on its own: the automatic mixed-precision
+# check downloads a small checkpoint into the working directory before training.
+*.pt
