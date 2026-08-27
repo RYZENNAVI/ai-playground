@@ -74,3 +74,19 @@ models/
 # Detector weights the trainer fetches on its own: the automatic mixed-precision
 # check downloads a small checkpoint into the working directory before training.
 *.pt
+
+# Runtime artefacts rebuilt by 07-ml-dl-foundation/01_build_tabular_datasets.py
+# and by the plots script 07 writes. The generator is seeded and reproduces the
+# five tables byte for byte, so none of this is source.
+07-ml-dl-foundation/data/
+07-ml-dl-foundation/outputs/
+
+# CatBoost writes a training log directory into the working directory on every
+# fit. It reappears whenever a script that uses CatBoost runs.
+catboost_info/
+
+# Runtime artefacts rebuilt by 08-time-series/01_build_time_series_datasets.py
+# and written by the backtest script. The generator is seeded and reproduces the
+# five series byte for byte, so none of this is source.
+08-time-series/data/
+08-time-series/outputs/

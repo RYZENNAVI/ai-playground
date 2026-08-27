@@ -162,11 +162,22 @@ ultralytics>=8.3.0        # 07 -> YOLO(...).train() and .predict() on the genera
 # each one generates its own inputs into outputs/ on first run.
 
 # --- 07-ml-dl-foundation ---
-# scikit-learn
-# xgboost
-# lightgbm
-# prophet
-# tensorflow
-# matplotlib             # already active under 03-text2sql above
-# pandas
-# numpy
+catboost>=1.2.0           # 03 -> CatBoostRegressor; 05 -> CatBoostClassifier; 06 -> one of the blended regressors
+xgboost>=2.0.0            # 05 -> XGBClassifier; 06 -> one of the blended regressors
+lightgbm>=4.0.0           # 04 -> the model every leakage variant is measured on; 05, 06 -> same family
+tensorflow>=2.16.0        # 08 -> the gradient-tape rung and the one-line fitting interface
+#                         #   Pulls keras as a transitive dependency.
+# scikit-learn, pandas, numpy and matplotlib are listed above and reused:
+#   03-06 -> model selection, metrics and the linear baselines
+#   07    -> matplotlib draws the activation and gradient curves
+#   08    -> torch, listed under 05-fine-tuning, is the middle rung of the ladder
+# No script here reads a shipped dataset: 01 generates the four tables the rest train on.
+
+# --- 08-time-series ---
+statsmodels>=0.14.0       # 02 -> seasonal_decompose, STL, adfuller, kpss; 03, 05, 07 -> ARIMA / SARIMAX / ols
+prophet>=1.1.0            # 04 -> the additive trend/seasonality/holiday model; 07 -> one of the backtested routes
+#                         #   Pulls cmdstanpy, holidays and stanio as transitive dependencies.
+# torch is listed under 05-fine-tuning and reused:
+#   06 -> nn.LSTM over the windowed rows, on CPU
+# pandas, numpy and matplotlib are listed above and reused throughout.
+# No script here reads a shipped dataset: 01 generates all five series from a fixed seed.

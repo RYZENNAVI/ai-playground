@@ -18,8 +18,8 @@ so switching vendors is a matter of changing `base_url`.
 | [04-agents](04-agents/) | Chain orchestration · ReAct agents · MCP / A2A · LangGraph architectures |
 | [05-fine-tuning](05-fine-tuning/) *(draft)* | Low-rank adaptation · supervised fine-tuning · reward-driven training · vision adapters |
 | [06-multimodal-vision](06-multimodal-vision/) *(draft)* | Vision-language auditing · grounding · keyframe sampling · convolution · detection metrics |
-| [07-ml-dl-foundation](07-ml-dl-foundation/) | Classical ML · gradient boosting · neural networks · TensorFlow |
-| [08-time-series](08-time-series/) | Stationarity · ARIMA / Prophet · seasonal decomposition · changepoint detection |
+| [07-ml-dl-foundation](07-ml-dl-foundation/) *(draft)* | Classical ML · gradient boosting · leakage & split discipline · ensembling · networks from scratch |
+| [08-time-series](08-time-series/) *(draft)* | Seasonal decomposition · stationarity · ARIMA / Prophet · periodic factors · rolling-origin backtesting |
 | [09-lowcode-platforms](09-lowcode-platforms/) | Coze workflows & plugins · Dify self-hosted deployment |
 | [10-projects](10-projects/) | Capstones: enterprise knowledge base · ChatBI · AIOps assistant · AI search |
 
@@ -99,8 +99,12 @@ ai-playground/
 ├── 06-multimodal-vision/         vision-language auditing, grounding, keyframes, detection
 │   ├── Multimodal-Vision-Calling-Models-and-Training-Them.md   topic write-up
 │   └── 01..07_*.py               scripts
-├── 07-ml-dl-foundation/          classical ML, gradient boosting, TensorFlow
+├── 07-ml-dl-foundation/          classical ML, gradient boosting, networks from scratch
+│   ├── Machine-Learning-and-Deep-Learning-Foundations.md   topic write-up
+│   └── 01..08_*.py               scripts
 ├── 08-time-series/               stationarity, ARIMA/Prophet, seasonality, changepoints
+│   ├── Time-Series-Forecasting-Baselines-and-Backtests.md   topic write-up
+│   └── 01..07_*.py               scripts
 ├── 09-lowcode-platforms/         Coze workflows & plugins, Dify deployment
 └── 10-projects/                  end-to-end capstone projects
 ```
@@ -206,3 +210,36 @@ See [Fine-Tuning-Low-Rank-Adaptation.md](05-fine-tuning/Fine-Tuning-Low-Rank-Ada
 | 07 | `07_yolo_split_audit_and_submission.py` | A detection split audited before training, and two submission edits that move no box |
 
 See [Multimodal-Vision-Calling-Models-and-Training-Them.md](06-multimodal-vision/Multimodal-Vision-Calling-Models-and-Training-Them.md) for the concepts behind these scripts.
+
+---
+
+## Module 07 Scripts
+
+| # | Script | Feature |
+|---|--------|---------|
+| 01 | `01_build_tabular_datasets.py` | Four tables drawn from explicit formulas, with the coefficients printed so later scripts can be scored |
+| 02 | `02_eda_that_silently_lies.py` | One file loaded two ways, same shape twice, and the check that tells them apart |
+| 03 | `03_feature_engineering_and_boosting.py` | Seventy engineered features fed to CatBoost, then a count of how many it never used |
+| 04 | `04_leakage_and_split_discipline.py` | Three leaks that improve the validation score while the model gets no better |
+| 05 | `05_classifier_toolbox_and_thresholds.py` | Nine classifiers on one split, then the one number none of them chose |
+| 06 | `06_ensembling_blend_vs_stack.py` | Four regressors combined four ways, traced back to the error correlation that paid for it |
+| 07 | `07_neural_net_from_scratch.py` | A network in numpy alone, every gradient checked against a finite difference |
+| 08 | `08_framework_abstraction_ladder.py` | The same network four times, from hand-derived gradients up to one call to fit |
+
+See [Machine-Learning-and-Deep-Learning-Foundations.md](07-ml-dl-foundation/Machine-Learning-and-Deep-Learning-Foundations.md) for the concepts behind these scripts.
+
+---
+
+## Module 08 Scripts
+
+| # | Script | Feature |
+|---|--------|---------|
+| 01 | `01_build_time_series_datasets.py` | Five series drawn from published mechanisms, with every factor and changepoint written to a truth file |
+| 02 | `02_decompose_and_stationarity.py` | Decomposition scored at the right period and three wrong ones, and what a strong cycle does to a unit-root test |
+| 03 | `03_arima_grid_search_and_forecast.py` | An AIC grid on a series of known order, and what a truncated candidate list does to the winner |
+| 04 | `04_prophet_trend_seasonality_changepoints.py` | Trend, cycle and events each checked against what was planted, including a component that was not |
+| 05 | `05_periodic_factor_baseline.py` | Three ways to fit a weekday and month-position effect, all scored against the planted factors |
+| 06 | `06_lstm_windowed_forecast.py` | A series laid out as supervised rows, and the count of observations a random split puts on both sides |
+| 07 | `07_rolling_origin_backtest.py` | Four cut-off dates, four routes, and a submission file checked after it is written |
+
+See [Time-Series-Forecasting-Baselines-and-Backtests.md](08-time-series/Time-Series-Forecasting-Baselines-and-Backtests.md) for the concepts behind these scripts.
