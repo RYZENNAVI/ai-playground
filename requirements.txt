@@ -193,3 +193,29 @@ prophet>=1.1.0            # 04 -> the additive trend/seasonality/holiday model; 
 #             answers three endpoints and a server-sent event stream
 # No script here reads a shipped dataset: the workflow definitions, the paged feed,
 # the two tables and the prose document all live in data/ and are written in English.
+
+# --- 10-projects ---
+shap>=0.44.0              # 07 -> TreeExplainer, the mean absolute contribution ranking.
+#                         #   Optional: without it the script falls back to the booster's
+#                         #   own pred_contrib output, which decomposes a prediction the
+#                         #   same way, so the ranking is unchanged.
+gradio>=5.0.0             # 10 -> the Blocks page served by `--ui`. The default
+#                         #   command-line run never imports it.
+# lightgbm, scikit-learn, pandas, numpy, matplotlib, statsmodels, prophet, rank_bm25,
+# openai and python-dotenv are all listed above and reused here:
+#   01     -> pandas + numpy generate the five sources; sqlite3 is standard library
+#   02, 03 -> pandas only; no model, no API key
+#   04     -> openai + python-dotenv (text only, one provider per script)
+#   05, 06 -> pandas + numpy + matplotlib; the charts go to outputs/
+#   07     -> lightgbm + scikit-learn (train_test_split, roc_auc_score,
+#             permutation_importance). The estimator facade needs a current
+#             scikit-learn, which inspects estimator tags before it will score a
+#             wrapped booster
+#   08     -> pandas + numpy only; the itemset search is written out rather than pulled
+#             from a mining package, which keeps the sample-unit switch visible
+#   09     -> statsmodels (ARIMA for the shuffle test) + prophet (the two seasonal terms)
+#   10     -> rank_bm25 for the keyword index; the vector index needs an embedding
+#             endpoint, so this script stays on one provider for both roles
+#   11     -> openai + python-dotenv; the reports and questions are written into the script
+# No script here reads a shipped dataset: 01 generates all five sources from a fixed
+# seed, and 10 and 11 carry their corpora inline.

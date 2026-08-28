@@ -20,8 +20,8 @@ so switching vendors is a matter of changing `base_url`.
 | [06-multimodal-vision](06-multimodal-vision/) *(draft)* | Vision-language auditing · grounding · keyframe sampling · convolution · detection metrics |
 | [07-ml-dl-foundation](07-ml-dl-foundation/) *(draft)* | Classical ML · gradient boosting · leakage & split discipline · ensembling · networks from scratch |
 | [08-time-series](08-time-series/) *(draft)* | Seasonal decomposition · stationarity · ARIMA / Prophet · periodic factors · rolling-origin backtesting |
-| [09-lowcode-platforms](09-lowcode-platforms/) | Workflow engines from a declarative graph · node & plugin contracts · table knowledge bases · platform API protocol |
-| [10-projects](10-projects/) | Capstones: enterprise knowledge base · ChatBI · AIOps assistant · AI search |
+| [09-lowcode-platforms](09-lowcode-platforms/) *(draft)* | Workflow engines from a declarative graph · node & plugin contracts · table knowledge bases · platform API protocol |
+| [10-projects](10-projects/) *(draft)* | Join grain & aggregation · reported columns and bands · tool return shapes · label leakage · sample units · retrieval backends · citation checks |
 
 Modules marked *(draft)* are still being revised.
 
@@ -108,7 +108,9 @@ ai-playground/
 ├── 09-lowcode-platforms/         workflow graphs, node & plugin contracts, table retrieval, platform APIs
 │   ├── Low-Code-Platforms-What-The-Canvas-Runs.md   topic write-up
 │   └── 01..05_*.py               scripts
-└── 10-projects/                  end-to-end capstone projects
+└── 10-projects/                  auditing what a finished pipeline actually computed
+    ├── Applied-Projects-The-Errors-That-Do-Not-Raise.md   topic write-up
+    └── 01..11_*.py               scripts
 ```
 
 ---
@@ -259,3 +261,25 @@ See [Time-Series-Forecasting-Baselines-and-Backtests.md](08-time-series/Time-Ser
 | 05 | `05_platform_api_protocol.py` | A local server on three endpoints, blocking against streaming, and a client that guesses its way to a wrong diagnosis |
 
 See [Low-Code-Platforms-What-The-Canvas-Runs.md](09-lowcode-platforms/Low-Code-Platforms-What-The-Canvas-Runs.md) for the concepts behind these scripts.
+
+---
+
+## Module 10 Scripts
+
+| # | Script | Feature |
+|---|--------|---------|
+| 01 | `01_build_project_datasets.py` | Five sources generated from an explicit specification, with the answer to every later claim printed alongside them |
+| 02 | `02_join_grain_and_aggregation_audit.py` | A join at the wrong grain, and the same year total three ways — one of them 197x the truth and ranking the districts differently |
+| 03 | `03_dashboard_metrics_and_cache.py` | A clamped ratio column, a band that drops 1,276 customers, and two cache-freshness rules that disagree once the source changes |
+| 04 | `04_tool_return_shapes.py` | One question, five return shapes, scored against a computed answer — the shape that answers it is the smallest one |
+| 05 | `05_chart_criterion_and_index_alignment.py` | A chart rule reading rows where the axis needs distinct values, and a column that arrives mostly populated and entirely misdated |
+| 06 | `06_bollinger_and_spc_rules.py` | A rolling band reported with the numbers behind each flag, and eight run-based rules that catch different days rather than more |
+| 07 | `07_label_leakage_and_importance_views.py` | A label one column and one threshold reproduce, and four importance measures that disagree on eleven features out of twelve |
+| 08 | `08_association_rules_sample_unit.py` | The same holdings mined under three sample units, one of which makes every lift exactly 1.0 by construction |
+| 09 | `09_cohort_is_not_a_time_series.py` | Neighbouring points sharing none of their population, a shuffle test, and two seasonal terms with no observations under them |
+| 10 | `10_search_backends_and_ui.py` | Keyword and vector retrieval over one corpus, a cutoff in tokens rather than rows, and a failure isolated one layer at a time |
+| 11 | `11_answer_routing_and_citation.py` | Two routers before answering, a four-field schema, and every cited page checked against the pages actually supplied |
+
+Run `python 10_search_backends_and_ui.py --ui` to serve the same two backends behind a small web interface.
+
+See [Applied-Projects-The-Errors-That-Do-Not-Raise.md](10-projects/Applied-Projects-The-Errors-That-Do-Not-Raise.md) for the concepts behind these scripts.
