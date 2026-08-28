@@ -90,3 +90,7 @@ catboost_info/
 # five series byte for byte, so none of this is source.
 08-time-series/data/
 08-time-series/outputs/
+
+# Written by 09-lowcode-platforms scripts at run time, rewritten identically on every run
+09-lowcode-platforms/data/review_feed/
+09-lowcode-platforms/data/mock_platform_server.py

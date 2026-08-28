@@ -1,0 +1,39 @@
+# Sign-in and alerting notes
+
+## Face unlock after a credential change
+
+Face unlock stores a device-bound token that is issued the first time a customer
+enrols. Changing the account password invalidates that token, because the token
+is signed with a key derived from the password hash. The application does not
+tell the customer this. It shows the same generic "we could not verify you"
+screen it shows for a failed scan, so a customer whose enrolment has been
+invalidated will keep retrying the scan instead of re-enrolling. The fix is to
+sign in once with the new password, which issues a fresh token; after that,
+face unlock works again on that device only.
+
+## Why a one-time code sometimes arrives late
+
+One-time codes are queued through two carriers. The second carrier is used when
+the first reports congestion, and its delivery target is ninety seconds rather
+than five. A code that arrives after the sign-in screen has timed out is still
+valid for three minutes, so entering it on a fresh screen will succeed. Support
+sees this most often between 09:20 and 09:40 on weekdays, which is when the
+first carrier is busiest.
+
+## Price alert timing
+
+Price alerts are evaluated on the quote stream, not on the order book. The quote
+stream is aggregated into one-second buckets, and the alert service reads the
+completed bucket. An alert therefore fires at least one second after the price
+was first printed, and up to three minutes later when the alert service is
+rebalancing across nodes. Customers who trade on alerts should treat them as
+notification of a move that has already happened, not as a trigger.
+
+## Watchlists and releases
+
+Watchlists live in the account profile, not on the device. A release that
+migrates the profile schema rebuilds every watchlist from the previous
+representation; if a customer opened the application during the migration window,
+their client may have written an empty watchlist back over the rebuilt one.
+Recovering it means restoring the profile snapshot taken before the release,
+which support can do for thirty days afterwards.

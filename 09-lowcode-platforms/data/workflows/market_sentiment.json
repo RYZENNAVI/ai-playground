@@ -1,0 +1,109 @@
+{
+  "id": "market_sentiment",
+  "name": "MarketSentiment",
+  "description": "Collect market news, keep today's items, and hand them to two sub-workflows.",
+  "inputs": ["topic", "today"],
+  "outputs": ["report", "hotwords"],
+  "nodes": [
+    {
+      "id": "100001",
+      "type": "start",
+      "title": "Start",
+      "ports": ["topic", "today"]
+    },
+    {
+      "id": "107368",
+      "type": "plugin",
+      "title": "FetchNews",
+      "plugin": "news_feed",
+      "inputs": {"topic": "100001.topic"},
+      "ports": ["items"]
+    },
+    {
+      "id": "136482",
+      "type": "batch",
+      "title": "PerArticle",
+      "over": "107368.items",
+      "collect": {"digest": "147435.text", "branch": "159567.branch"},
+      "ports": ["digest", "branch"],
+      "body": [
+        {
+          "id": "130992",
+          "type": "code",
+          "title": "SameCalendarDay",
+          "fn": "same_calendar_day",
+          "inputs": {"today": "100001.today", "published": "item.published"},
+          "ports": ["same_day"]
+        },
+        {
+          "id": "147435",
+          "type": "model",
+          "title": "Digest",
+          "prompt": "Summarise one market article in a single line.",
+          "inputs": {"title": "item.title", "body": "item.body"},
+          "ports": ["text"]
+        },
+        {
+          "id": "159567",
+          "type": "selector",
+          "title": "KeepTodayOnly",
+          "cases": [{"when": "130992.same_day", "equals": 1, "then": "keep"}],
+          "otherwise": "drop",
+          "ports": ["branch"]
+        }
+      ]
+    },
+    {
+      "id": "123474",
+      "type": "code",
+      "title": "KeepMarked",
+      "fn": "keep_marked",
+      "inputs": {"values": "136482.digest", "marks": "136482.branch"},
+      "ports": ["kept"]
+    },
+    {
+      "id": "140895",
+      "type": "model",
+      "title": "Hotwords",
+      "prompt": "List the recurring terms across these lines.",
+      "inputs": {"lines": "123474.kept"},
+      "ports": ["text"]
+    },
+    {
+      "id": "170693",
+      "type": "subworkflow",
+      "title": "ReviewAnalysis",
+      "workflow": "review_analysis",
+      "inputs": {"app_id": "literal:ABC-Trade"},
+      "ports": ["positive", "negative"]
+    },
+    {
+      "id": "174746",
+      "type": "subworkflow",
+      "title": "DailyReport",
+      "workflow": "daily_report",
+      "inputs": {
+        "highlights": "123474.kept",
+        "positive": "170693.positive",
+        "negative": "170693.negative"
+      },
+      "ports": ["report"]
+    },
+    {
+      "id": "900001",
+      "type": "end",
+      "title": "End",
+      "inputs": {"report": "174746.report", "hotwords": "140895.text"}
+    }
+  ],
+  "edges": [
+    {"from": "100001", "to": "107368"},
+    {"from": "107368", "to": "136482"},
+    {"from": "136482", "to": "123474"},
+    {"from": "123474", "to": "140895"},
+    {"from": "123474", "to": "170693"},
+    {"from": "140895", "to": "174746"},
+    {"from": "170693", "to": "174746"},
+    {"from": "174746", "to": "900001"}
+  ]
+}

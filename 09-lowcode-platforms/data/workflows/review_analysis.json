@@ -1,0 +1,61 @@
+{
+  "id": "review_analysis",
+  "name": "ReviewAnalysis",
+  "description": "Classify store reviews one by one, then split them by the verdict field.",
+  "inputs": ["app_id"],
+  "outputs": ["positive", "negative"],
+  "nodes": [
+    {
+      "id": "100001",
+      "type": "start",
+      "title": "Start",
+      "ports": ["app_id"]
+    },
+    {
+      "id": "195507",
+      "type": "plugin",
+      "title": "FetchReviews",
+      "plugin": "review_feed",
+      "inputs": {"app_id": "100001.app_id"},
+      "ports": ["items"]
+    },
+    {
+      "id": "106962",
+      "type": "batch",
+      "title": "PerReview",
+      "over": "195507.items",
+      "collect": {"verdict": "172963.verdict", "digest": "172963.digest"},
+      "ports": ["verdict", "digest"],
+      "body": [
+        {
+          "id": "172963",
+          "type": "model",
+          "title": "Classify",
+          "prompt": "Label one review as positive, neutral or negative.",
+          "inputs": {"title": "item.title", "body": "item.body"},
+          "ports": ["verdict", "digest"]
+        }
+      ]
+    },
+    {
+      "id": "166084",
+      "type": "code",
+      "title": "SplitByVerdict",
+      "fn": "split_by_verdict",
+      "inputs": {"verdicts": "106962.verdict", "digests": "106962.digest"},
+      "ports": ["positive", "negative"]
+    },
+    {
+      "id": "900001",
+      "type": "end",
+      "title": "End",
+      "inputs": {"positive": "166084.positive", "negative": "166084.negative"}
+    }
+  ],
+  "edges": [
+    {"from": "100001", "to": "195507"},
+    {"from": "195507", "to": "106962"},
+    {"from": "106962", "to": "166084"},
+    {"from": "166084", "to": "900001"}
+  ]
+}

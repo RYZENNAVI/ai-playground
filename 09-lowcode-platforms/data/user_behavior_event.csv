@@ -1,0 +1,21 @@
+event_time,event_type,event_detail,user_id
+2026-05-04 09:30:00,Sign-in,Signed in with a one-time code,U-100237
+2026-05-04 09:32:00,View holdings,Opened the index fund position showing up 3.2 percent,U-100258
+2026-05-04 09:35:00,Browse products,Opened the fixed income shelf,U-100258
+2026-05-04 10:05:00,Sign-in,Face unlock rejected three times then gave up,U-100241
+2026-05-04 10:11:00,Contact support,Reported that sign-in would not complete,U-100241
+2026-05-04 14:00:00,Search,Searched for overnight repo rates,U-100258
+2026-05-04 15:20:00,Place order,Bought 400 units of the dividend fund,U-100258
+2026-05-04 18:30:00,Sign-in,Signed in with a password after seven days away,U-100237
+2026-05-05 08:12:00,View quotes,Watched the pre-open auction board,U-100258
+2026-05-05 09:41:00,Sign-in,Face unlock accepted on the first try,U-100241
+2026-05-05 11:02:00,Risk alert,Shown the leverage warning before an order,U-100258
+2026-05-05 13:37:00,Push opened,Opened the research digest notification,U-100237
+2026-05-05 19:45:00,View returns,Reviewed the month to date return,U-100241
+2026-05-06 08:55:00,Sign-in,Signed in with a one-time code,U-100258
+2026-05-06 09:14:00,Browse products,Compared two money market funds,U-100237
+2026-05-06 10:30:00,Place order,Sold 150 units of the technology fund,U-100258
+2026-05-06 12:20:00,Push unread,Left the maintenance notice unread,U-100241
+2026-05-06 16:48:00,Search,Searched for settlement window changes,U-100237
+2026-05-07 09:05:00,Sign-in,Signed in with a password,U-100241
+2026-05-07 09:22:00,Ad viewed,Saw the research trial banner,U-100237

@@ -1,0 +1,10 @@
+family,plan,monthly_fee,per_trade_fee
+Retail,Starter,0.00,4.95
+Retail,Active,19.00,1.95
+Retail,Momentum,29.00,1.45
+Professional,Desk,79.00,0.95
+Professional,Prime,129.00,0.65
+Professional,Quant,189.00,0.40
+Institutional,Block,349.00,0.25
+Institutional,Sweep,499.00,0.15
+Institutional,Custody,899.00,0.05

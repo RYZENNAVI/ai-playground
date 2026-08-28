@@ -1,0 +1,66 @@
+{
+  "id": "daily_report",
+  "name": "DailyReport",
+  "description": "Fold three separate summaries into one report body.",
+  "inputs": ["highlights", "positive", "negative"],
+  "outputs": ["report"],
+  "nodes": [
+    {
+      "id": "100001",
+      "type": "start",
+      "title": "Start",
+      "ports": ["highlights", "positive", "negative"]
+    },
+    {
+      "id": "153200",
+      "type": "model",
+      "title": "SummariseNews",
+      "prompt": "Summarise the market lines.",
+      "inputs": {"lines": "100001.highlights"},
+      "ports": ["text"]
+    },
+    {
+      "id": "1128405",
+      "type": "model",
+      "title": "SummarisePraise",
+      "prompt": "Summarise what users liked.",
+      "inputs": {"lines": "100001.positive"},
+      "ports": ["text"]
+    },
+    {
+      "id": "1241951",
+      "type": "model",
+      "title": "SummariseComplaints",
+      "prompt": "Summarise what users complained about.",
+      "inputs": {"lines": "100001.negative"},
+      "ports": ["text"]
+    },
+    {
+      "id": "106666",
+      "type": "text",
+      "title": "JoinSections",
+      "template": "MARKET\n{news}\n\nPRAISE\n{praise}\n\nCOMPLAINTS\n{complaints}",
+      "inputs": {
+        "news": "153200.text",
+        "praise": "1128405.text",
+        "complaints": "1241951.text"
+      },
+      "ports": ["text"]
+    },
+    {
+      "id": "900001",
+      "type": "end",
+      "title": "End",
+      "inputs": {"report": "106666.text"}
+    }
+  ],
+  "edges": [
+    {"from": "100001", "to": "153200"},
+    {"from": "100001", "to": "1128405"},
+    {"from": "100001", "to": "1241951"},
+    {"from": "153200", "to": "106666"},
+    {"from": "1128405", "to": "106666"},
+    {"from": "1241951", "to": "106666"},
+    {"from": "106666", "to": "900001"}
+  ]
+}

@@ -181,3 +181,15 @@ prophet>=1.1.0            # 04 -> the additive trend/seasonality/holiday model; 
 #   06 -> nn.LSTM over the windowed rows, on CPU
 # pandas, numpy and matplotlib are listed above and reused throughout.
 # No script here reads a shipped dataset: 01 generates all five series from a fixed seed.
+
+# --- 09-lowcode-platforms ---
+# No new package. Every dependency this module needs is already listed above:
+#   01, 03 -> the standard library alone (json, re, xml.etree.ElementTree)
+#   02     -> openai + python-dotenv reach a chat model; any one key is enough
+#   04     -> sentence-transformers + numpy embed the rows locally with
+#             bge-small-en-v1.5, reusing the copy under 02-rag/weights/ if it is
+#             there; modelscope only runs when no sibling module has it yet
+#   05     -> fastapi + uvicorn (listed under 01) serve a local subprocess that
+#             answers three endpoints and a server-sent event stream
+# No script here reads a shipped dataset: the workflow definitions, the paged feed,
+# the two tables and the prose document all live in data/ and are written in English.

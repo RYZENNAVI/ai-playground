@@ -20,7 +20,7 @@ so switching vendors is a matter of changing `base_url`.
 | [06-multimodal-vision](06-multimodal-vision/) *(draft)* | Vision-language auditing · grounding · keyframe sampling · convolution · detection metrics |
 | [07-ml-dl-foundation](07-ml-dl-foundation/) *(draft)* | Classical ML · gradient boosting · leakage & split discipline · ensembling · networks from scratch |
 | [08-time-series](08-time-series/) *(draft)* | Seasonal decomposition · stationarity · ARIMA / Prophet · periodic factors · rolling-origin backtesting |
-| [09-lowcode-platforms](09-lowcode-platforms/) | Coze workflows & plugins · Dify self-hosted deployment |
+| [09-lowcode-platforms](09-lowcode-platforms/) | Workflow engines from a declarative graph · node & plugin contracts · table knowledge bases · platform API protocol |
 | [10-projects](10-projects/) | Capstones: enterprise knowledge base · ChatBI · AIOps assistant · AI search |
 
 Modules marked *(draft)* are still being revised.
@@ -105,7 +105,9 @@ ai-playground/
 ├── 08-time-series/               stationarity, ARIMA/Prophet, seasonality, changepoints
 │   ├── Time-Series-Forecasting-Baselines-and-Backtests.md   topic write-up
 │   └── 01..07_*.py               scripts
-├── 09-lowcode-platforms/         Coze workflows & plugins, Dify deployment
+├── 09-lowcode-platforms/         workflow graphs, node & plugin contracts, table retrieval, platform APIs
+│   ├── Low-Code-Platforms-What-The-Canvas-Runs.md   topic write-up
+│   └── 01..05_*.py               scripts
 └── 10-projects/                  end-to-end capstone projects
 ```
 
@@ -243,3 +245,17 @@ See [Machine-Learning-and-Deep-Learning-Foundations.md](07-ml-dl-foundation/Mach
 | 07 | `07_rolling_origin_backtest.py` | Four cut-off dates, four routes, and a submission file checked after it is written |
 
 See [Time-Series-Forecasting-Baselines-and-Backtests.md](08-time-series/Time-Series-Forecasting-Baselines-and-Backtests.md) for the concepts behind these scripts.
+
+---
+
+## Module 09 Scripts
+
+| # | Script | Feature |
+|---|--------|---------|
+| 01 | `01_workflow_engine_from_spec.py` | Three declarative graphs validated, ordered and executed, including a batch body, a selector and two sub-workflow calls |
+| 02 | `02_llm_node_output_contract.py` | A model node scored against the vocabulary the next node compares against, and the rows that vanish when it drifts |
+| 03 | `03_plugin_io_contract.py` | A plugin held to its declared schema, and what a forgiving field mapper hands downstream |
+| 04 | `04_table_knowledge_base_retrieval.py` | One table indexed two ways, and a two-condition question similarity cannot answer |
+| 05 | `05_platform_api_protocol.py` | A local server on three endpoints, blocking against streaming, and a client that guesses its way to a wrong diagnosis |
+
+See [Low-Code-Platforms-What-The-Canvas-Runs.md](09-lowcode-platforms/Low-Code-Platforms-What-The-Canvas-Runs.md) for the concepts behind these scripts.
