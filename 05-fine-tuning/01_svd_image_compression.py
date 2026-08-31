@@ -1,6 +1,7 @@
 """Rebuild a matrix from a handful of rank-1 terms using the singular value decomposition.
 
-Demonstrates the low-rank approximation that every adapter method rests on:
+Works through the low-rank approximation that adapter methods assume, and marks
+where the demonstration stops and the assumption begins:
     1. Decompose a 3x2 matrix by hand and check the numbers against scipy.
     2. Show that singular values are the square roots of the eigenvalues of A_T A.
     3. Show that singular vector signs flip in pairs, so U and V must flip together.
@@ -8,6 +9,10 @@ Demonstrates the low-rank approximation that every adapter method rests on:
     5. Rebuild the image from the top k singular values and measure the error.
     6. Count the numbers each rank costs, which is what "compression" really means.
     7. Read the singular value spectrum to decide how small k is allowed to be.
+    8. Measure that spectrum against a full-rank floor and a rank-2 ceiling, so
+       "it drops fast" is a position between two references, not an adjective.
+    9. Read a stand-in weight update the same way, to show the shape an adapter
+       assumes without pretending an image proves anything about a real one.
 
 Module 05: Fine-Tuning - Low-Rank Reconstruction.
 """
@@ -25,6 +30,13 @@ OUTPUT_DIR = Path(__file__).parent / "outputs"
 IMAGE_SIZE = 512
 RANKS = (1, 2, 5, 10, 20, 50, 100, 200)
 ENERGY_TARGETS = (0.90, 0.95, 0.99)
+ADAPTER_SIZE = 512
+# Deliberately not 8. Step 7 reports that the image needs k = 8 to reach 99
+# percent of its energy, and that 8 is a measured result; this one is an input
+# written down before the matrix exists. Two unrelated matrices sharing the
+# number reads like a finding carried over from one to the other, which is
+# exactly the connection step 9 exists to deny.
+ADAPTER_RANK = 12
 
 
 def hand_decomposition():
@@ -100,10 +112,9 @@ def render_test_image(size):
     first few terms, hard edges need mid-range terms, and fine text plus noise
     live in the long tail that truncation throws away first.
     """
-    image = Image.new("L", (size, size), color=0)
-    draw = ImageDraw.Draw(image)
-
-    # A smooth diagonal gradient background: almost pure rank-1 content.
+    # A smooth diagonal gradient background. It is an outer sum of two vectors,
+    # so its rank is exactly 2 - which is why step 8 has to report it as a
+    # ceiling rather than let it pass for ordinary image content.
     ramp = np.linspace(0, 120, size, dtype=np.float64)
     background = ramp[:, None] + ramp[None, :] * 0.6
     image = Image.fromarray(np.clip(background, 0, 255).astype(np.uint8), mode="L")
@@ -213,7 +224,75 @@ def spectrum(values, targets):
     decade = min(len(values), 200)
     decay = values[0] / values[decade - 1]
     print(f"\nSingular value 1 is {decay:.1f}x larger than singular value {decade}.")
-    print("A spectrum that drops this fast is what makes a low-rank stand-in usable.")
+    print("A spectrum that drops this fast is what makes a low-rank stand-in usable;")
+    print("step 8 puts that drop next to a floor and a ceiling, because on its own")
+    print("the number says nothing about how much of it was drawn in on purpose.")
+
+
+def baselines(image_values, size):
+    """Step 8. Place the image spectrum between a full-rank floor and a rank-2 ceiling.
+
+    "The spectrum drops fast" says nothing until something that does not drop is
+    measured beside it. Gaussian noise is full rank by construction, so it is the
+    floor. The gradient background drawn in step 4 is an outer sum, so it is
+    exactly rank 2 and is the ceiling - and it is also the largest thing inside
+    the test image, which is why the image's own numbers are flattered and have
+    to be read as a position between the two rather than as typical of a photograph.
+    """
+    rng = np.random.default_rng(11)
+    noise_values = svd(rng.normal(0.0, 1.0, (size, size)), compute_uv=False)
+
+    ramp = np.linspace(0, 120, size, dtype=np.float64)
+    background_values = svd(ramp[:, None] + ramp[None, :] * 0.6, compute_uv=False)
+
+    header = f"{'matrix':<24} {'rank':>6} {'sv1/sv200':>11} {'k=8 energy':>12} {'k=8 error':>11}"
+    print("\n" + header)
+    for label, values in (
+        ("gaussian noise (floor)", noise_values),
+        ("rendered test image", image_values),
+        ("gradient background", background_values),
+    ):
+        energy = values**2
+        share = energy[:8].sum() / energy.sum()
+        floor = values[0] * 1e-12
+        rank = int(np.count_nonzero(values > floor))
+        tail = values[min(199, len(values) - 1)]
+        # Past the true rank the tail is float residue, not a singular value, so
+        # the ratio there is a division by rounding error rather than a number.
+        ratio = f"{values[0] / tail:.1f}" if tail > floor else "exhausted"
+        print(f"{label:<24} {rank:>6d} {ratio:>11} {share:>11.2%}"
+              f" {np.sqrt(max(0.0, 1 - share)):>10.2%}")
+    print("\nThe image sits between the two, and closer to the ceiling than a photograph")
+    print("would, because the rank-2 background is the largest thing drawn into it.")
+
+
+def weight_update_spectrum(size, rank):
+    """Step 9. Read a stand-in fine-tuning update with the same accounting.
+
+    An image is low rank because neighbouring pixels resemble each other. A
+    weight update would have to be low rank for entirely different reasons, so
+    nothing measured above carries over to it on its own. This builds a matrix
+    that has the property an adapter assumes - a rank-r product plus full-rank
+    noise - and reads it the same way, which makes the assumed shape visible.
+    It is a picture of the assumption, not evidence that real updates hold it.
+    """
+    rng = np.random.default_rng(23)
+    product = rng.normal(0.0, 1.0, (size, rank)) @ rng.normal(0.0, 1.0, (rank, size))
+    product = product / np.sqrt(rank)
+    update = product + rng.normal(0.0, 0.05 * np.abs(product).mean(), (size, size))
+
+    values = svd(update, compute_uv=False)
+    cumulative = np.cumsum(values**2) / (values**2).sum()
+    print(f"\nA {size}x{size} stand-in update, built as a rank-{rank} product plus noise:")
+    print(f"  first {rank + 2} singular values: {np.round(values[:rank + 2], 2)}")
+    for k in (rank, rank + 1, size // 2):
+        share = cumulative[k - 1]
+        print(f"  k={k:<4d} energy {share:.2%}  ->  relative error"
+              f" {np.sqrt(max(0.0, 1 - share)):.2%}")
+    factored, dense, ratio = storage_numbers(size, size, rank)
+    print(f"  stored at rank {rank}: {factored} / {dense} = {ratio:.2%} of the dense update")
+    print(f"  the cliff after term {rank} is what an adapter bets on. This matrix was")
+    print("  built with that cliff, so it shows the bet - it does not settle it.")
 
 
 def save_reconstructions(array, left, values, right_t, ranks, directory):
@@ -249,6 +328,12 @@ def main():
 
     print("\n--- 7. Read the singular value spectrum ---")
     spectrum(image_values, ENERGY_TARGETS)
+
+    print("\n--- 8. The same spectrum against a floor and a ceiling ---")
+    baselines(image_values, IMAGE_SIZE)
+
+    print("\n--- 9. A stand-in weight update, read the same way ---")
+    weight_update_spectrum(ADAPTER_SIZE, ADAPTER_RANK)
 
     save_reconstructions(array, image_left, image_values, image_right_t, RANKS, OUTPUT_DIR)
 
