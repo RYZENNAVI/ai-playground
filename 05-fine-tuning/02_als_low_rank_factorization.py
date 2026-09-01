@@ -2,11 +2,11 @@
 
 Demonstrates that the same low-rank idea works when most of the matrix is missing:
     1. Build a 12x9 interaction matrix with three groups baked into it.
-    2. Confirm the hidden structure is rank 3 by looking at the singular values.
+    2. Separate the rank of the complete matrix from the rank of the observed one.
     3. Solve for user and item factors by alternating between two least squares fits.
     4. Watch the penalised objective fall while the plain error drifts upward.
     5. Score recommendations by group agreement, a check that cannot be argued with.
-    6. Compare an early-stopped fit against a converged one on that same check.
+    6. Compare an early-stopped fit against a converged one, across ten seeds.
     7. Measure how many observed cells per row a rank-3 recovery actually needs.
 
 Module 05: Fine-Tuning - Alternating Least Squares.
@@ -24,6 +24,7 @@ REGULARISATION = 0.05
 MAX_ITERATIONS = 20
 EARLY_STOP = 2
 SEED = 3407
+SEED_SWEEP = (11, 101, 404, 1234, 2024, 3407, 4242, 8080, 9001, 31337)
 
 # Three groups of users, three items per group, two interactions per user. Every
 # user touches only part of their own group, so a correct factorisation has to
@@ -57,6 +58,17 @@ def build_matrix():
     mask records which cells were actually observed. Without the mask a missing
     cell and a genuine zero look identical, and the fit would spend its capacity
     explaining zeros that nobody ever recorded.
+
+    There is no ground truth here, and steps 1 to 6 are shaped by that. The
+    data is authored as a list of interactions, not carved out of a complete
+    matrix, so the 24 observed cells carry a real value while the other 84 hold
+    a placeholder zero that nobody ever measured. Nothing in this file states
+    what u1 should score on i3. That is why step 5 has to grade with a yes/no
+    question - did the top recommendation land in the right group - instead of
+    asking how close a prediction is to a correct number. Step 7 turns this
+    around: build_synthetic generates the complete matrix first and hides part
+    of it, so every hidden cell has an answer waiting and the accuracy question
+    becomes askable. Compare the two before reading the step 7 numbers.
     """
     users = sorted({user for user, _ in INTERACTIONS})
     items = sorted({item for _, item in INTERACTIONS})
@@ -78,18 +90,54 @@ def build_matrix():
     return users, items, ratings, mask
 
 
-def inspect_rank(ratings):
-    """Step 2. Read the singular values of the filled matrix.
+def build_ideal(users, items):
+    """The matrix that would exist if every user had touched all of their group.
 
-    Treating the unobserved cells as zeros is wrong for training but useful for
-    one glance: if three singular values stand well clear of the rest, a rank-3
-    factorisation has something real to lock onto.
+    Only used for the comparison in step 2. Rows inside a group become identical
+    here, which is what makes each group contribute exactly one to the rank.
     """
+    ideal = np.zeros((len(users), len(items)))
+    for group in GROUPS.values():
+        for user in group["users"]:
+            for item in group["items"]:
+                ideal[users.index(user), items.index(item)] = 1.0
+    return ideal
+
+
+def inspect_rank(ratings, users, items):
+    """Step 2. Compare the spectrum of the observed matrix against the complete one.
+
+    The phrase "the structure is rank 3" is about the complete matrix, not the
+    one being factorised. Filling every group in makes the rows of a group
+    identical, so each group contributes exactly one to the rank and three
+    groups give rank 3 with six singular values at zero. Removing one cell per
+    row breaks that equality: the observed matrix printed in step 1 is full
+    rank, and the six values that should be zero come back as the noise floor
+    below. What survives is not a rank of 3 but an energy concentration in the
+    first three directions, which is the weaker property a factorisation can
+    still exploit.
+
+    Two cautions about the numbers. The cumulative share is computed with the
+    unobserved cells set to zero, so those placeholder zeros inflate the
+    denominator and the percentage understates the concentration; the gap
+    between the third and fourth value is the reading to trust. And none of
+    this validates the choice of RANK. The interactions were authored from
+    GROUPS, so a step in third place is the construction showing through rather
+    than a discovery, a self-check that the data came out as intended. Real
+    data rarely offers a clean step, and the rank has to be chosen by trying
+    values and comparing what they produce.
+    """
+    ideal = build_ideal(users, items)
     values = svd(ratings, compute_uv=False)
-    print(f"\nSingular values: {np.round(values, 3)}")
+    ideal_values = svd(ideal, compute_uv=False)
+    print(f"\nObserved matrix, singular values: {np.round(values, 3)}")
+    print(f"Complete matrix, singular values: {np.round(ideal_values, 3)}")
+    print(f"Rank: {np.linalg.matrix_rank(ratings)} observed, "
+          f"{np.linalg.matrix_rank(ideal)} complete, of {min(ratings.shape)} possible")
     energy = values**2
     cumulative = np.cumsum(energy) / energy.sum()
-    print(f"First three terms hold {cumulative[RANK - 1]:.2%} of the energy.")
+    print(f"First three terms hold {cumulative[RANK - 1]:.2%} of the energy, "
+          f"understated by the placeholder zeros in the denominator.")
     print(f"Gap between value {RANK} and value {RANK + 1}: "
           f"{values[RANK - 1]:.3f} vs {values[RANK]:.3f}")
 
@@ -145,6 +193,22 @@ def fit(ratings, mask, rank, iterations, regularisation, seed, verbose=True):
     the factors are kept at every iteration, so a fit stopped after two rounds
     can be scored against the same data as the converged one.
     """
+    # The model is defined here, and nowhere else. Every cell of the matrix,
+    # observed or not, is declared to be the dot product of one row of each
+    # factor table:
+    #
+    #     prediction[u, i] = user_factors[u] . item_factors[i]
+    #     whole matrix     = user_factors @ item_factors.T
+    #                        (users, rank) @ (rank, items) -> (users, items)
+    #
+    # Fixing both tables at `rank` columns is the same as declaring that the
+    # prediction matrix has rank at most `rank`, since a matrix factors into
+    # two such tables exactly when its rank fits inside them. That declaration
+    # is what makes the unobserved cells computable at all: a user's row of
+    # numbers is reused for every item, so fitting the observed cells drags the
+    # missing ones along with them. The expression below is written out again
+    # in masked_rmse, objective, recommend and held_out_error rather than
+    # shared, because each of those reads it for a different purpose.
     rng = np.random.default_rng(seed)
     item_factors = rng.normal(0.0, 0.1, (ratings.shape[1], rank))
     user_factors = np.zeros((ratings.shape[0], rank))
@@ -211,12 +275,65 @@ def score_recommendations(recommendations, label):
     return rate
 
 
+def group_agreement(user_factors, item_factors, users, items, mask):
+    """Share of users whose top unseen item belongs to their own group.
+
+    The same quantity score_recommendations prints, computed without the
+    per-user listing so it can be called once per seed.
+    """
+    scores = user_factors @ item_factors.T
+    hits = 0
+    for row, user in enumerate(users):
+        expected = GROUPS[group_of_user(user)]["items"]
+        ranked = [items[column] for column in np.argsort(-scores[row])
+                  if not mask[row, column]]
+        hits += int(ranked[0] in expected)
+    return hits / len(users)
+
+
+def early_stopping_across_seeds(ratings, mask, users, items, seeds):
+    """Step 6. Repeat the early-stopping comparison over a range of seeds.
+
+    One run shows that the round with the lowest error scored worse than the
+    last round. That is a single observation, and the round it lands on depends
+    on the random start. Repeating over seeds turns it into a rate: the column
+    below records where the error bottomed out, and whether stopping there cost
+    anything measurable on the group check.
+    """
+    print(f"\n{'seed':>8} {'lowest-RMSE round':>19} {'agreement there':>17} "
+          f"{'agreement at end':>18} {'verdict':>9}")
+    worse = 0
+    for seed in seeds:
+        snapshots, history, _ = fit(ratings, mask, RANK, MAX_ITERATIONS,
+                                    REGULARISATION, seed, verbose=False)
+        best = int(np.argmin(history)) + 1
+        early = group_agreement(*snapshots[best], users, items, mask)
+        final = group_agreement(*snapshots[MAX_ITERATIONS], users, items, mask)
+        worse += int(early < final)
+        verdict = "worse" if early < final else "no cost"
+        print(f"{seed:>8} {best:>19d} {early:>16.1%} {final:>17.1%} {verdict:>9}")
+    print(f"\nStopping at the lowest training error cost accuracy in {worse} of "
+          f"{len(seeds)} seeds.")
+    return worse
+
+
 def build_synthetic(rank, users, items, density, seed):
     """Generate a matrix of known rank, hide most of it, and keep a held-out part.
 
     Because the ground truth is generated here, the question stops being "did the
     training error go down" and becomes "did the factors reproduce cells that
     were never shown". Those two questions have different answers.
+
+    This is the first complete matrix in the file, and the difference from
+    build_matrix is worth stating plainly. There the interactions came first
+    and the matrix was assembled around them, so the unobserved cells never had
+    a value to be right or wrong about. Here `truth` is computed for all
+    users x items before anything is hidden, so a cell removed by `mask` still
+    has a known answer sitting in `truth`, and `holdout` names the subset that
+    will be graded. The larger shape is part of the same purpose: 108 cells
+    cannot support a density sweep, since sampling 3% of them leaves noise
+    rather than a trend, and the min-observations-per-row column needs enough
+    rows to range from 1 to 22.
     """
     rng = np.random.default_rng(seed)
     true_users = rng.normal(0.0, 1.0, (users, rank))
@@ -285,8 +402,8 @@ def main():
     print("--- 1. Build a sparse interaction matrix ---")
     users, items, ratings, mask = build_matrix()
 
-    print("\n--- 2. Check that the hidden structure is rank 3 ---")
-    inspect_rank(ratings)
+    print("\n--- 2. Compare the observed spectrum against the complete one ---")
+    inspect_rank(ratings, users, items)
 
     print("\n--- 3-4. Alternate the two least squares fits ---")
     snapshots, history, objectives = fit(ratings, mask, RANK, MAX_ITERATIONS,
@@ -318,6 +435,7 @@ def main():
     print("The early-stopped fit has the lower RMSE of the two and the worse")
     print("recommendations. Stopping the alternation early still prints a number,")
     print("so the group check decides the outcome and the training error does not.")
+    early_stopping_across_seeds(ratings, mask, users, items, SEED_SWEEP)
 
     print("\n--- 7. Recover a known rank-3 signal from a larger matrix ---")
     synthetic_recovery(RANK, users=300, items=120,
