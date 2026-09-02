@@ -142,14 +142,39 @@ The same decomposition prices the rank budget:
 | 64 | 92.66% | 7.34% | 196,608 |
 
 ⇒ **r = 16 keeps 85% of the update for 2.08% of the matrix.** The conventional choice of 8 or 16
-has an empirical basis, and this is it.
+has an empirical basis, and this is it — for a task of this width.
+
+### 2.4 The Same Reading as the Task Widens
+
+Those shares come from one narrow task: eight pairs of a single template, trained until the loss
+sits at 0.05. A task that narrow may concentrate the update into fewer directions than a broader
+one would, so the script measures that too. Ten short input-output tasks are defined and the tiers
+are nested prefixes of them, so moving up a tier only ever adds kinds of work. **Pool size, batch
+size, step count and learning rate are held fixed**, every tier restarts from the original
+checkpoint, and only the number of task kinds moves:
+
+| Task kinds | Final loss | 50% of energy | 90% | 99% |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.0399 | 2.1 | **20.2** | 256.0 |
+| 3 | 0.0468 | 2.6 | **25.8** | 321.9 |
+| 10 | 0.2520 | 4.1 | **37.6** | 359.1 |
+
+Seven of the eight matrices rise at every tier. **The concentration survives** — even at ten kinds
+of task, 90% of the energy still fits in about 38 of 1536 directions, roughly 2.5% — but the count
+is not a constant, and a rank read off the truncation table above is a rank for that task.
+
+**One caveat belongs with the last row.** The tiers are matched on steps, not on convergence: tiers
+1 and 3 finish at almost the same loss, so the rise between them is clean, while tier 10 ends five
+times higher and part of its rise may be that it is less converged rather than that it is broader.
+Training to equal loss instead would fix that and break the equal-step control instead; the script
+keeps equal steps and prints the loss column so the trade is visible.
 
 **One implementation note that is not cosmetic**: the script loads the model in **float32**, while
 every other script here uses bfloat16. bfloat16 carries about three decimal digits, and ΔW is far
 smaller than the weights it is added to — stored in bfloat16, the quantity being measured is partly
 rounded away. The cost is double the memory (**9.75 GB peak**), which a 1.5B model can still afford.
 
-### 2.4 The Decomposition Itself
+### 2.5 The Decomposition Itself
 
 ```
 A = U Σ Vᵀ
@@ -172,7 +197,7 @@ Any matrix is **a weighted sum of rank-1 blocks, and the weights are the singula
 ⇒ **If the singular values decay quickly, the later blocks can be dropped.** The ΔW assumption,
 image compression and rating completion are all this one identity applied to different matrices.
 
-### 2.5 A Small Case Worth Following By Hand
+### 2.6 A Small Case Worth Following By Hand
 
 `01_svd_image_compression.py` starts with a 3 × 2 matrix, small enough to check every claim:
 
@@ -210,7 +235,7 @@ sum of both terms (should equal A):
 max absolute deviation from A: 8.88e-16
 ```
 
-### 2.6 Singular Vector Signs Flip in Pairs
+### 2.7 Singular Vector Signs Flip in Pairs
 
 This is easy to get wrong and hard to notice afterwards. **Negating column j of `U` together with
 row j of `Vᵀ` leaves the product unchanged; negating only one of them silently produces a different
@@ -233,7 +258,7 @@ max absolute deviation from A: 8.88e-16
 ⇒ **Tidying the signs of a written-down decomposition to look neater breaks it**, even when every
 individual number in it is correct.
 
-### 2.7 Truncation Made Visible
+### 2.8 Truncation Made Visible
 
 The same script renders a 512 × 512 grayscale test image locally — no photograph is shipped —
 and rebuilds it from the top k terms. The drawing deliberately mixes three kinds of structure,
@@ -267,7 +292,7 @@ Same accounting on a 1000x1000 matrix, where the ratio is easy to misstate:
   k=50    100050 / 1000000  = 10.01%
 ```
 
-### 2.8 Energy Share Is a Flattering Metric
+### 2.9 Energy Share Is a Flattering Metric
 
 **The most transferable point in this chapter.** For that same image the first term alone holds
 **87.42%** of the energy, which sounds like one term is nearly enough. The k=1 rebuild has a
@@ -1299,7 +1324,7 @@ where the 10 bytes is 8 for optimiser state plus 2 for gradients.
 | :--- | :--- | ---: | ---: |
 | `01_svd_image_compression` | **CPU only** | — | ~10 s (whole script) |
 | `02_als_low_rank_factorization` | **CPU only** | — | ~30 s (whole script) |
-| `03_lora_low_rank_hypothesis` | GPU | **9.75 GB** | 40 steps (~3 min whole script) |
+| `03_lora_low_rank_hypothesis` | GPU | **9.75 GB** | **78 s / 160 steps** (4 runs of 40) |
 | `04_lora_sft_instruction_tuning` | GPU | **6.16 GB** | **26.6 s / 120 steps** |
 | `05_grpo_reward_shaping` | GPU | **7.07 GB** | **751 s / 24 steps** |
 | `06_thinking_budget_control` | GPU | **3.78 GB** | no training, ~4 min |
@@ -1464,7 +1489,7 @@ thousand clean examples plus a measurement (5.4).
 | :--- | :--- | :--- |
 | `01_svd_image_compression.py` | Decomposition by hand, singular values against eigenvalues, **paired sign flips**, rank-k reconstruction with storage accounting, **why energy share flatters** | CPU |
 | `02_als_low_rank_factorization.py` | Sparse factorisation with a mask, the penalised objective **against** the printed RMSE, early stopping scored by group agreement, **observations per row versus rank** | CPU |
-| `03_lora_low_rank_hypothesis.py` | A hand-written adapter that starts as a no-op, parameter accounting per rank, **the ΔW spectrum against two controls**, how much of an update each rank keeps, where adapters can attach | GPU |
+| `03_lora_low_rank_hypothesis.py` | A hand-written adapter that starts as a no-op, parameter accounting per rank, **the ΔW spectrum against two controls**, how much of an update each rank keeps, where adapters can attach, **how the direction count moves as the task widens** | GPU |
 | `04_lora_sft_instruction_tuning.py` | Rule-generated labels, instruction template with stop token and prompt masking, adapter attachment and trainable share, **before/after on unseen inputs**, save → reload → merge | GPU |
 | `05_grpo_reward_shaping.py` | Five reward functions, group sampling and advantage normalisation, **KL against the base via adapter disabling**, the zero-variance cold start, the large-vocabulary memory trap | GPU |
 | `06_thinking_budget_control.py` | Locating thinking delimiters, token-by-token decoding for mid-stream intervention, **capping and extending deliberation**, budget against accuracy | GPU |

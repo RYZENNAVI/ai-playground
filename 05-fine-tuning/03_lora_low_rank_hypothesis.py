@@ -8,6 +8,20 @@ Demonstrates where the rank budget of an adapter comes from:
     5. Decompose the resulting update and read off how many terms it really uses.
     6. Compare that spectrum against the frozen weight and against random noise.
     7. Truncate the update to rank r and measure how much of it survives.
+    8. Repeat the measurement as the training pool covers more kinds of task.
+
+What the measurement covers, and what it therefore does not claim. The update
+studied here comes from eight fixed pairs trained for forty steps, from the
+q_proj and v_proj of the last four layers only, in a single run. The loss ends
+at 0.05, which is closer to memorisation than to a learned skill, and a task
+that narrow may concentrate the update into fewer directions than a broader one
+would, which is what step 8 goes on to measure. The seven feed forward and
+output projections, holding most of the parameters, are never measured, and
+neither is any layer below the twenty fourth. So the reading below supports
+"the update from this kind of fine-tuning concentrates its energy in a small
+number of directions" rather than the
+unqualified "weight updates are low rank", and the rank a real task needs has
+to be established for that task.
 
 Module 05: Fine-Tuning - The Low-Rank Update Hypothesis.
 """
@@ -31,6 +45,9 @@ LEARNING_RATE = 1e-4
 MAX_LENGTH = 96
 RANKS = (1, 2, 4, 8, 16, 32, 64, 128)
 ENERGY_TARGETS = (0.5, 0.9, 0.99)
+TASK_TIERS = (1, 3, 10)
+TASK_POOL = 48
+TASK_BATCH = 8
 
 # Short, repetitive supervision. The task is not the point here; a consistent
 # gradient signal is, because the update has to come from real optimisation
@@ -142,7 +159,9 @@ def survey_projections(model, ranks):
     selections = {
         "q_proj + v_proj": ("q_proj", "v_proj"),
         "all four attention projections": ("q_proj", "k_proj", "v_proj", "o_proj"),
-        "attention and feed forward": tuple(groups.keys()),
+        # Every linear layer in the checkpoint, which includes lm_head alongside
+        # the attention and feed forward projections.
+        "every linear layer": tuple(groups.keys()),
     }
     print(f"\n{'selection':>32} {'modules':>9} " +
           " ".join(f"{f'r={rank}':>11}" for rank in ranks[:5]))
@@ -224,7 +243,8 @@ def build_batch(tokenizer, pairs, device, max_length):
             torch.tensor(labels, device=device))
 
 
-def train_full_rank(model, tokenizer, modules, device, steps, learning_rate, max_length):
+def train_full_rank(model, tokenizer, modules, device, steps, learning_rate,
+                    max_length, pairs=None, batch_size=None, verbose=True):
     """Step 4. Update the chosen projections with no rank constraint at all.
 
     Every entry of these matrices is free to move, so the update that comes out
@@ -232,6 +252,10 @@ def train_full_rank(model, tokenizer, modules, device, steps, learning_rate, max
     steeply, that decay is a property of the learning problem rather than
     something an adapter imposed - which is the only way this measurement can
     support the low-rank choice instead of assuming it.
+
+    `pairs` defaults to TRAINING_PAIRS, and `batch_size` to the whole set in one
+    batch, which is what step 4 uses. Step 8 passes a larger pool and a fixed
+    batch size so that every tier it compares sees the same number of tokens.
     """
     for parameter in model.parameters():
         parameter.requires_grad_(False)
@@ -244,25 +268,36 @@ def train_full_rank(model, tokenizer, modules, device, steps, learning_rate, max
               for name, module in modules.items()}
     trainable_count = sum(p.numel() for p in trainable)
     total = sum(p.numel() for p in model.parameters())
-    print(f"Updating {len(modules)} matrices, {trainable_count:,} parameters "
-          f"({trainable_count / total:.3%} of the model)")
+    if verbose:
+        print(f"Updating {len(modules)} matrices, {trainable_count:,} parameters "
+              f"({trainable_count / total:.3%} of the model)")
 
     optimiser = torch.optim.AdamW(trainable, lr=learning_rate)
-    input_ids, labels = build_batch(tokenizer, TRAINING_PAIRS, device, max_length)
+    all_ids, all_labels = build_batch(tokenizer, pairs or TRAINING_PAIRS, device,
+                                      max_length)
+    pool = all_ids.shape[0]
+    width = batch_size or pool
     model.train()
     first_loss = None
     for step in range(1, steps + 1):
+        start = ((step - 1) * width) % pool
+        rows = [(start + offset) % pool for offset in range(width)]
+        input_ids, labels = all_ids[rows], all_labels[rows]
         optimiser.zero_grad(set_to_none=True)
         loss = model(input_ids=input_ids, labels=labels).loss
         loss.backward()
         optimiser.step()
         if first_loss is None:
             first_loss = loss.item()
-        if step % 10 == 0 or step == 1:
+        if verbose and (step % 10 == 0 or step == 1):
             print(f"  step {step:>3d}  loss {loss.item():.4f}")
-    print(f"Loss moved {first_loss:.4f} -> {loss.item():.4f}")
-    if torch.cuda.is_available():
-        print(f"Peak VRAM reserved: {torch.cuda.max_memory_reserved() / 1e9:.2f} GB")
+    final_loss = loss.item()
+    if verbose:
+        print(f"Loss moved {first_loss:.4f} -> {final_loss:.4f}")
+        if torch.cuda.is_available():
+            print(f"Peak VRAM reserved: "
+                  f"{torch.cuda.max_memory_reserved() / 1e9:.2f} GB")
+    train_full_rank.final_loss = final_loss
 
     updates = {name: (module.weight.detach() - before[name]).float().cpu()
                for name, module in modules.items()}
@@ -326,6 +361,180 @@ def inspect_updates(updates, weights, targets, ranks):
         kept = 1 - (torch.linalg.norm(update - approximation) / total_norm) ** 2
         params = rank * (update.shape[0] + update.shape[1])
         print(f"{rank:>6} {kept:>8.2%} {1 - kept:>8.2%} {params:>16,}")
+    print("These shares belong to an update trained on one narrow task. Step 8")
+    print("repeats the reading as the training pool widens, and the count of")
+    print("directions moves with it, so a rank read off this table is a rank for")
+    print("this task rather than a constant.")
+
+
+# Ten short input-output tasks used by step 8. The tiers it compares are nested
+# prefixes of this tuple, so moving from one tier to the next only adds kinds of
+# work and never swaps one out.
+CAPITALS = (("France", "Paris"), ("Japan", "Tokyo"), ("Brazil", "Brasilia"),
+            ("Egypt", "Cairo"), ("Norway", "Oslo"), ("Chile", "Santiago"))
+ANTONYMS = (("increase", "decrease"), ("wide", "narrow"), ("early", "late"),
+            ("heavy", "light"), ("open", "closed"), ("strong", "weak"))
+PAST_TENSE = (("run", "ran"), ("write", "wrote"), ("bring", "brought"),
+              ("keep", "kept"), ("send", "sent"), ("teach", "taught"))
+CATEGORIES = (("sparrow", "bird"), ("salmon", "fish"), ("beetle", "insect"),
+              ("otter", "mammal"), ("gecko", "reptile"), ("toad", "amphibian"))
+WORDS = ("banana", "engine", "cactus", "rocket", "planet", "silver")
+SENTIMENTS = (("The service was terrible.", "negative"),
+              ("The parcel arrived early.", "positive"),
+              ("The seat would not recline.", "negative"),
+              ("The room was spotless.", "positive"),
+              ("The call was cut off twice.", "negative"),
+              ("The refund cleared the same day.", "positive"))
+DISTANCES = (3, 7, 12, 25, 40, 60)
+
+
+def task_risk(count):
+    pairs = []
+    for index in range(count):
+        age = 18 + (index * 7) % 48
+        claims = index % 5
+        if claims >= 3 or (age < 25 and claims >= 1):
+            level = "high"
+        elif claims >= 1:
+            level = "elevated"
+        else:
+            level = "low"
+        pairs.append((f"Summarise the risk: driver aged {age}, {claims} claims.",
+                      f"Risk level: {level}."))
+    return pairs
+
+
+def task_sum(count):
+    pairs = []
+    for index in range(count):
+        left = 11 + (index * 13) % 80
+        right = 3 + (index * 7) % 40
+        pairs.append((f"Add: {left} and {right}.", f"Result: {left + right}."))
+    return pairs
+
+
+def task_larger(count):
+    pairs = []
+    for index in range(count):
+        left = 17 + (index * 23) % 80
+        right = 9 + (index * 31) % 80
+        right = right + 1 if right == left else right
+        pairs.append((f"Larger: {left} or {right}.", f"Larger: {max(left, right)}."))
+    return pairs
+
+
+def cycle_pairs(table, count, prompt, answer):
+    return [(prompt.format(*table[index % len(table)]),
+             answer.format(*table[index % len(table)]))
+            for index in range(count)]
+
+
+def task_capital(count):
+    return cycle_pairs(CAPITALS, count, "Capital: {0}.", "Capital: {1}.")
+
+
+def task_antonym(count):
+    return cycle_pairs(ANTONYMS, count, "Opposite: {0}.", "Opposite: {1}.")
+
+
+def task_past(count):
+    return cycle_pairs(PAST_TENSE, count, "Past tense: {0}.", "Past tense: {1}.")
+
+
+def task_category(count):
+    return cycle_pairs(CATEGORIES, count, "Category: {0}.", "Category: {1}.")
+
+
+def task_letters(count):
+    return [(f"Letters: {WORDS[index % len(WORDS)]}.",
+             f"Letters: {len(WORDS[index % len(WORDS)])}.")
+            for index in range(count)]
+
+
+def task_sentiment(count):
+    return cycle_pairs(SENTIMENTS, count, "Sentiment: {0}", "Sentiment: {1}.")
+
+
+def task_metres(count):
+    return [(f"Convert: {DISTANCES[index % len(DISTANCES)]} kilometres to metres.",
+             f"Result: {DISTANCES[index % len(DISTANCES)] * 1000} metres.")
+            for index in range(count)]
+
+
+TASK_BUILDERS = (task_risk, task_sum, task_larger, task_capital, task_antonym,
+                 task_past, task_category, task_letters, task_sentiment,
+                 task_metres)
+
+
+def build_task_pool(kinds, size):
+    """Draw `size` examples spread evenly over the first `kinds` task builders."""
+    per_kind = -(-size // kinds)
+    columns = [TASK_BUILDERS[index](per_kind) for index in range(kinds)]
+    pool = [column[row] for row in range(per_kind) for column in columns]
+    return tuple(pool[:size])
+
+
+def rank_versus_task_variety(model, tokenizer, modules, baseline, device, tiers,
+                             pool_size, steps, batch_size, learning_rate,
+                             max_length, targets):
+    """Step 8. Vary how many kinds of task the update has to serve, nothing else.
+
+    The scope note at the top of this file says the reading in steps 5 to 7 comes
+    from a single narrow task, and that a task that narrow may concentrate the
+    update into fewer directions than a broad one would. This measures that.
+    Pool size, batch size, step count and learning rate are all held fixed, so
+    every tier sees the same number of tokens and takes the same number of
+    gradient steps; the tiers are nested prefixes of TASK_BUILDERS, so moving up
+    a tier only adds kinds of work. The weights are restored from a snapshot
+    before every tier, since otherwise the second run would start from the first
+    run's update rather than from the checkpoint. `baseline` is the snapshot step
+    4 took before it trained, so every tier starts from the original checkpoint
+    and not from step 4's result - which matters because the first tier trains on
+    the same task step 4 already used.
+
+    One thing the fixed step count does not equalise is how far each tier gets:
+    the final losses printed below are not the same, so a tier that needs more
+    directions may need them because the work is broader or because it is less
+    converged. Reading the loss column alongside the direction columns is part of
+    reading the table.
+
+    The outcome is not assumed. A flat curve would say the concentration belongs
+    to fine-tuning itself and would strengthen the case for a small rank; a
+    rising curve would say the rank a task needs has to be established for that
+    task. Either reading is a result.
+    """
+    originals = {name: tensor.to(device) for name, tensor in baseline.items()}
+    short = [name.replace("self_attn.", "").replace("layer", "l")
+                 .replace("_proj", "") for name in modules]
+    print(f"Pool held at {pool_size} examples, batch at {batch_size}, "
+          f"{steps} steps, lr {learning_rate}.")
+    print("\n" + f"{'task kinds':>11} {'final loss':>11} " +
+          " ".join(f"{f'{target:.0%} mean':>10}" for target in targets))
+    detail = []
+    for kinds in tiers:
+        with torch.no_grad():
+            for name, module in modules.items():
+                module.weight.copy_(originals[name])
+        pool = build_task_pool(kinds, pool_size)
+        updates, _ = train_full_rank(model, tokenizer, modules, device, steps,
+                                     learning_rate, max_length, pairs=pool,
+                                     batch_size=batch_size, verbose=False)
+        needed = {target: [] for target in targets}
+        for update in updates.values():
+            _, counts = spectrum_summary(update, targets)
+            for target in targets:
+                needed[target].append(counts[target])
+        print(f"{kinds:>11d} {train_full_rank.final_loss:>11.4f} " +
+              " ".join(f"{sum(needed[t]) / len(needed[t]):>10.1f}" for t in targets))
+        detail.append((kinds, needed[0.9]))
+    with torch.no_grad():
+        for name, module in modules.items():
+            module.weight.copy_(originals[name])
+
+    print("\n" + "Directions needed for 90% of the energy, per matrix:")
+    print(f"{'task kinds':>11} " + " ".join(f"{label:>8}" for label in short))
+    for kinds, counts in detail:
+        print(f"{kinds:>11d} " + " ".join(f"{count:>8d}" for count in counts))
 
 
 def main():
@@ -348,6 +557,11 @@ def main():
 
     print("\n--- 5. Decompose the update and read its effective rank ---")
     inspect_updates(updates, weights, ENERGY_TARGETS, RANKS)
+
+    print("\n--- 8. Vary how many kinds of task the update has to serve ---")
+    rank_versus_task_variety(model, tokenizer, modules, weights, device,
+                             TASK_TIERS, TASK_POOL, STEPS, TASK_BATCH,
+                             LEARNING_RATE, MAX_LENGTH, ENERGY_TARGETS)
 
 
 if __name__ == "__main__":
