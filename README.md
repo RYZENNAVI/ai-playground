@@ -192,7 +192,7 @@ See [Agent-Systems-Loops-Protocols-and-Topologies.md](04-agents/Agent-Systems-Lo
 | 01 | `01_svd_image_compression.py` | Rank-k reconstruction, paired sign flips, storage accounting, and why energy share flatters |
 | 02 | `02_als_low_rank_factorization.py` | Alternating least squares on a masked matrix — the penalised objective against the printed error |
 | 03 | `03_lora_low_rank_hypothesis.py` | An unconstrained weight update, decomposed and compared against the frozen weight and noise, then re-measured as the task widens |
-| 04 | `04_lora_sft_instruction_tuning.py` | Supervised tuning end to end — rule-made labels, prompt masking, save, reload, merge |
+| 04 | `04_lora_sft_instruction_tuning.py` | Supervised tuning end to end — rule-made labels, prompt masking, scored against a prompted-rule baseline, save, reload, merge |
 | 05 | `05_grpo_reward_shaping.py` | Group-relative policy optimisation by hand — five rewards, advantages, KL against the base |
 | 06 | `06_thinking_budget_control.py` | Capping and extending a reasoning model's deliberation at decode time, without training |
 | 07 | `07_vision_lora_gauge_reading.py` | A vision-language adapter on rendered panels, scored field by field |

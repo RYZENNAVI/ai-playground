@@ -5,7 +5,7 @@ Demonstrates supervised fine-tuning end to end on one machine:
     2. Wrap every example in an instruction template and terminate it properly.
     3. Mask the prompt tokens out of the loss and count what remains supervised.
     4. Attach a low-rank adapter and report how little of the model is trainable.
-    5. Score the untouched base model, which supplies the before number.
+    5. Score the base model twice, on the instruction alone and with the rule given.
     6. Train, then score again on inputs the model never saw during training.
     7. Save the adapter, reload it onto a fresh base, and merge it into the weights.
 
@@ -39,7 +39,12 @@ BATCH_SIZE = 4
 LEARNING_RATE = 2e-4
 MAX_LENGTH = 128
 MAX_NEW_TOKENS = 24
-EVAL_CASES = 24
+# Sixty rather than a couple of dozen, because score() prints a per-tier
+# breakdown and the rule makes tier A the rarest branch: at 24 cases only two of
+# them are tier A, so that column reads 2/2 or 1/2 and carries no weight. Sixty
+# puts roughly nine cases in the thinnest tier, enough for the breakdown to mean
+# what it claims to mean.
+EVAL_CASES = 60
 SEED = 3407
 
 INSTRUCTION = (
@@ -53,6 +58,27 @@ TEMPLATE = (
     "the request.\n\n### Instruction:\n{instruction}\n\n### Input:\n{input}\n\n"
     "### Response:\n"
 )
+
+# The same rule classify() applies, written out for a human reader. Step 5 scores
+# the base model with and without it, because a rule this small fits in a prompt
+# and prompting is the cheaper option a person would reach for first. Reporting
+# only the instruction-only number would credit the adapter with the part of the
+# gain that simply came from stating the rule.
+# The wording matters more than it looks. Three phrasings were compared on the
+# same sixty cases: this operator form (29 exact), a prose version (0 exact) and
+# this form with "output only that one line" appended (23 exact). The prose
+# version actually names the right tier slightly more often, 33 against 29, but
+# it never stops cleanly, so every answer trails an explanation and none of them
+# match exactly; the no-explanation version drops schema compliance to 45 of 60.
+# The strongest of the three is kept here, because a baseline is only worth
+# reporting if it is the best the cheaper method can do.
+RULE_HINT = (
+    " Use exactly this rule: if age < 25 or claims >= 3 then TIER C and ACTION "
+    "decline; else if claims == 0 and age >= 30 then TIER A and ACTION accept; "
+    "otherwise TIER B and ACTION refer."
+)
+
+PROMPTED_INSTRUCTION = INSTRUCTION + RULE_HINT
 
 ACTIONS = {"A": "accept", "B": "refer", "C": "decline"}
 
@@ -213,12 +239,19 @@ def attach_adapter(model, rank, alpha, dropout, target_modules):
     return adapted
 
 
-def generate(model, tokenizer, records, device, max_new_tokens):
-    """Answer every evaluation input with greedy decoding."""
+def generate(model, tokenizer, records, device, max_new_tokens,
+             instruction=INSTRUCTION):
+    """Answer every evaluation input with greedy decoding.
+
+    Greedy rather than sampled, so the same model and the same input always
+    produce the same line and the before and after numbers can be compared.
+    `instruction` defaults to the plain task description; step 5 also calls this
+    with PROMPTED_INSTRUCTION to measure what prompting alone can reach.
+    """
     model.eval()
     answers = []
     for record in records:
-        prompt = TEMPLATE.format(instruction=INSTRUCTION, input=record["input"])
+        prompt = TEMPLATE.format(instruction=instruction, input=record["input"])
         inputs = tokenizer(prompt, return_tensors="pt").to(device)
         with torch.no_grad():
             output = model.generate(
@@ -368,9 +401,14 @@ def main():
     print("\n--- 2-3. Render one example and mask the prompt out of the loss ---")
     report_masking(tokenizer, training[0], MAX_LENGTH)
 
-    print("\n--- 5. Score the untouched base model first ---")
+    print("\n--- 5. Score the untouched base model, with and without the rule ---")
     base_answers = generate(base, tokenizer, evaluation, device, MAX_NEW_TOKENS)
-    base_schema, base_exact = score(evaluation, base_answers, "Base model, before training:")
+    base_schema, base_exact = score(evaluation, base_answers,
+                                    "Base model, instruction only:")
+    prompted_answers = generate(base, tokenizer, evaluation, device, MAX_NEW_TOKENS,
+                                instruction=PROMPTED_INSTRUCTION)
+    prompted_schema, prompted_exact = score(evaluation, prompted_answers,
+                                            "Base model, rule written into the prompt:")
 
     print("\n--- 4. Attach the adapter ---")
     model = attach_adapter(base, RANK, ALPHA, DROPOUT, TARGET_MODULES)
@@ -381,8 +419,16 @@ def main():
     tuned_answers = generate(model, tokenizer, evaluation, device, MAX_NEW_TOKENS)
     tuned_schema, tuned_exact = score(evaluation, tuned_answers, "Adapted model, after training:")
 
-    print(f"\nSchema compliance {base_schema:.1%} -> {tuned_schema:.1%}")
-    print(f"Exact correctness {base_exact:.1%} -> {tuned_exact:.1%}")
+    print(f"\n{'setting':>40} {'schema':>8} {'exact':>8}")
+    print(f"{'base, instruction only':>40} {base_schema:>7.1%} {base_exact:>7.1%}")
+    print(f"{'base, rule written into the prompt':>40} "
+          f"{prompted_schema:>7.1%} {prompted_exact:>7.1%}")
+    print(f"{'adapter, rule learned from examples':>40} "
+          f"{tuned_schema:>7.1%} {tuned_exact:>7.1%}")
+    print("The middle row is the part of the gain that costs nothing to obtain:")
+    print("the rule is three lines, so a prompt can carry it. What the adapter adds")
+    print("on top is the part prompting did not reach, and it is the honest figure")
+    print("for what the training bought.")
 
     print("\n--- 7. Save, reload, and merge the adapter ---")
     save_reload_merge(model, tokenizer, evaluation, device, ADAPTER_DIR, dtype,

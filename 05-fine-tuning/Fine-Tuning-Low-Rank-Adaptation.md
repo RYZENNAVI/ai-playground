@@ -676,8 +676,8 @@ training, a high score would only prove memorisation and the comparison would sa
 whether the rule was learned.
 
 ```
-Training examples: 516, evaluation examples: 24
-Tier distribution in training: {'A': 82, 'B': 182, 'C': 252}
+Training examples: 480, evaluation examples: 60
+Tier distribution in training: {'A': 77, 'B': 168, 'C': 235}
 Two training examples as the model sees them:
   input : age=22; claims=3; vehicle_value=15000
   output: TIER: C | ACTION: decline
@@ -814,20 +814,42 @@ batches and update once.
 
 ### 7.2 Measuring the Base Model First
 
-The base is scored **before** the adapter is attached, on the same 24 held-out inputs:
+The base is scored **before** the adapter is attached, on the same 60 held-out inputs, and it is
+scored **twice**. The first pass gives it the task description only:
 
 ```
-Base model, before training:
-  answers in the required shape: 3/24 (12.5%)
-  answers exactly correct:       0/24 (0.0%)
-  correct by expected tier:      A: 0/2  B: 0/10  C: 0/12
+Base model, instruction only:
+  answers in the required shape: 7/60 (11.7%)
+  answers exactly correct:       0/60 (0.0%)
+  correct by expected tier:      A: 0/7  B: 0/24  C: 0/29
     input    age=54; claims=1; vehicle_value=30000
     expected TIER: B | ACTION: refer
     produced 'TIER: C | ACTION: refer  Wait, but the input has age=54, which is a specific'
-    input    age=22; claims=2; vehicle_value=8000
-    expected TIER: C | ACTION: decline
-    produced 'tier: A | action: refer  The correct answer is tier: A | action: refer.  The correct answe'
 ```
+
+**That number alone would overstate what training buys.** The rule is three lines, so a prompt can
+carry it, and prompting is the cheaper thing a person tries first. The second pass writes the rule
+into the instruction and changes nothing else:
+
+```
+Base model, rule written into the prompt:
+  answers in the required shape: 60/60 (100.0%)
+  answers exactly correct:       29/60 (48.3%)
+  correct by expected tier:      A: 0/7  B: 0/24  C: 29/29
+```
+
+Format compliance goes straight to 100%: most of the rambling was the model working out an answer
+it had no way to know. Correctness reaches 48.3% — **but the per-tier column shows what that number
+really is.** Every tier C case is right and every A and B case is wrong, so the model is answering
+C to everything and collecting the half of the set that happens to be tier C. It has not applied the
+rule at all.
+
+The wording of that second prompt matters more than it looks. Three phrasings were compared on the
+same cases: the operator form kept here, a prose version, and the operator form with "output only
+that line" appended. The prose version reasons slightly better but never stops cleanly, so it scores
+zero on exact matching; the no-explanation version is worse on both counts. **A baseline is only
+worth reporting if it is the best the cheaper method can do**, so the strongest of the three is the
+one in the script.
 
 **Without that baseline the after number means nothing** — there would be no way to tell whether an
 accuracy came from the training or was there all along.
@@ -842,28 +864,41 @@ Schema compliance and correctness are tracked separately on purpose:
 
 ```
   step   1  loss 1.6288  mean of last 1 1.6288
-  step  40  loss 0.1108  mean of last 20 0.1178
-  step 120  loss 0.0563  mean of last 20 0.0321
-Loss: 1.6288 -> 0.0432 (mean of the last ten steps)
-Wall clock: 26.7 s for 120 steps (222 ms per step)
-Peak VRAM reserved: 6.16 GB
+  step  40  loss 0.1200  mean of last 20 0.1209
+  step 120  loss 0.0069  mean of last 20 0.0479
+Loss: 1.4920 -> 0.0351 (mean of the last ten steps)
+Wall clock: 18.1 s for 120 steps (151 ms per step)
+Peak VRAM reserved: 6.13 GB
 
 Adapted model, after training:
-  answers in the required shape: 24/24 (100.0%)
-  answers exactly correct:       22/24 (91.7%)
-  correct by expected tier:      A: 2/2  B: 10/10  C: 10/12
+  answers in the required shape: 60/60 (100.0%)
+  answers exactly correct:       47/60 (78.3%)
+  correct by expected tier:      A: 7/7  B: 13/24  C: 27/29
     input    age=54; claims=1; vehicle_value=30000
     expected TIER: B | ACTION: refer
     produced 'TIER: B | ACTION: refer'
 
-Schema compliance 12.5% -> 100.0%
-Exact correctness 0.0% -> 91.7%
+                                 setting   schema    exact
+                  base, instruction only   11.7%    0.0%
+      base, rule written into the prompt  100.0%   48.3%
+     adapter, rule learned from examples  100.0%   78.3%
 ```
 
-**The per-tier breakdown is what makes the residual error actionable.** A single 91.7% could mean
-small errors everywhere or one whole branch missed; here tiers A and B are perfect and the two
-misses are both tier C, near the age boundary the rule turns on. Those are different problems with
-different fixes.
+**Read the middle row before the last one.** Stating the rule costs nothing and already buys 48.3%,
+so the figure for what training bought is **48.3% to 78.3%, thirty points**, not the eighty the
+first and last rows would suggest. And since the middle row earns its 48.3% by answering C to
+everything, even thirty points understates the gap in how the two actually behave.
+
+**The per-tier breakdown is what makes the residual error actionable.** A single 78.3% could mean
+small errors everywhere or one branch missed; here tier A is perfect, tier C is nearly so, and
+**tier B is 13 of 24**. Tier B is the branch defined by exclusion — neither C nor A — and it is the
+one the adapter learned least well. That is a different problem from scattered noise and calls for
+a different fix.
+
+**This is also what a larger evaluation set is for.** An earlier version of this script held out 24
+cases instead of 60. On that set the same training scored 91.7% with tiers A and B both perfect,
+because tier A had two cases in it and tier B had ten. The weakness in tier B was not absent; the
+sample was too small to show it.
 
 ### 7.4 A Number That Changes Between Runs Cannot Be Quoted
 
@@ -877,7 +912,7 @@ data seed. **Adapter dropout draws from the global torch generator**, which was 
 torch.manual_seed(SEED)
 ```
 
-With the seed set, the run reproduces **91.7%** exactly. **Reproducibility is a precondition for
+With the seed set, the run reproduces its number exactly. **Reproducibility is a precondition for
 reporting, not a nicety.**
 
 ### 7.5 Save, Reload, Merge
@@ -1325,7 +1360,7 @@ where the 10 bytes is 8 for optimiser state plus 2 for gradients.
 | `01_svd_image_compression` | **CPU only** | — | ~10 s (whole script) |
 | `02_als_low_rank_factorization` | **CPU only** | — | ~30 s (whole script) |
 | `03_lora_low_rank_hypothesis` | GPU | **9.75 GB** | **78 s / 160 steps** (4 runs of 40) |
-| `04_lora_sft_instruction_tuning` | GPU | **6.16 GB** | **26.6 s / 120 steps** |
+| `04_lora_sft_instruction_tuning` | GPU | **6.13 GB** | **18 s / 120 steps** (~2 min 50 s whole script, 180 generations) |
 | `05_grpo_reward_shaping` | GPU | **7.07 GB** | **751 s / 24 steps** |
 | `06_thinking_budget_control` | GPU | **3.78 GB** | no training, ~4 min |
 | `07_vision_lora_gauge_reading` | GPU | **4.43 GB** | **303.5 s / 150 steps** |
@@ -1379,7 +1414,7 @@ test set, then check general ability and generalisation, then inspect samples by
 > **Scoring the base model is the step most often skipped.** Without that baseline the adapted
 > score has no meaning — there is no way to tell what the training contributed.
 
-Scripts 04, 05 and 07 all follow it: the 12.5%, 0.0% and 0/16 baselines in this document are
+Scripts 04, 05 and 07 all follow it: the 11.7%, 0.0% and 0/16 baselines in this document are
 measured, not assumed.
 
 ### 12.3 Four Rules Earned the Hard Way
@@ -1388,7 +1423,7 @@ Each of these corresponds to a specific failure inside this module:
 
 **1. The criterion must be decidable, not impressionistic.**
 Script 04's labels come from a rule; script 07's images are rendered from their labels. Neither
-"91.7% correct" nor "16/16 odometers" requires anyone's opinion.
+"78.3% correct" nor "16/16 odometers" requires anyone's opinion.
 
 **2. Count the two kinds of failure separately.**
 Script 04 tracks schema compliance apart from correctness, because a right answer buried in prose
@@ -1490,7 +1525,7 @@ thousand clean examples plus a measurement (5.4).
 | `01_svd_image_compression.py` | Decomposition by hand, singular values against eigenvalues, **paired sign flips**, rank-k reconstruction with storage accounting, **why energy share flatters** | CPU |
 | `02_als_low_rank_factorization.py` | Sparse factorisation with a mask, the penalised objective **against** the printed RMSE, early stopping scored by group agreement, **observations per row versus rank** | CPU |
 | `03_lora_low_rank_hypothesis.py` | A hand-written adapter that starts as a no-op, parameter accounting per rank, **the ΔW spectrum against two controls**, how much of an update each rank keeps, where adapters can attach, **how the direction count moves as the task widens** | GPU |
-| `04_lora_sft_instruction_tuning.py` | Rule-generated labels, instruction template with stop token and prompt masking, adapter attachment and trainable share, **before/after on unseen inputs**, save → reload → merge | GPU |
+| `04_lora_sft_instruction_tuning.py` | Rule-generated labels, instruction template with stop token and prompt masking, adapter attachment and trainable share, **the adapter against a prompted-rule baseline on unseen inputs**, save → reload → merge | GPU |
 | `05_grpo_reward_shaping.py` | Five reward functions, group sampling and advantage normalisation, **KL against the base via adapter disabling**, the zero-variance cold start, the large-vocabulary memory trap | GPU |
 | `06_thinking_budget_control.py` | Locating thinking delimiters, token-by-token decoding for mid-stream intervention, **capping and extending deliberation**, budget against accuracy | GPU |
 | `07_vision_lora_gauge_reading.py` | Images rendered from labels, two-tower survey and adapter pricing, image-aware prompt masking, **per-field scoring**, full before/after | GPU |
