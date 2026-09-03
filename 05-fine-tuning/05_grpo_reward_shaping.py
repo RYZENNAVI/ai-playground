@@ -333,18 +333,34 @@ def evaluate(model, tokenizer, problems, device, max_new_tokens, label, show=2):
             )
         completion = PREFILL + tokenizer.decode(
             output[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+        is_correct = extract_answer(completion) == str(problem["answer"])
         shaped += int(bool(SOFT_PATTERN.search(completion)))
-        correct += int(extract_answer(completion) == str(problem["answer"]))
-        samples.append((problem, completion))
+        correct += int(is_correct)
+        samples.append((problem, completion, is_correct))
 
     print(f"\n{label}")
     print(f"  answers holding the tag structure: {shaped}/{len(problems)} "
           f"({shaped / len(problems):.1%})")
     print(f"  answers with the right integer:    {correct}/{len(problems)} "
           f"({correct / len(problems):.1%})")
-    for problem, completion in samples[:show]:
-        collapsed = " ".join(completion.split())[:160]
-        print(f"    expected {problem['answer']}, produced {collapsed!r}")
+    # Pick one right and one wrong answer rather than the first two by
+    # position: a fixed positional slice can land on the same two problems
+    # every call and, if those happen to be unaffected by training, the
+    # printed excerpt would show no change even when the headline numbers do.
+    right = [item for item in samples if item[2]]
+    wrong = [item for item in samples if not item[2]]
+    picked = (right[:1] + wrong[:1]) if right and wrong else samples[:show]
+    for problem, completion, _ in picked[:show]:
+        collapsed = " ".join(completion.split())
+        # A head-only cut can end before the <answer> tag: the reasoning
+        # alone often runs past 160 characters, so the printed excerpt would
+        # never show the part that right/wrong actually hinges on.
+        if "<answer>" in collapsed:
+            head, _, tail = collapsed.partition("<answer>")
+            shown = f"{head[:80]}...<answer>{tail[:60]}"
+        else:
+            shown = collapsed[:160]
+        print(f"    expected {problem['answer']}, produced {shown!r}")
     return shaped / len(problems), correct / len(problems)
 
 
@@ -426,7 +442,7 @@ def main():
         detail = ", ".join(f"{name} {value:.3f}" for name, value in parts.items())
         print(f"  {label:>22}: total {total:.3f}  ({detail})")
 
-    print("\n--- 3. Load the policy and attach the adapter ---")
+    print("\n--- Load the policy and attach the adapter ---")
     model, tokenizer, device = load_policy(MODEL_ID, CACHE_DIR, RANK, ALPHA,
                                            TARGET_MODULES)
     print(f"[Device] {torch.cuda.get_device_name(0) if device == 'cuda' else 'CPU'}")
