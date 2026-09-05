@@ -349,10 +349,12 @@ def evaluate(model, processor, records, device, max_new_tokens, label, show=3):
             output[:, batch["input_ids"].shape[1]:], skip_special_tokens=True)[0]
         parsed = parse_fields(completion)
         shaped += int(parsed is not None)
+        is_correct = parsed is not None and all(
+            parsed[field] == record[field] for field in fields)
         if parsed:
             for field in fields:
                 hits[field] += int(parsed[field] == record[field])
-        samples.append((record, completion.strip(), parsed))
+        samples.append((record, completion.strip(), is_correct))
 
     count = len(records)
     print(f"\n{label}")
@@ -360,7 +362,14 @@ def evaluate(model, processor, records, device, max_new_tokens, label, show=3):
     for field in fields:
         print(f"  {field:>7} correct: {hits[field]:>3}/{count} "
               f"({hits[field] / count:.1%})")
-    for record, completion, parsed in samples[:show]:
+    # Pick one fully-correct and up to show-1 wrong records rather than the
+    # first `show` by position: a fixed positional slice can land on the same
+    # records every call, and if those happen to be unaffected by training the
+    # printed excerpt would show no change even when the headline numbers do.
+    right = [item for item in samples if item[2]]
+    wrong = [item for item in samples if not item[2]]
+    picked = (right[:1] + wrong[:show - 1]) if right and wrong else samples[:show]
+    for record, completion, _ in picked[:show]:
         print(f"    expected {record['target']}")
         print(f"    produced {' '.join(completion.split())[:110]!r}")
     return shaped / count, {field: hits[field] / count for field in fields}

@@ -16,7 +16,7 @@ so switching vendors is a matter of changing `base_url`.
 | [02-rag](02-rag/) | Embeddings · vector databases · RAG pipelines · rerank · query rewrite · GraphRAG |
 | [03-text2sql](03-text2sql/) | Natural language to SQL · schema prompting · SQL agents · query safety · result evaluation |
 | [04-agents](04-agents/) | Chain orchestration · ReAct agents · MCP / A2A · LangGraph architectures |
-| [05-fine-tuning](05-fine-tuning/) *(draft)* | Low-rank adaptation · supervised fine-tuning · reward-driven training · vision adapters |
+| [05-fine-tuning](05-fine-tuning/) | Low-rank adaptation · supervised fine-tuning · reward-driven training · vision adapters |
 | [06-multimodal-vision](06-multimodal-vision/) *(draft)* | Vision-language auditing · grounding · keyframe sampling · convolution · detection metrics |
 | [07-ml-dl-foundation](07-ml-dl-foundation/) *(draft)* | Classical ML · gradient boosting · leakage & split discipline · ensembling · networks from scratch |
 | [08-time-series](08-time-series/) *(draft)* | Seasonal decomposition · stationarity · ARIMA / Prophet · periodic factors · rolling-origin backtesting |
