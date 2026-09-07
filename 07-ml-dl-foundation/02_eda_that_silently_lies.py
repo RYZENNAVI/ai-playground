@@ -48,8 +48,9 @@ def compare_the_usual_checks(correct, collapsed):
     print(f"    price mean            {correct['price'].mean():.2f} against "
           f"{collapsed['price'].mean():.2f}")
     print("    no exception raised by either read")
-    print("    The price means are not identical, but nothing about a 13 unit gap")
-    print("    on a 12000 unit average asks to be investigated.")
+    gap = abs(correct["price"].mean() - collapsed["price"].mean())
+    print(f"    The price means are not identical, but nothing about a {gap:.0f} unit gap")
+    print(f"    on a {correct['price'].mean():.0f} unit average asks to be investigated.")
 
 
 def compare_a_falsifiable_check(correct, collapsed):
@@ -78,11 +79,12 @@ def show_the_mechanism(path, correct, collapsed):
 
     columns = ["body_type", "fuel_type", "gearbox", "power", "odometer_km",
                "undamaged_flag", "region_code"]
-    header = "    " + "".join(f"{c:>14}" for c in columns)
+    width = max(len(c) for c in columns) + 2
+    header = "    " + "".join(f"{c:>{width}}" for c in columns)
     print(header)
-    print("    " + "".join(f"{str(correct.loc[index, c]):>14}" for c in columns)
+    print("    " + "".join(f"{str(correct.loc[index, c]):>{width}}" for c in columns)
           + "   one space")
-    print("    " + "".join(f"{str(collapsed.loc[index, c]):>14}" for c in columns)
+    print("    " + "".join(f"{str(collapsed.loc[index, c]):>{width}}" for c in columns)
           + "   whitespace run")
     print("\n    The empty field is not read as missing, it is not read at all.")
     print("    Every column to its right slides one place left, all the way to price.")
@@ -107,8 +109,12 @@ def count_the_damage(correct, collapsed):
     for column in columns:
         print(f"    {column:<14}{int(correct[column].isna().sum()):>12}"
               f"{int(collapsed[column].isna().sum()):>16}")
-    print("\n    The shift runs to the end of the row, so under the wrong read the")
-    print("    gaps land in the last column. That column is price, the label.")
+    last = correct.columns[-1]
+    two_holes = int(total_correct - moved)
+    print(f"\n    The shift runs to the end of the row, so under the wrong read a row")
+    print(f"    with one hole loses its {last} - the label. The {two_holes} rows that")
+    print(f"    carry two holes shift twice and lose {correct.columns[-2]} instead, which")
+    print("    is why the wrong read spreads its gaps over the last two columns.")
 
 
 def profile_the_correct_frame(correct):
