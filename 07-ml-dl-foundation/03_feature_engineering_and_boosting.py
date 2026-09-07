@@ -28,7 +28,7 @@ SEED = 20260824
 VALIDATION_FRACTION = 0.1
 
 CATEGORICAL = ["brand", "model_code", "body_type", "fuel_type", "gearbox",
-               "damage_flag", "region_code", "seller", "offer_type", "age_segment"]
+               "undamaged_flag", "region_code", "seller", "offer_type", "age_segment"]
 NUMERIC_FOR_FLAGS = (["power", "odometer_km"] + [f"v_{i}" for i in range(15)])
 
 # The bins the age segment is usually cut with. The left edge is the point of
@@ -260,7 +260,7 @@ def main():
     for name, value in top.items():
         print(f"    {name:<26}{value:>12.3f}")
     paid = {"v_0", "v_1", "v_2", "v_3", "v_4", "power", "odometer_km",
-            "gearbox", "damage_flag", "brand", "vehicle_age_days",
+            "gearbox", "undamaged_flag", "brand", "vehicle_age_days",
             "vehicle_age_years", "brand_price_mean", "brand_price_median"}
     hits = [name for name in top.index if name in paid]
     print(f"\n    of the twelve strongest, {len(hits)} trace back to a term in the")

@@ -25,7 +25,7 @@ LISTINGS = DATA / "vehicle_listings.csv"
 # What the file is known to contain, from the generator in script 01. These are
 # the checks that can fail; row counts and column counts cannot.
 EXPECTED_GEARBOX_VALUES = 2
-EXPECTED_DAMAGE_VALUES = 2
+EXPECTED_UNDAMAGED_VALUES = 2
 EXPECTED_OFFER_TYPE_VALUES = 1
 # v_0 to v_4 were paid into the price; v_5 to v_14 are noise columns.
 PRICED_LATENTS = 5
@@ -56,7 +56,7 @@ def compare_a_falsifiable_check(correct, collapsed):
     """Print counts that have a known right answer, where the two reads split."""
     rows = [
         ("gearbox", EXPECTED_GEARBOX_VALUES),
-        ("damage_flag", EXPECTED_DAMAGE_VALUES),
+        ("undamaged_flag", EXPECTED_UNDAMAGED_VALUES),
         ("offer_type", EXPECTED_OFFER_TYPE_VALUES),
     ]
     print(f"    {'column':<14}{'expected':>10}{'one space':>12}{'whitespace run':>16}")
@@ -77,7 +77,7 @@ def show_the_mechanism(path, correct, collapsed):
           f"{len(raw.split())} on a whitespace run\n")
 
     columns = ["body_type", "fuel_type", "gearbox", "power", "odometer_km",
-               "damage_flag", "region_code"]
+               "undamaged_flag", "region_code"]
     header = "    " + "".join(f"{c:>14}" for c in columns)
     print(header)
     print("    " + "".join(f"{str(correct.loc[index, c]):>14}" for c in columns)

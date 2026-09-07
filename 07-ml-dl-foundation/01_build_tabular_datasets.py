@@ -99,7 +99,7 @@ def make_vehicles(rng, rows, first_id):
     body_type = rng.integers(0, 8, rows).astype(float)
     fuel_type = rng.integers(0, 7, rows).astype(float)
     gearbox = rng.integers(0, 2, rows).astype(float)
-    damage_flag = rng.integers(0, 2, rows)
+    undamaged_flag = rng.integers(0, 2, rows)
     region_code = rng.integers(1, 4000, rows)
     seller = (rng.random(rows) < 0.002).astype(int)
     offer_type = np.zeros(rows, dtype=int)
@@ -119,7 +119,7 @@ def make_vehicles(rng, rows, first_id):
     price = price + POWER_COEFFICIENT * np.clip(power, 0, 400)
     price = price + ODOMETER_COEFFICIENT * odometer_km
     price = price + GEARBOX_AUTOMATIC_BONUS * gearbox
-    price = price * np.where(damage_flag == 0, DAMAGE_PENALTY, 1.0)
+    price = price * np.where(undamaged_flag == 0, DAMAGE_PENALTY, 1.0)
     for i, weight in enumerate(LATENT_WEIGHTS):
         price = price + weight * latent[:, i]
     price = price + rng.normal(0, NOISE_SIGMA, rows)
@@ -136,7 +136,7 @@ def make_vehicles(rng, rows, first_id):
         "gearbox": gearbox,
         "power": power,
         "odometer_km": odometer_km,
-        "damage_flag": damage_flag,
+        "undamaged_flag": undamaged_flag,
         "region_code": region_code,
         "seller": seller,
         "offer_type": offer_type,
@@ -421,7 +421,7 @@ def main():
     print(f"    power                  {POWER_COEFFICIENT:+.0f} per unit, capped at 400")
     print(f"    odometer_km            {ODOMETER_COEFFICIENT:+.0f} per unit")
     print(f"    automatic gearbox      {GEARBOX_AUTOMATIC_BONUS:+.0f}")
-    print(f"    damage_flag == 0       x{DAMAGE_PENALTY}")
+    print(f"    undamaged_flag == 0    x{DAMAGE_PENALTY}, so a damaged car is the cheaper one")
     print(f"    v_0 to v_4 weights     {LATENT_WEIGHTS}")
     print(f"    v_5 to v_14            no effect at all, they are noise columns")
     print(f"    residual noise sigma   {NOISE_SIGMA:.0f}")

@@ -38,7 +38,7 @@ ENCODING_KEYS = [
     ("region_code x brand", lambda f: f["region_code"] * 100 + f["brand"]),
 ]
 
-BASE_FEATURES = ["brand", "model_code", "power", "odometer_km", "damage_flag",
+BASE_FEATURES = ["brand", "model_code", "power", "odometer_km", "undamaged_flag",
                  "gearbox", "vehicle_age_years"] + [f"v_{i}" for i in range(15)]
 SCALE_SENSITIVE_FEATURES = ["power", "odometer_km", "vehicle_age_years",
                             "v_0", "v_1", "v_2", "v_3", "v_4"]

@@ -26,7 +26,7 @@ HOLDOUT = DATA / "vehicle_holdout.csv"
 SEED = 20260824
 FOLDS = 4
 
-FEATURES = ["brand", "model_code", "power", "odometer_km", "damage_flag",
+FEATURES = ["brand", "model_code", "power", "odometer_km", "undamaged_flag",
             "gearbox", "body_type", "fuel_type", "vehicle_age_years",
             "km_per_year"] + [f"v_{i}" for i in range(15)]
 NEIGHBOUR_FEATURES = ["power", "odometer_km", "vehicle_age_years",
