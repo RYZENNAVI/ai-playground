@@ -4,9 +4,9 @@ Demonstrates how to settle the question by measurement rather than by intuition:
     1. Synthesise a 32x32 dataset whose classes differ only in a distance of a few pixels.
     2. Trace a 224-shaped stem stage by stage and watch the feature map reach 1x1.
     3. Work out how many cells each separation survives as.
-    4. Build a network sized for the input instead, and compare the parameter counts.
-    5. Train both on the same images and time them.
-    6. Score both, and name the cost the numbers actually support.
+    4. Build a network sized for the input, and one deliberately below it.
+    5. Train all three on the same images and time them.
+    6. Score all three, and name the cost the numbers actually support.
 
 Module 06: Multimodal Vision - Input Resolution and Network Design.
 """
@@ -95,6 +95,28 @@ class SizedForInput(nn.Module):
             nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
         )
         self.head = nn.Linear(64 * 4 * 4, num_classes)
+
+    def forward(self, x):
+        x = self.features(x)
+        return self.head(x.flatten(1))
+
+
+class TooSmall(nn.Module):
+    """The same kind of network with far too little of it.
+
+    One convolution of two channels, then a single pool that throws away most of
+    the resolution at once. Architecture family, optimiser, data and schedule all
+    match SizedForInput, so capacity is the only thing that differs. Without this
+    arm the comparison only shows that the oversized model is expensive; it never
+    shows that the size was chosen rather than merely survived.
+    """
+
+    def __init__(self, num_classes):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(1, 2, 3, padding=1), nn.ReLU(), nn.MaxPool2d(8),
+        )
+        self.head = nn.Linear(2 * 4 * 4, num_classes)
 
     def forward(self, x):
         x = self.features(x)
@@ -224,32 +246,35 @@ def main():
           f"{large_trace[1][1]}x{large_trace[1][1]} cells to work with")
 
     print()
-    print("--- 4. A network sized for the input it is given ---")
+    print("--- 4. A network sized for the input it is given, and one below it ---")
     sized = SizedForInput(len(CLASSES))
-    designed_params = sum(p.numel() for p in designed.parameters())
-    sized_params = sum(p.numel() for p in sized.parameters())
-    print(f"{'ResNet-50':<14}{designed_params:>12,} parameters")
-    print(f"{'SizedForInput':<14}{sized_params:>12,} parameters "
-          f"({designed_params / sized_params:.0f}x fewer)")
+    starved = TooSmall(len(CLASSES))
+    arms = (("ResNet-50", designed), ("SizedForInput", sized), ("TooSmall", starved))
+    counts = {name: sum(p.numel() for p in model.parameters()) for name, model in arms}
+    for name, _ in arms:
+        print(f"{name:<14}{counts[name]:>12,} parameters")
+    print(f"  the oversized arm carries {counts['ResNet-50'] / counts['SizedForInput']:.0f}x "
+          f"the parameters of the sized one, the starved arm "
+          f"{counts['SizedForInput'] / counts['TooSmall']:.0f}x fewer")
     with torch.no_grad():
         sized_map = sized.features(torch.zeros(1, 1, IMAGE_SIZE, IMAGE_SIZE)).shape[-1]
     print(f"  its last feature map is {sized_map}x{sized_map}, not "
           f"{small_trace[-1][1]}x{small_trace[-1][1]}")
 
     print()
-    print("--- 5. Training both on the same images ---")
+    print("--- 5. Training all three on the same images ---")
     seconds = {}
-    for name, model in (("ResNet-50", designed), ("SizedForInput", sized)):
+    for name, model in arms:
         history, elapsed = train(model, train_x, train_y)
         seconds[name] = elapsed
         shown = "  ".join(f"{value:.3f}" for value in history[::3] + history[-1:])
         print(f"{name:<14} {elapsed:>6.1f}s   loss every third epoch: {shown}")
-    print("  both loops finish, and neither raises anything")
+    print("  every loop finishes, and none of them raises anything")
 
     print()
-    print("--- 6. Scoring both on the held-out images ---")
+    print("--- 6. Scoring all three on the held-out images ---")
     results = {}
-    for name, model in (("ResNet-50", designed), ("SizedForInput", sized)):
+    for name, model in arms:
         overall, per_class = evaluate(model, test_x, test_y)
         results[name] = overall
         detail = "  ".join(f"{cls}={score:.2f}" for cls, score in per_class.items())
@@ -261,9 +286,13 @@ def main():
     print(f"  the mismatch did NOT hide the fine detail. The stem samples at stride 2, but "
           f"each of its kernels still spans 7 input pixels, so a {SEPARATIONS[0]}-pixel gap "
           f"survives in the channel values even once the map has gone coarse")
-    print(f"  what it cost is measurable elsewhere: {designed_params / sized_params:.0f}x the "
+    print(f"  what it cost is measurable elsewhere: "
+          f"{counts['ResNet-50'] / counts['SizedForInput']:.0f}x the "
           f"parameters and {seconds['ResNet-50'] / seconds['SizedForInput']:.1f}x the training "
           f"time, for {results['ResNet-50']:.1%} against {results['SizedForInput']:.1%}")
+    print(f"  the starved arm is what says the size was chosen rather than merely survived: "
+          f"{results['TooSmall']:.1%} on the same images, against "
+          f"{results['SizedForInput']:.1%} and a chance rate of {1 / len(CLASSES):.0%}")
     print(f"  and the last feature map is {small_trace[-1][1]}x{small_trace[-1][1]}, so the "
           f"pooling that follows averages a single cell - nothing downstream can ask where")
     print("  'it cannot see the detail' was the intuition; the run says otherwise, and the "

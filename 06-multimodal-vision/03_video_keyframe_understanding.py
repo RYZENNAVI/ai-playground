@@ -273,7 +273,7 @@ def main():
     print(f"  the window is what a stride guarantees; the error in any one run is wherever "
           f"the samples happened to fall inside it")
     print(f"  stride {COARSER_STRIDES[-1]} lands closer here than stride {COARSER_STRIDES[-2]} "
-          f"does, on a third of the calls - which is luck, not a reason to sample less")
+          f"does, on fewer calls - which is luck, not a reason to sample less")
     print()
     print("this reads each frame on its own and stitches the answers together afterwards; "
           "a model built for video sees the frames together, which is how motion, order and "

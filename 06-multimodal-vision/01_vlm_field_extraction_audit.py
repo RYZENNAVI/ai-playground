@@ -46,7 +46,7 @@ FIELDS = (
 # and an extractor gets wrong in a way that still looks like a valid answer.
 TRAPS = {
     "policy_number": "characters that share a shape: the letter I against the digit 1",
-    "vehicle_model": "a badge whose last character decides the model",
+    "vehicle_model": "a small badge with the real code, next to a bigger trim/engine label with its own digits",
     "severity": "three boxes, one of them ticked",
     "driver_name": "a field blacked out on the page",
     "road_surface": "a field left blank, with a filled neighbour to borrow from",
@@ -165,7 +165,18 @@ def render_form(language):
         return y
 
     row(0, "policy_number", TRUTH["policy_number"])
-    row(1, "vehicle_model", f"Audi {TRUTH['vehicle_model']} Avant")
+
+    # The model code sits on a small badge; the trim/engine text beside it is
+    # more prominent and carries its own digits. A reader who grabs the
+    # biggest number on the line gets the trim, not the model.
+    y = row(1, "vehicle_model", None)
+    draw.text((left + 300, y + 2), "Avant quattro 45 TFSI", font=value_font, fill=(15, 15, 15))
+    badge_font = load_font(12, bold=True)
+    badge_box = [left + 300, y + 26, left + 344, y + 42]
+    draw.rounded_rectangle(badge_box, radius=3, fill=(196, 200, 206),
+                           outline=(120, 124, 130), width=1)
+    draw.text((left + 306, y + 27), TRUTH["vehicle_model"], font=badge_font, fill=(40, 42, 46))
+
     row(2, "claim_amount", "1,240.50 EUR")
 
     # The driver's name is on the form and covered over, which is not the same as

@@ -396,6 +396,9 @@ def main():
 
     print(f"  image kept in the history: {tally['kept']}/{len(probes)} correct; "
           f"dropped from it: {tally['dropped']}/{len(probes)}")
+    print("  status is one of three values, so a blind guess lands on it about a third of "
+          "the time; a hit there without the image is weaker evidence than a hit on gate, "
+          "time or airline, which have far more possible values")
     print("  the image does not have to ride on the newest message, but it does have to "
           "still be on one of them")
     print("  a transcript stored as plain strings loses it silently, and the next answer "

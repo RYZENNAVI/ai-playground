@@ -38,7 +38,7 @@ TINY_IMAGE = np.array(
     dtype=np.float32,
 )
 
-# A plus-shaped kernel: it scores highest where the window is dense in the centre
+# An X-shaped kernel: it scores highest where the window is dense in the centre
 # and on the corners, which is exactly what the diagonal band produces.
 TINY_KERNEL = np.array(
     [
@@ -190,6 +190,12 @@ def main():
     )
     print(f"  vertical dark-to-light edge at column {edge_column}")
     print(f"  horizontal dark-to-light edge at row {edge_row}")
+    # Saved alongside the feature maps: without the input to compare them
+    # against, a folder of response maps says nothing about what responded.
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    input_path = OUT_DIR / "0_input.png"
+    Image.fromarray((image * 255).astype(np.uint8)).save(input_path)
+    print(f"  saved the input itself to {input_path.name}, next to the maps below")
 
     print()
     print("--- 4. Four kernels, four directions ---")
