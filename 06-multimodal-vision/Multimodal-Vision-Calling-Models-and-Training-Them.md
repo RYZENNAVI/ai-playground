@@ -58,7 +58,7 @@ Six fields, five of which carry a deliberate trap:
 ```python
 TRAPS = {
     "policy_number": "characters that share a shape: the letter I against the digit 1",
-    "vehicle_model": "a badge whose last character decides the model",
+    "vehicle_model": "a small badge with the real code, next to a bigger trim/engine label with its own digits",
     "severity": "three boxes, one of them ticked",
     "driver_name": "a field blacked out on the page",
     "road_surface": "a field left blank, with a filled neighbour to borrow from",
@@ -69,8 +69,10 @@ Each trap is something a person reads correctly and an extractor gets wrong in a
 that still looks like an answer:
 
 - **`policy_number`** is `IF-4821-77` — a capital I where a digit 1 would sit.
-- **`vehicle_model`** is printed inside `Audi A6 Avant`; only the last character
-  separates it from a different model.
+- **`vehicle_model`** is `A6`, printed on a small chrome badge. The line beside it
+  reads `Avant quattro 45 TFSI` in a larger, bolder face and carries its own digits.
+  **An extractor that grabs the biggest number on the line gets the trim, not the
+  model.**
 - **`severity`** is not written anywhere. Three boxes are drawn and one is filled.
   The answer is carried by which box is dark.
 - **`driver_name`** is covered by a black bar. **Redacted is not the same as empty**,
@@ -113,23 +115,37 @@ value is still there, and a person still reads all six.
 
 | Condition | Score |
 | :--- | :--- |
-| Clean render, three languages | **18/18 fields — 100%** |
+| Clean render, three languages | **15/18 fields — 83%** |
 | Photograph of the same three pages | **15/18 fields — 83%** |
 
-The three failures are the same field, in all three languages:
+The two conditions score the same and fail on **different fields**, three times each,
+in all three languages:
 
 ```
+english   render  vehicle_model    wanted 'A6', got 'AVANT QUATTRO 45 TFSI'
+french    render  vehicle_model    wanted 'A6', got 'AVANT QUATTRO 45 TFSI'
+german    render  vehicle_model    wanted 'A6', got 'AVANT QUATTRO 45 TFSI'
+
 english   photo   road_surface     wanted 'BLANK', got 'RAIN'
 french    photo   road_surface     wanted 'BLANK', got 'RAIN'
 german    photo   road_surface     wanted 'BLANK', got 'RAIN'
 ```
 
-The empty field was filled in from its neighbour. Under a clean render the model
-answered `BLANK` correctly every time; blur and compression were enough to make the
-adjacent value migrate one row up.
+**On the clean page the model reads the wrong text.** The model code sits on a small
+badge; the trim line beside it is larger and carries its own digits, and the answer
+that comes back is the trim. Nothing was degraded — the page is pristine, and the
+extractor still took the more prominent string.
 
-Everything else held: the shape-ambiguous policy number, the badge character, the
-ticked box and the redaction all survived both conditions.
+**On the photograph the model fills in an empty field from its neighbour.** Blur and
+compression were enough to make `Weather: Rain` migrate one row up into the blank
+`road_surface`. Under the clean render it answered `BLANK` correctly every time.
+
+Everything else held in both conditions: the shape-ambiguous policy number, the ticked
+box, the redaction and the amount.
+
+> ⇒ **An overall score of 83% twice over would suggest the two conditions are equally
+> hard. They are not — they are failing at different things**, which is only visible
+> because the score is broken out by field.
 
 ### The taxonomy
 
@@ -308,7 +324,7 @@ The same twelve answers, re-read at wider strides — no extra calls:
 
 **The window is what a stride guarantees; the error in any one run is wherever the
 samples happened to fall inside it.** Stride 40 lands closer here than stride 30 does,
-on a third of the calls — which is luck, not a reason to sample less.
+on fewer calls — which is luck, not a reason to sample less.
 
 ### What this is not
 
@@ -399,9 +415,13 @@ Slicing by recovered heading gives **19 chunks for 6 sections**:
 One chunk silently absorbs two other sections. Another is headed by a single letter.
 Fifteen more carry five words or fewer.
 
-**The check that catches all of this is one line: recovered heading count against the
-count the document is known to have.** Reading the markdown and finding it fluent
-catches none of it.
+**The check that catches every heading failure above is one line: recovered heading
+count against the count the document is known to have.** Reading the markdown and
+finding it fluent catches none of it.
+
+It does not catch everything, and the script says so: the reading order is read
+correctly here and scrambled only by the sorted pass in step 3, which the heading
+count cannot see. **That one needs its own check.**
 
 ---
 
@@ -477,8 +497,24 @@ makes a kernel directional rather than merely edge-sensitive.
 | relu | (1, 4, 157, 157) | [0.00, 6.75] |
 | pool | (1, 4, 78, 78) | [0.00, 6.75] |
 
-The activation zeroed **26.2%** of cells, every one of them an edge running the wrong
-way for its kernel. Pooling kept **25%** of the cells.
+The activation zeroed **2.3%** of cells (2,226 of 98,596), every one of them an edge
+running the wrong way for its kernel. Pooling kept **25%** of the cells.
+
+**That count needs a tolerance, and the tolerance is the whole point.** A kernel whose
+weights sum to zero answers a flat region with zero — but only to within floating
+point. The transposed kernels accumulate in a different order and leave a residue
+around 1e-7, and most of this image is flat, so counting every value below zero scores
+that residue as signal:
+
+```
+negative cells, counted as < 0        25,789   (26.2%)
+  of those, |value| < 1e-6            23,563   (91.4%)  <- rounding in flat regions
+negative cells, counted as < -1e-6     2,226    (2.3%)  <- actual edges
+```
+
+**91% of the naive count is not an edge at all.** The script reports the 2.3% and
+prints the residue separately, because the sentence after the number — *every one of
+them an edge running the wrong way* — is only true of the smaller figure.
 
 ### Where the kernels actually fired
 
@@ -548,17 +584,26 @@ covers 4 input pixels — and a 3-pixel gap is inside one cell.
 
 That reads like a proof that the fine detail is gone. It is not.
 
-### Two networks, same data
+### Three networks, same data
 
 | | Parameters | Training time | Accuracy |
 | :--- | ---: | ---: | ---: |
-| ResNet-50 | 23,509,956 | 11.9 s | 96.7% – 99.8% |
-| SizedForInput | 27,396 | 0.9 s | 100.0% |
+| ResNet-50 | 23,509,956 | 12 – 32 s | 96.7% – 99.8% |
+| SizedForInput | 27,396 | 1 – 3 s | 100.0% |
+| TooSmall | 152 | 1 – 2 s | **27.3%** |
 
-(Two runs are quoted for the larger network because this loop is not bit-for-bit
-deterministic on GPU; the smaller one reached 100% in both.)
+(Ranges are quoted because this loop is not bit-for-bit deterministic on GPU and the
+wall clock moves with the machine's power state. `SizedForInput` reached 100% in every
+run and `TooSmall` 27.3% in every run.)
 
-Chance is 25%. Both loops finish and neither raises anything.
+Chance is 25%. Every loop finishes and none of them raises anything.
+
+**`TooSmall` is the arm that makes the comparison mean something.** It is the same kind
+of network — one convolution, one pool, one linear head — with two channels instead of
+sixteen and a single pool that throws away most of the resolution at once. Its loss
+barely moves across twelve epochs (1.392 → 1.386) and it lands **2.3 points above
+chance**. Without it, the run only shows that the oversized model is expensive; with it,
+the run shows that the size was **chosen** rather than merely survived.
 
 ### The result, stated as the numbers support it
 
@@ -568,7 +613,7 @@ Chance is 25%. Both loops finish and neither raises anything.
 
 What the mismatch actually cost is measurable elsewhere:
 
-- **858× the parameters** and **12–13× the training time**, for the same accuracy
+- **858× the parameters** and roughly **10× the training time**, for the same accuracy
 - **a 1×1 final feature map**, so the pooling that follows averages a single cell —
   nothing downstream can ask *where*
 
@@ -685,8 +730,9 @@ column with a constant that looked harmless.
 
 ## What the seven runs settle
 
-1. **A reply that parses is not a result.** Script 01 scored 100% on clean renders and
-   83% on photographs of the same pages, with the same JSON shape in both.
+1. **A reply that parses is not a result.** Script 01 scored 83% on clean renders and
+   83% on photographs of the same pages — the same JSON shape in both, the same
+   headline number, and a different field failing in each.
 2. **Name the kind of mistake, not just the count.** Each of the four kinds in script
    01 has a different fix; a single accuracy number points at none of them.
 3. **Coordinates come with an unstated convention.** Script 02 read the same four

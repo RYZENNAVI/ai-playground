@@ -1072,7 +1072,7 @@ The four tables:
 | `power` | **+41 per unit**, capped at 400 |
 | `odometer_km` | **−430 per unit** |
 | `gearbox` automatic | **+1 900** |
-| `damage_flag == 0` | **× 0.82** |
+| `undamaged_flag == 0` | **× 0.82** — the flag is 1 for an undamaged car, so the penalty falls on the damaged half |
 | `v_0` … `v_4` | weights **2600, −1800, 1200, 900, −650** |
 | **`v_5` … `v_14`** | **no effect at all — pure noise columns** |
 | Residual noise | **σ = 900** |
@@ -1089,7 +1089,7 @@ Two consequences are used repeatedly:
 
 ```
 listing_id  reg_date  list_date  brand  model_code  body_type  fuel_type  gearbox
-power  odometer_km  damage_flag  region_code  seller  offer_type
+power  odometer_km  undamaged_flag  region_code  seller  offer_type
 v_0 … v_14  price
 ```
 
@@ -1098,7 +1098,7 @@ v_0 … v_14  price
 | Numeric | `power`, `odometer_km` | Outlier treatment, scaling for distance models |
 | Categorical | `brand`, `model_code`, `body_type`, `fuel_type`, `gearbox`, `region_code` | Encoding |
 | Temporal | `reg_date`, `list_date` | Parse, then derive age and calendar parts |
-| Binary | `damage_flag`, `seller`, `offer_type` | `offer_type` is constant by construction |
+| Binary | `undamaged_flag`, `seller`, `offer_type` | `offer_type` is constant by construction |
 | Anonymous | `v_0` … `v_14` | Unknown meaning; five of them are real |
 
 ### 6.4 The classification tables are generated the same way
@@ -1167,7 +1167,7 @@ collapsed = pd.read_csv(path, sep=r"\s+")     # a run of whitespace is one separ
 | Column | Should have | `sep=" "` | `sep=r"\s+"` |
 | :--- | ---: | ---: | ---: |
 | `gearbox` | **2** | **2** | **264** |
-| `damage_flag` | **2** | **2** | **1484** |
+| `undamaged_flag` | **2** | **2** | **1484** |
 | `offer_type` | **1** | **1** | **1844** |
 
 **A gearbox is manual or automatic. A reading that finds 264 kinds has not found a
@@ -1180,9 +1180,9 @@ Split on a run of whitespace and **it is not there at all** — so from that gap
 **every column shifts one place left**:
 
 ```
-                 body_type  fuel_type   gearbox     power  odometer_km  damage_flag  region_code
-one space              2.0        4.0       nan       155         12.9            0         1833
-whitespace run         2.0        4.0     155.0      12.9          0.0         1833            0
+                body_type  fuel_type  gearbox  power  odometer_km  undamaged_flag  region_code
+one space             2.0        4.0      nan    155         12.9               0         1833
+whitespace run        2.0        4.0    155.0   12.9          0.0            1833            0
 ```
 
 The engine power became the gearbox. The odometer became the power.
@@ -1317,7 +1317,7 @@ The twenty-one never used:
 | `brand_price_median` | 7.475 | restatement of the brand tier |
 | **`brand`** | 6.302 | **yes** |
 | `brand_price_std` | 4.997 | restatement of the brand tier |
-| **`damage_flag`** | 4.889 | **yes** (× 0.82) |
+| **`undamaged_flag`** | 4.889 | **yes** (× 0.82) |
 | **`odometer_km`** | 4.488 | **yes** (−430) |
 | `brand_price_mean` | 3.990 | restatement of the brand tier |
 | **`v_2`** | 3.788 | **yes** (1200) |
@@ -1421,7 +1421,7 @@ The last row runs on a different model; only its **gap** is comparable with the 
 ### 9.6 Three conclusions
 
 **Leakage usually damages the report, not the model.** For the scaler, the duplicates and
-the two mild encodings, the holdout column barely moves. **The leak did not build a better
+the three milder encodings, the holdout column barely moves. **The leak did not build a better
 model; it built a better report about the same model — and the report is what gets acted
 on.**
 
@@ -1671,8 +1671,8 @@ the boosted models is only 0.2454.
 
 **And the honest size of the win is 0.25%.**
 The best combination beats the best single model by **2.13 MAE**. Four models, a fold loop
-and a meta model, for a quarter of a percent — **and two of the six combinations came out
-worse than doing nothing.**
+and a meta model, for a quarter of a percent — **and three of the five combinations came
+out worse than doing nothing.**
 
 > ⇒ **Before adding a model to a blend, the question is not how good it is. It is how
 > differently it is wrong — and that is a number, not a judgement.**
