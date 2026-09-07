@@ -33,6 +33,15 @@ TRUNCATED_TO = 20
 FORECAST_MONTHS = 4
 SEASONAL_PERIOD = 12
 
+# The seasonal grid searched in step 3. Named here rather than written inline
+# because step 2 needs the longest memory it can ask for, which is the largest
+# p plus the largest q, and that number should come from the grid rather than
+# from a sentence that has to be kept in step with it.
+GRID_P = range(5)
+GRID_D = range(2)
+GRID_Q = range(4)
+LONGEST_MEMORY = max(GRID_P) + max(GRID_Q)
+
 
 def load_inputs() -> tuple[pd.Series, pd.Series, pd.DataFrame, dict]:
     """Read the ARMA series, the monthly retail table, the cash flow and the truth file."""
@@ -142,12 +151,13 @@ def main() -> None:
         rel = series.std() / series.mean()
         step = series.diff().abs().max() / series.mean()
         print(f"  {name:<9} {len(series):>7}  {rel:>9.3f}  {step:>13.3f}")
-    print("  the yearly series has 30 points: too few to fit anything with a memory of 7")
+    print(f"  the yearly series has {len(scales['year'])} points: too few to fit anything "
+          f"with a memory of {LONGEST_MEMORY}")
     print("  aggregating is not free smoothing, it deletes the cycles shorter than "
           "the new step")
 
     print("\n--- 3. Search a seasonal grid on the monthly table and forecast forward ---")
-    full_grid = [(p, d, q) for p, d, q in product(range(5), range(2), range(4))]
+    full_grid = [(p, d, q) for p, d, q in product(GRID_P, GRID_D, GRID_Q)]
     retail_table = search_orders(retail, full_grid,
                                  seasonal=(1, 0, 1, SEASONAL_PERIOD))
     best_order = tuple(retail_table.loc[0, "order"])

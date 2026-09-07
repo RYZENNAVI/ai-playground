@@ -26,6 +26,8 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 WRONG_PERIODS = [60, 288, 500]
+# Above this correlation with the planted cycle, a decomposition is called a match.
+TRACKING_CORRELATION = 0.9
 ALPHA = 0.05
 
 POWER_TRIALS = 300
@@ -161,13 +163,24 @@ def main() -> None:
           f"{'remainder sd':>13}")
     print(f"  {period:>8}  {corr:>+16.4f}  {amp:>15.4f}  "
           f"{np.log(resid).std():>13.5f}")
+    tracking = {period: corr}
     for wrong in WRONG_PERIODS:
         alt = seasonal_decompose(index, model="multiplicative", period=wrong)
         alt_corr, alt_amp = score_seasonal(np.log(alt.seasonal), planted)
         alt_resid = np.log(alt.resid.dropna())
+        tracking[wrong] = alt_corr
         print(f"  {wrong:>8}  {alt_corr:>+16.4f}  {alt_amp:>15.4f}  "
               f"{alt_resid.std():>13.5f}")
-    print("  every run returned a seasonal component; only one of them tracks the cycle")
+    # Counted rather than stated: a period that is a whole multiple of the real
+    # one recovers the same cycle, so the number that track it is not always one.
+    close = sorted(p for p, c in tracking.items() if c > TRACKING_CORRELATION)
+    multiples = [p for p in close if p != period and p % period == 0]
+    print(f"  every run returned a seasonal component; {len(close)} of {len(tracking)} "
+          f"track the cycle above {TRACKING_CORRELATION}: {close}")
+    if multiples:
+        print(f"  {multiples} are whole multiples of {period}, and a multiple spans the "
+              f"real cycle a whole number of times, so it fits it just as well")
+        print("  correlation alone does not say the period is the shortest one that works")
 
     print("\n--- 3. The same split, computed robustly ---")
     stl = STL(np.log(index), period=period, robust=True).fit()
