@@ -221,11 +221,22 @@ def main():
 
     print()
     print("--- 6. What each stage did to the numbers ---")
-    negatives = int((convolved < 0).sum())
+    # A flat region answers with zero, but only to within floating point: the
+    # transposed kernels accumulate in a different order and leave a residue
+    # around 1e-7. Counting every value below zero would score that residue as
+    # signal, and most of the map is flat, so the tolerance is what makes the
+    # sentence after the count true.
+    tolerance = 1e-6
+    negatives = int((convolved < -tolerance).sum())
+    residue = int(((convolved < 0) & (convolved >= -tolerance)).sum())
     total = convolved.numel()
     print(
         f"activation zeroed {negatives}/{total} cells ({negatives / total:.1%}), "
         f"every one of them an edge running the wrong way for its kernel"
+    )
+    print(
+        f"  a further {residue} cells sit below zero by less than {tolerance:g}, which is "
+        f"rounding in a flat region rather than an edge, and is not counted above"
     )
     print(
         f"pooling cut {tuple(activated.shape[-2:])} down to {tuple(pooled.shape[-2:])}, "

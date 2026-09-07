@@ -342,8 +342,10 @@ def main():
     print(f"  the remaining {len(chunks) - len(substantial)} chunks carry five words or fewer, "
           f"one per character of the shattered heading")
     print()
-    print("the check that catches all of this is one line: recovered heading count against "
-          "the count the document is known to have")
+    print("the check that catches every heading failure above is one line: recovered "
+          "heading count against the count the document is known to have")
+    print("it does not catch the reading order, which is read correctly here and scrambled "
+          "only by the sorted pass in step 3 - that one needs its own check")
     print("=" * 78)
 
 

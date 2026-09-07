@@ -451,7 +451,7 @@ def main():
     before_shape, before_correct = evaluate(
         model, tokenizer, evaluation, device, MAX_NEW_TOKENS, "Before training:")
 
-    print("\n--- 4-6. Sample groups, centre the rewards, update the adapter ---")
+    print("\n--- 3-6. Sample groups, centre the rewards, update the adapter ---")
     train(model, tokenizer, training, device, STEPS, PROMPTS_PER_STEP, GROUP_SIZE,
           LEARNING_RATE, KL_COEFFICIENT, MAX_NEW_TOKENS, TEMPERATURE, TOP_P, SEED)
 

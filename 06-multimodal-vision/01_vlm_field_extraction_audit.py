@@ -105,6 +105,11 @@ TRUTH = {
 # would score the model on its vocabulary rather than on which box it saw.
 TICKED = 1
 
+# The value printed in the row under road_surface. It is named here rather than
+# written inline so that classify() can check whether a wrong road_surface answer
+# was actually borrowed from it, instead of asserting that it was.
+NEIGHBOUR_VALUE = "Rain"
+
 PROMPT = (
     "This image is a motor insurance claim form. Extract exactly these fields and "
     "return one JSON object with these keys and no others: "
@@ -190,7 +195,7 @@ def render_form(language):
     y = row(4, "road_surface", None)
     draw.text((left + 300, y + 2), "", font=value_font, fill=(15, 15, 15))
     draw.text((left, y + 26), labels["weather"], font=label_font, fill=(90, 90, 90))
-    draw.text((left + 300, y + 24), "Rain", font=value_font, fill=(15, 15, 15))
+    draw.text((left + 300, y + 24), NEIGHBOUR_VALUE, font=value_font, fill=(15, 15, 15))
 
     # Three boxes, one ticked. Nothing is written next to the ticked box, so the
     # answer is carried by which box is filled and not by any text.
@@ -315,16 +320,26 @@ def normalise(field, value):
     return text.upper()
 
 
-def classify(field, expected, got):
-    """Name the kind of mistake, using the trap that field was built around."""
+def classify(field, expected, got, language):
+    """Name the kind of mistake, checking the trap rather than assuming it.
+
+    Naming the trap a field was built around is not the same as showing that the
+    trap is what fired. Every branch below that names a mechanism tests for it
+    first, and falls through to a plainer label when the test does not hold.
+    """
     if got == "NULL":
         return "dropped"
     if field == "driver_name":
         return "redaction read as content" if got != "BLANK" else "redaction read as empty"
     if field == "road_surface":
-        return "empty field filled in from elsewhere"
+        if got == normalise(field, NEIGHBOUR_VALUE):
+            return "empty field filled in from elsewhere"
+        return "empty field given a value that is not on the page"
     if field == "severity":
-        return "wrong option taken as ticked"
+        options = [normalise(field, option) for option in LABELS[language]["options"]]
+        if got in options:
+            return "wrong option taken as ticked"
+        return "answered with something that is not one of the options"
     if field in ("policy_number", "vehicle_model"):
         same_length = len(got) == len(expected)
         return "character misread" if same_length else "value not found"
@@ -418,7 +433,7 @@ def main():
     else:
         kinds = {}
         for language, condition, field, expected, got in mistakes:
-            kind = classify(field, expected, got)
+            kind = classify(field, expected, got, language)
             kinds.setdefault(kind, []).append(f"{language}/{condition}")
             print(f"  {language:<9} {condition:<7} {field:<16} wanted {expected!r}, "
                   f"got {got!r}  -> {kind}")
