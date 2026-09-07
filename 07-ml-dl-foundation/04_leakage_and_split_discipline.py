@@ -258,7 +258,8 @@ def main():
     print("    against the three above it in absolute terms, only in its gap.")
 
     print("\n--- 6. What survives all three ---")
-    print("    For the scaler, for the duplicates and for the two mild encodings,")
+    mild = [name for name in encoding_results if name != worst_key]
+    print(f"    For the scaler, for the duplicates and for the {len(mild)} milder encodings,")
     print("    the holdout column hardly moves: the leak did not build a better")
     print("    model, it built a better report of the same model, and the report is")
     print("    what gets acted on.")

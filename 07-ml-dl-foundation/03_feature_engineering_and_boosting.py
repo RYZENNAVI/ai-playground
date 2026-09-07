@@ -203,8 +203,11 @@ def main():
     live = [f for f in report["flags"] if f not in report["constant_flags"]]
     for name in live:
         print(f"    {name} marks {int(train[name].sum())} rows")
+    dead_markers = [n for n in report["constant_flags"] if n.endswith("_missing")]
+    others = len(report["constant_flags"]) - len(dead_markers)
     print("    A missing marker on a column that is never missing is a column of")
-    print("    zeros with a descriptive name. Seventeen of them were built here.")
+    print(f"    zeros with a descriptive name. {len(dead_markers)} of them were built here;")
+    print(f"    the remaining {others} constant flag is an outlier marker that never fired.")
 
     print("\n--- 4. Group statistics, built from training rows only ---")
     frames, stat_columns = add_group_statistics(train, [holdout])

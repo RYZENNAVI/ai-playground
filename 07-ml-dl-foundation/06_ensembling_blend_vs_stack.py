@@ -231,9 +231,13 @@ def main():
     print(f"\n    The best combination here is {best_combination[0]}, and it beats")
     print(f"    the best single model by {solo[best_solo] - best_combination[1]:.2f} MAE, "
           f"or {(solo[best_solo] - best_combination[1]) / solo[best_solo]:.2%}.")
-    print("    That is the honest size of the win: four models, a fold loop and a")
-    print("    meta model, for a quarter of a percent. Two of the six combinations")
-    print("    came out worse than doing nothing.")
+    combinations = rows[1:]
+    worse = [r for r in combinations if r[1] > solo[best_solo]]
+    share = (solo[best_solo] - best_combination[1]) / solo[best_solo]
+    print(f"    That is the honest size of the win: four models, a fold loop and a")
+    print(f"    meta model, for {share:.2%}. {len(worse)} of the {len(combinations)} "
+          f"combinations came out")
+    print("    worse than doing nothing.")
     print("    Three models that make the same mistakes are one model that took")
     print("    three times as long to train. The question to ask before adding a")
     print("    model to a blend is not how good it is, it is how differently it")
