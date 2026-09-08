@@ -181,12 +181,26 @@ def main():
                 ["model", "auc", "accuracy", "flagged"], [22, 9, 11, 10])
     print(f"\n    best AUC on attrition {attrition_scores['auc'].max():.4f}, "
           f"on acoustics {speaker_scores['auc'].max():.4f}")
+    # One model is unusable on raw columns and drags the spread with it, so the
+    # spread is reported twice. Quoting only the first number would contradict
+    # the sentence underneath it, which is a claim about ordinary models.
+    def spread(frame, drop=None):
+        rows = frame if drop is None else frame[frame["model"] != drop]
+        return rows["auc"].max() - rows["auc"].min()
+
+    outlier = attrition_scores.loc[attrition_scores["auc"].idxmin(), "model"]
+    table_gap = speaker_scores["auc"].max() - attrition_scores["auc"].max()
     print(f"    spread between best and worst model: "
-          f"attrition {attrition_scores['auc'].max() - attrition_scores['auc'].min():.4f}, "
-          f"acoustics {speaker_scores['auc'].max() - speaker_scores['auc'].min():.4f}")
-    print("    Same nine calls, same split code, two different ceilings. The")
-    print("    ceiling belongs to the data. Choosing among the nine moves the")
-    print("    result by less than the choice of table does.")
+          f"attrition {spread(attrition_scores):.4f}, "
+          f"acoustics {spread(speaker_scores):.4f}")
+    print(f"    the same spread with '{outlier}' left out: "
+          f"attrition {spread(attrition_scores, outlier):.4f}, "
+          f"acoustics {spread(speaker_scores, outlier):.4f}")
+    print(f"    changing the table moves the best AUC by {table_gap:.4f}")
+    print(f"    Same nine calls, same split code, two different ceilings. The")
+    print(f"    ceiling belongs to the data: once '{outlier}' is set aside, choosing")
+    print("    among the rest moves the result by less than the choice of table")
+    print(f"    does. '{outlier}' is the exception and step 3 says why.")
 
     print("\n--- 3. Which models care that the columns are on different scales ---")
     scaler = MinMaxScaler().fit(x_train)
