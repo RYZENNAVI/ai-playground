@@ -6,7 +6,7 @@ Demonstrates that leakage damages the estimate rather than the model:
     3. Encode a high-cardinality column with target statistics taken from every row.
     4. Let the same listing appear on both sides of a random split.
     5. Put the three next to the baseline and read which number moved.
-    6. Show the check that catches all three without knowing which one happened.
+    6. Show what the gap between the two scores catches, and the one it does not.
 
 Module 07: Machine Learning and Deep Learning Foundations - Leakage and Splits.
 """
@@ -91,10 +91,17 @@ def honest_baseline(train, holdout):
 
 
 def scaler_before_split(train, holdout):
-    """Compare a scaler fitted on everything against one fitted on the split.
+    """Compare a scaler fitted on everything against one fitted on the training file.
 
     A nearest-neighbour model is used because a tree does not care about the
     scale of a feature at all, so it cannot show the effect either way.
+
+    The honest arm here fits on the whole training file and splits afterwards,
+    so the internal validation rows do reach the scaler. What the two arms
+    contrast is therefore the holdout crossing into the transform, not a
+    textbook fit-on-the-fit-rows-only scaler; a stricter version would move the
+    scaler inside the split. The measured difference is small either way, and
+    step 6 reads that smallness rather than assuming it.
     """
     from sklearn.model_selection import train_test_split
     from sklearn.neighbors import KNeighborsRegressor
@@ -269,11 +276,27 @@ def main():
     print("    is worse. Its honest twin scored "
           f"{encoding_results[worst_key]['honest'][0]:.0f} on validation, which says")
     print("    the feature was a bad idea at that cardinality whether or not it")
-    print("    leaked. Leakage hid a bad feature behind a good score.")
+    print(f"    leaked. The reference point matters: {encoding_results[worst_key]['leaky'][0]:.0f} "
+          f"is still worse than the baseline's")
+    print(f"    {base_validation:.0f}, so leakage did not make the feature look good, it made a")
+    print("    bad feature look survivable next to its own honest twin.")
     print("    None of the three raised an error, printed a warning or produced an")
-    print("    implausible number on the way in. What separates them from the")
-    print("    baseline is the gap column: a validation score that beats an")
-    print("    untouched holdout by a wide margin is describing the split.")
+    print("    implausible number on the way in.")
+
+    # The gap is the check this script is built around, so its one failure is
+    # measured rather than left out. Both scaler arms are scored here; if their
+    # gaps agree, the gap cannot be what separates leaky from honest.
+    honest_gap = scaler_results["honest"][0] - scaler_results["honest"][1]
+    leaky_gap = scaler_results["leaky"][0] - scaler_results["leaky"][1]
+    caught = [name for name in ("target encoding", "duplicate rows")]
+    print(f"    The gap column catches {len(caught)} of the three: {', '.join(caught)} both")
+    print(f"    beat their untouched holdout by a wide margin, and the baseline does not.")
+    print(f"    It does not catch the scaler. Its two arms differ by "
+          f"{abs(leaky_gap - honest_gap):.2f} MAE of gap")
+    print(f"    ({honest_gap:+.2f} honest against {leaky_gap:+.2f} leaky), so the gap cannot tell")
+    print("    them apart; what that column shows for the scaler row is the nearest")
+    print("    neighbour model, not the leak. A leak this small needs the two")
+    print("    fits placed side by side, which is what step 2 does and step 5 cannot.")
 
 
 if __name__ == "__main__":
