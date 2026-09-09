@@ -257,7 +257,7 @@ See [Time-Series-Forecasting-Baselines-and-Backtests.md](08-time-series/Time-Ser
 | 01 | `01_workflow_engine_from_spec.py` | Three declarative graphs validated, ordered and executed, including a batch body, a selector and two sub-workflow calls |
 | 02 | `02_llm_node_output_contract.py` | A model node scored against the vocabulary the next node compares against, and the rows that vanish when it drifts |
 | 03 | `03_plugin_io_contract.py` | A plugin held to its declared schema, and what a forgiving field mapper hands downstream |
-| 04 | `04_table_knowledge_base_retrieval.py` | One table indexed two ways, and a two-condition question similarity cannot answer |
+| 04 | `04_table_knowledge_base_retrieval.py` | One table indexed two ways, and a three-condition question similarity cannot answer |
 | 05 | `05_platform_api_protocol.py` | A local server on three endpoints, blocking against streaming, and a client that guesses its way to a wrong diagnosis |
 
 See [Low-Code-Platforms-What-The-Canvas-Runs.md](09-lowcode-platforms/Low-Code-Platforms-What-The-Canvas-Runs.md) for the concepts behind these scripts.

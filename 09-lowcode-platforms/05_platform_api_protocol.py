@@ -6,7 +6,7 @@ stops knowing which deployment it is talking to:
     2. Call the blocking endpoint and read the single response body.
     3. Call the streaming endpoint and read the events as they arrive.
     4. Print the request headers the way a debugging client does, and look at them.
-    5. Send a request that forgets to carry the user's own words.
+    5. Send two requests that both fail with HTTP 400 for unrelated reasons.
     6. Let a client probe five payload shapes until one stops failing.
     7. Break the connection and watch that probe rewrite the cause of the failure.
 
@@ -48,6 +48,10 @@ SERVER_SOURCE = dedent('''
     # The one input variable this deployment declares. A caller that sends some
     # other key sends a request the deployment has no way to read.
     INPUT_VARIABLE = "question"
+
+    # What kind of application this deployment is. All three endpoints exist on
+    # the platform; only the one matching this type answers for this key.
+    APP_TYPE = "workflow"
 
     ANSWERS = {
         "why do price alerts arrive late":
@@ -105,10 +109,15 @@ SERVER_SOURCE = dedent('''
     async def chat_messages(request: Request, authorization: str = Header(None)):
         check(authorization)
         body = await request.json()
+        if APP_TYPE != "chat":
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "not_chat_app",
+                        "message": f"this deployment is a {APP_TYPE}, not a chat app"})
         if "query" not in body:
             raise HTTPException(status_code=400,
-                                detail={"code": "not_chat_app",
-                                        "message": "this deployment is not a chat app"})
+                                detail={"code": "invalid_param",
+                                        "message": "'query' is required"})
         return {"conversation_id": "conv-0001", "message_id": "msg-0001",
                 "answer": answer_for(body["query"])}
 
@@ -220,6 +229,16 @@ class PlatformClient:
         return self.post("/v1/completion-messages",
                          {"inputs": {}, "response_mode": "blocking", "user": "demo"})
 
+    def chat_on_a_workflow_deployment(self, question):
+        """Call the conversational endpoint on a deployment that is not a chat app.
+
+        The body is the correct one for /v1/chat-messages: the user's words go
+        in a top-level 'query'. Nothing about the request is malformed. It is
+        aimed at the wrong endpoint of the right server, which no amount of
+        rewriting the payload will resolve.
+        """
+        return self.post("/v1/chat-messages", {"query": question, "user": "demo"})
+
     def completion_probing(self, question, timeout=30):
         """Try five payload shapes until one of them stops failing.
 
@@ -265,7 +284,8 @@ def main():
         print(f"  wrote {SERVER_FILE.name} and started it as a subprocess")
         print("  it answers /v1/workflows/run, /v1/chat-messages and "
               "/v1/completion-messages")
-        print("  it declares exactly one input variable: 'question'")
+        print("  it is a workflow deployment and declares exactly one input")
+        print("  variable, 'question'; the other two endpoints exist and refuse")
 
         print("\n--- 2. The blocking call ---")
         status, body = client.run_blocking(question)
@@ -290,12 +310,19 @@ def main():
         print("  the first form is one line in a debug print and one copy of the")
         print("  credential in every log this process ever writes")
 
-        print("\n--- 5. A request that carries no question ---")
+        print("\n--- 5. Two requests that both come back HTTP 400 ---")
         status, body = client.completion_dropping_input(question)
-        print(f"  HTTP {status}  {describe(body)}")
+        print(f"  right endpoint, empty inputs : HTTP {status}  {describe(body)}")
         print("  the endpoint is right and the key is right; the payload has an")
         print("  empty inputs object, so the deployment refuses for its own missing")
         print("  input variable rather than for anything the caller can see")
+        status, body = client.chat_on_a_workflow_deployment(question)
+        print(f"  wrong endpoint, valid body   : HTTP {status}  {describe(body)}")
+        print("  this payload carries the question and is the correct shape for a")
+        print("  chat application; the deployment behind this key is a workflow, so")
+        print("  the endpoint itself is the mistake and no payload repairs it")
+        print("  the two share a status code and agree on nothing else: the status")
+        print("  says that a request failed, and only the code in the body says why")
 
         print("\n--- 6. A client probing for the shape ---")
         attempts, result = client.completion_probing(question)

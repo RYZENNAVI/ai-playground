@@ -678,8 +678,8 @@ expressed as conditions.
 
 `05_platform_api_protocol.py` starts a local server that answers the three endpoints such a
 platform exposes, then calls it. Nothing is mocked at the client — the client speaks real
-HTTP to a real server on a loopback port, and the server declares exactly one input
-variable, `question`.
+HTTP to a real server on a loopback port. The server is a **workflow** deployment declaring
+exactly one input variable, `question`; the other two endpoints exist and refuse.
 
 ### 9.1 The three endpoints
 
@@ -753,7 +753,7 @@ def redacted(headers):
 The advice everyone repeats is *do not put your key in front-end code*. The key does not
 usually leave through the front end. It leaves through the logs.
 
-### 9.4 A request that carries no question
+### 9.4 Two requests that both come back HTTP 400
 
 ```python
 def completion_dropping_input(self, question):
@@ -764,15 +764,30 @@ def completion_dropping_input(self, question):
 `question` is a parameter of that method and appears nowhere in the body it sends.
 
 ```
-HTTP 400  app_unavailable
-the endpoint is right and the key is right; the payload has an empty inputs object,
-so the deployment refuses for its own missing input variable rather than for anything
-the caller can see
+right endpoint, empty inputs : HTTP 400  app_unavailable
 ```
 
 The endpoint is correct, the credential is accepted, and the one thing that does not travel
 is the user's words. Against a deployment whose start variable has a default, this does not
 even fail — it returns a fluent answer to a question nobody asked.
+
+The second request has the opposite problem. Its body is exactly right for
+`/v1/chat-messages` — the user's words in a top-level `query` — and it is aimed at a
+deployment that is a workflow:
+
+```python
+def chat_on_a_workflow_deployment(self, question):
+    return self.post("/v1/chat-messages", {"query": question, "user": "demo"})
+```
+
+```
+wrong endpoint, valid body   : HTTP 400  not_chat_app
+```
+
+**The two share a status code and agree on nothing else.** One is a payload that can be
+repaired; the other cannot be repaired by any payload, because the endpoint itself is the
+mistake. HTTP 400 says a request failed; only `app_unavailable` against `not_chat_app` says
+why. This is exactly the distinction the probing client in 9.5 throws away.
 
 ### 9.5 Probing for the shape
 
@@ -875,7 +890,7 @@ does it for the key inside `inputs`, which is exactly why section 9.5 costs four
 | `02_llm_node_output_contract.py` | A real model behind a workflow node, scored against the vocabulary the next node compares against; three prompt variants; a deterministic edit given to a model and to code |
 | `03_plugin_io_contract.py` | A plugin held to a declared input/output schema; permissive against strict field mapping; a per-entry error policy; what paging costs the caller |
 | `04_table_knowledge_base_retrieval.py` | A table indexed two ways; semantic retrieval against an exact filter on a three-condition question; where prose still wins and what its recall costs |
-| `05_platform_api_protocol.py` | A local server speaking the three endpoints and the event stream; blocking against streaming; a credential in the logs; a request that drops the user's words; a probe that rewrites the cause of a failure |
+| `05_platform_api_protocol.py` | A local server speaking the three endpoints and the event stream; blocking against streaming; a credential in the logs; two unrelated failures behind one status code; a probe that rewrites the cause of a failure |
 
 ### 11.1 Measured results
 
@@ -885,7 +900,7 @@ does it for the key inside `inputs`, which is exactly why section 9.5 costs four
 | **02** | `deepseek-chat`, `temperature=0`, six reviews per variant. Plain prompt: **0/6 parse as JSON, 0/6 match the vocabulary, 0/6 routed** — all six discarded without an error. With an output example: 6/6 and 6/6. With `response_format` as well: 6/6 and 6/6 — **the example is what fixed it, not the format switch**. Normalising the label recovers 4 of the 6 lost in the plain run; `frustrated` remains outside the enum. Model-applied stopword removal leaves 1 of 7 words in place; the code path leaves 0 |
 | **03** | Three malformed calls refused before a page is fetched. The page with a missing rating: the permissive mapper returns 2 rows and raises nothing, and the output schema then finds **2 type violations across both rows**; the strict mapper stops and names the field. `page_limit=20` against a 3-page source costs 3 fetches, yields 7 rows and reports 1 skipped entry |
 | **04** | Index on `family`: **0/9 rows uniquely identified**, worst case 3 rows share a value. Index on `plan`: 9/9. A three-condition question returns 4 rows by similarity of which **0 satisfy all three**, spread across 0.795–0.791; the correct row is not in the top four. The parsed filter returns 1 row, matching a direct scan. Matching the event type literally silently drops that condition and returns 2 rows; folding case and punctuation returns 1. Prose recall costs 186 / 354 / 621 tokens at `top_k` 2 / 4 / 8 |
-| **05** | Server starts on a free loopback port. Blocking returns one body; streaming returns **5 events in 0.18s**. An empty `inputs` object gets HTTP 400 `app_unavailable` with a correct endpoint and a valid key. The probing client needs **4 requests** to find the declared key name. With the server stopped, the same loop makes 5 failed attempts and reports *"check the application configuration and API key"* |
+| **05** | Server starts on a free loopback port. Blocking returns one body; streaming returns **5 events in 0.17s**. Two requests come back HTTP 400 for unrelated reasons: an empty `inputs` object on the right endpoint gets `app_unavailable`, and a well-formed chat body on the wrong endpoint gets `not_chat_app`. The probing client needs **4 requests** to find the declared key name. With the server stopped, the same loop makes 5 failed attempts and reports *"check the application configuration and API key"* |
 
 ### 11.2 Data
 
