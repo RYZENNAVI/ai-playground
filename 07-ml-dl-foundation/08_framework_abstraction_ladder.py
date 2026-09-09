@@ -257,21 +257,38 @@ def main():
         return loss
 
     compiled = tf.function(step)
+
+    # step() updates the variables, so tracing the graph and running the first
+    # timed loop both move them. Each loop is therefore restored to the same
+    # starting weights before it is timed: otherwise the second loop runs from
+    # parameters the first one trained, and the two are not the same work.
+    initial = [variable.numpy().copy() for variable in variables]
+
+    def reset():
+        for variable, start in zip(variables, initial):
+            variable.assign(start)
+
     compiled()  # first call traces the graph; timing it would time the compiler
+    reset()
 
     started = time.perf_counter()
     for _ in range(TIMED_STEPS):
         step()
     eager_seconds = time.perf_counter() - started
+    eager_loss = float(step())
+    reset()
 
     started = time.perf_counter()
     for _ in range(TIMED_STEPS):
         compiled()
     graph_seconds = time.perf_counter() - started
+    graph_loss = float(compiled())
 
     print(f"    {TIMED_STEPS} steps eagerly     {eager_seconds:.3f} s")
     print(f"    {TIMED_STEPS} steps as a graph  {graph_seconds:.3f} s")
     print(f"    ratio {eager_seconds / graph_seconds:.2f}x")
+    print(f"    both loops started from the same weights and ended at the same loss: "
+          f"{eager_loss:.6f} against {graph_loss:.6f}")
     print("    Eager runs each operation as the line is reached. tf.function runs")
     print("    the Python once to record what happened, then replays that record.")
     print("    On a network this small the saving is the Python overhead between")
