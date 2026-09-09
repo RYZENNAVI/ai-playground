@@ -258,9 +258,17 @@ ones:
 | **250** (planted) | **+0.9981** | 0.0617 | 0.01293 |
 | 60 | +0.0002 | 0.0026 | 0.01251 |
 | 288 | +0.0540 | 0.0115 | 0.04760 |
-| 500 | +0.9941 | 0.0651 | 0.01793 |
+| 500 | +0.9941 | 0.0651 | 0.01796 |
 
-**Every run returned a seasonal component. Only one of them tracks the cycle.**
+```
+every run returned a seasonal component; 2 of 4 track the cycle above 0.9: [250, 500]
+[500] are whole multiples of 250, and a multiple spans the real cycle a whole number
+of times, so it fits it just as well
+```
+
+**Every run returned a seasonal component. Two of the four track the cycle**, and the
+script counts them rather than asserting the number, because which ones track it depends
+on the periods in the list.
 
 The scoring function says why correlation is the criterion:
 
