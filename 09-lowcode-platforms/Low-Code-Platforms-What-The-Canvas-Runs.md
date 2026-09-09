@@ -153,7 +153,7 @@ Start -> FetchNews -> PerArticle -> KeepMarked -> Hotwords -> ReviewAnalysis -> 
 Add one edge from `End` back to `FetchNews` and re-run it:
 
 ```
-add one edge End -> FetchNews: 1 nodes can start, 7 wait forever
+add one edge End -> FetchNews: 1 of 8 nodes can start, 7 wait forever
 ['107368', '123474', '136482', '140895', '170693', '174746', '900001']
 ```
 
@@ -199,18 +199,21 @@ letters S, c, e and n**, so the capture stops at the first of those letters in t
 text. On three scenes of ordinary English:
 
 ```
-splitting 3 scenes with a [^Scene] character class: 3 part(s)
+splitting 3 scenes with a [^Scene] character class: 3 part(s), 7 characters kept
   'A r'
   'Th'
   'Ev'
-splitting the same text on the heading itself: 3 part(s)
+splitting the same text on the heading itself: 3 part(s), 174 characters kept
   'A red kite rises over an empty green field at dawn.'
   'The same field at noon, seen from beneath a bending '
   'Evening arrives and the kite is a dark speck against'
+the part count is the same either way, so counting parts says nothing; the character
+class kept 7 of 174 characters
 ```
 
-Both versions return **three parts**. A check that counts the parts passes for both. The
-failure is entirely in the content, and English makes it violent — nearly every word
+Both versions return **three parts**. A check that counts the parts passes for both, which
+is why the script prints the characters kept instead: **7 against 174**. The failure is
+entirely in the content, and English makes it violent — nearly every word
 contains an `e`. **Splitting on the separator rather than capturing between separators
 removes the whole class of problem**, because the body text can no longer terminate a
 match.
@@ -388,12 +391,12 @@ def normalise(verdict):
 
 ```
 --- 6. The same rows, with each label normalised first ---
-  plain      routed 5/6  (positive 2, neutral 1, negative 2)
+  plain      routed 4/6  (positive 2, neutral 1, negative 1), recovering 4
              still outside the vocabulary: ['frustrated']
 ```
 
-Five of six come back. The sixth stays out, because `frustrated` is not a spelling of a
-value in the enum — it is a different word. **Normalising moves the failure from silent to
+Four of the six come back that were all lost before. The two that stay out are both
+`Frustrated`, because it is not a spelling of a value in the enum — it is a different word. **Normalising moves the failure from silent to
 visible, which is the whole of what it can do.** The enum belongs on the boundary, and
 whatever cannot be folded onto it has to be reported rather than dropped.
 
@@ -467,8 +470,8 @@ because a caller that passes `sort` believes the plugin sorts, and it does not.
 The third feed page carries an entry with no rating element, which is what a real feed does
 when someone leaves a comment without a score. The script maps that page twice.
 
-`map_permissively` fetches every field with a default, so a feed that stops sending one
-still produces a row that looks complete:
+`map_permissively` fetches every field with a default and converts nothing, so a feed that
+stops sending one still produces a row — with `None` where the value should be:
 
 ```
 permissive mapper returned 2 rows and raised nothing
@@ -578,7 +581,8 @@ is useless, and so is a column everybody's question matches.
 
 ### 8.3 What similarity cannot do
 
-The question `"Did user U-100241 sign in on 2026-05-04?"` carries two conditions. Semantic
+The question `"Did user U-100241 sign in on 2026-05-04?"` carries three conditions — a
+user, a date, and an event type. Semantic
 retrieval over twenty row-chunks returns:
 
 ```
@@ -586,12 +590,14 @@ retrieval over twenty row-chunks returns:
 0.794  event_time: 2026-05-06 08:55:00; event_type: Sign-in; ... user_id: U-100258
 0.792  event_time: 2026-05-07 09:05:00; event_type: Sign-in; ... user_id: U-100241
 0.791  event_time: 2026-05-04 10:11:00; event_type: Contact support; ... user_id: U-100241
-0 of the 4 rows returned satisfy both conditions
+0 of the 4 rows returned satisfy all three
 ```
 
 **None of the four.** The correct row — `U-100241`, `2026-05-04`, `Sign-in` — is not in the
 top four at all, and the spread across the four returned is 0.004. That is not a bug in the
-encoder. Every sign-in row resembles a question about signing in; an identifier has no
+encoder. Every row about signing in resembles a question about signing in — including the
+fourth, a `Contact support` row whose detail says *"sign-in would not complete"*. An
+identifier has no
 neighbourhood in a semantic space, and a date is four tokens that look like every other
 date.
 
@@ -655,12 +661,14 @@ chunks at 0.773 and 0.754.
 The cost is visible:
 
 ```
-4 chunks recalled carry 1416 characters, roughly 354 tokens, and every question pays that
-before the model answers
+top_k=2  recalls 747 characters, roughly 186 tokens, paid on every question ...
+top_k=4  recalls 1416 characters, roughly 354 tokens, paid on every question ...
+top_k=8  recalls 2485 characters, roughly 621 tokens, paid on every question ...
 ```
 
-**The recall count converts directly into money.** Four chunks of prose is a few hundred
-tokens on every question; ten is a few thousand. A structured filter that returns one row
+**The recall count converts directly into money.** Doubling the recall roughly doubles the
+bill — roughly, not exactly, because the chunks are not all the same length: 2 to 4 costs
+1.90x and 4 to 8 costs 1.76x. A structured filter that returns one row
 costs a fraction of that, which is a second reason to use it wherever the question can be
 expressed as conditions.
 
@@ -866,17 +874,17 @@ does it for the key inside `inputs`, which is exactly why section 9.5 costs four
 | `01_workflow_engine_from_spec.py` | A declarative graph → reference validation → topological order → execution; batch bodies against carried state, selector branches, sub-workflow calls with a depth guard, and what code nodes are for |
 | `02_llm_node_output_contract.py` | A real model behind a workflow node, scored against the vocabulary the next node compares against; three prompt variants; a deterministic edit given to a model and to code |
 | `03_plugin_io_contract.py` | A plugin held to a declared input/output schema; permissive against strict field mapping; a per-entry error policy; what paging costs the caller |
-| `04_table_knowledge_base_retrieval.py` | A table indexed two ways; semantic retrieval against an exact filter on a two-condition question; where prose still wins and what its recall costs |
+| `04_table_knowledge_base_retrieval.py` | A table indexed two ways; semantic retrieval against an exact filter on a three-condition question; where prose still wins and what its recall costs |
 | `05_platform_api_protocol.py` | A local server speaking the three endpoints and the event stream; blocking against streaming; a credential in the logs; a request that drops the user's words; a probe that rewrites the cause of a failure |
 
 ### 11.1 Measured results
 
 | # | Result |
 | :--- | :--- |
-| **01** | 23 nodes across three definitions execute end to end. One edited reference is caught statically: `123474.values wants 136482.summary, but 136482 emits ['digest', 'branch']`. One added back-edge leaves **1 node able to start and 7 waiting forever**. `[^Scene]` truncates three scenes to `'A r'`, `'Th'`, `'Ev'` while still returning three parts. Isolated iterations give `[1, 1, 0, 1]`; the same computation carrying state gives `[1, 2, 2, 3]`. The selector marks 1 of 4 elements `drop`; the cleanup node removes it |
-| **02** | `deepseek-chat`, `temperature=0`, six reviews per variant. Plain prompt: **0/6 parse as JSON, 0/6 match the vocabulary, 0/6 routed** — all six discarded without an error. With an output example: 6/6 and 6/6. With `response_format` as well: 6/6 and 6/6 — **the example is what fixed it, not the format switch**. Normalising the label recovers 5/6 of the plain run; `frustrated` remains outside the enum. Model-applied stopword removal leaves 1 of 7 words in place; the code path leaves 0 |
+| **01** | 23 nodes across three definitions execute end to end. One edited reference is caught statically: `123474.values wants 136482.summary, but 136482 emits ['digest', 'branch']`. One added back-edge leaves **1 node able to start and 7 waiting forever**. `[^Scene]` truncates three scenes to `'A r'`, `'Th'`, `'Ev'` — 7 characters of 174 — while still returning three parts. Isolated iterations give `[1, 1, 0, 1]`; the same computation carrying state gives `[1, 2, 2, 3]`. The selector marks 1 of 4 elements `drop`; the cleanup node removes it |
+| **02** | `deepseek-chat`, `temperature=0`, six reviews per variant. Plain prompt: **0/6 parse as JSON, 0/6 match the vocabulary, 0/6 routed** — all six discarded without an error. With an output example: 6/6 and 6/6. With `response_format` as well: 6/6 and 6/6 — **the example is what fixed it, not the format switch**. Normalising the label recovers 4 of the 6 lost in the plain run; `frustrated` remains outside the enum. Model-applied stopword removal leaves 1 of 7 words in place; the code path leaves 0 |
 | **03** | Three malformed calls refused before a page is fetched. The page with a missing rating: the permissive mapper returns 2 rows and raises nothing, and the output schema then finds **2 type violations across both rows**; the strict mapper stops and names the field. `page_limit=20` against a 3-page source costs 3 fetches, yields 7 rows and reports 1 skipped entry |
-| **04** | Index on `family`: **0/9 rows uniquely identified**, worst case 3 rows share a value. Index on `plan`: 9/9. A two-condition question returns 4 rows by similarity of which **0 satisfy both conditions**, spread across 0.795–0.791; the correct row is not in the top four. The parsed filter returns 1 row, matching a direct scan. Matching the event type literally silently drops that condition and returns 2 rows; folding case and punctuation returns 1. Four prose chunks carry 1416 characters ≈ 354 tokens per question |
+| **04** | Index on `family`: **0/9 rows uniquely identified**, worst case 3 rows share a value. Index on `plan`: 9/9. A three-condition question returns 4 rows by similarity of which **0 satisfy all three**, spread across 0.795–0.791; the correct row is not in the top four. The parsed filter returns 1 row, matching a direct scan. Matching the event type literally silently drops that condition and returns 2 rows; folding case and punctuation returns 1. Prose recall costs 186 / 354 / 621 tokens at `top_k` 2 / 4 / 8 |
 | **05** | Server starts on a free loopback port. Blocking returns one body; streaming returns **5 events in 0.18s**. An empty `inputs` object gets HTTP 400 `app_unavailable` with a correct endpoint and a valid key. The probing client needs **4 requests** to find the declared key name. With the server stopped, the same loop makes 5 failed attempts and reports *"check the application configuration and API key"* |
 
 ### 11.2 Data
