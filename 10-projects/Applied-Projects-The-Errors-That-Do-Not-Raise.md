@@ -173,6 +173,12 @@ Those two facts together are what make a join at the wrong grain *shift an avera
 than merely duplicate rows. Without the correlation, a uniform duplication would leave every
 mean untouched and the demonstration would prove nothing.
 
+The unevenness is **not a gradient over tenure**, and it is worth being precise about that,
+because the obvious reading of the shift is wrong. The review table spans a fixed number of
+quarters, so tenure stops buying reviews once someone has been there for all of them:
+**421 of the 480 employees hold the full 8 reviews.** Only the 59 most recent hires hold
+fewer.
+
 ### 2.5 A daily count and a running total in the same table
 
 The district table carries `new_cases` and `cumulative_cases` side by side, because that is
@@ -201,6 +207,10 @@ and beds that are in the total but available to nobody:
     rows reading exactly 99%                   184
     rows where occupied + free < total       2,595
 ```
+
+Note the order of operations in that one line: it **rounds first and clamps second**, so the
+184 rows reading 99 are two different populations. Only **95** of them were clamped; the
+other **89** merely rounded up from somewhere in 98.5–99.4. Section 4.1 separates them.
 
 ---
 
@@ -246,8 +256,18 @@ someone happened to receive:
         after aggregate-then-join    69,732.50
 ```
 
-**+586.40**, and the sign is not an accident: longer-serving people have more reviews and
-earn more, so the join weights the higher salaries up.
+**+586.40**, and the sign is not an accident — but the mechanism is not the one that first
+suggests itself. The average is weighted by each employee's review count, and that count is
+capped:
+
+```
+    421 of 480 employees have the full 8 reviews, averaging  70,930.40
+    the other 59 have fewer, averaging                       61,184.75
+```
+
+So the join does not *up*-weight long-serving staff — nearly everyone sits at the cap. It
+**down-weights the 59 recent hires**, who are also the ones paid least. Same sign, different
+cause, and only the second one survives being checked against the data.
 
 Headcount per department shows the same thing without any statistics at all — every
 department is inflated, and the total reads 3,608 where the answer is 480.
@@ -318,11 +338,18 @@ supposedly derived from:
     rows where the two ratios differ > 0.5       95
 
     Among the rows reading 99%, the recomputed ratio runs from 98.5% to 100.0%.
+    Only 95 of those 184 were actually clamped (recomputed above 99);
+    the other 89 merely rounded up to it.
 ```
 
+**Reading the cap value is not evidence of having been capped.** The upstream system rounds
+before it clamps, so a facility genuinely at 98.6% arrives as 99 alongside one that was cut
+down to it. Half the rows at the cap were never clamped at all, and separating the two is the
+whole of the check — a count of rows reading 99 would have overstated the damage by 94%.
+
 The aggregate barely moves — 77.13% reported against 77.17% recomputed — which is exactly
-why the aggregate is the wrong place to look. **Every facility past the cap lands on the
-same value, and the busiest ones stop being distinguishable from each other.**
+why the aggregate is the wrong place to look. What the clamp does cost is **order**: the
+facilities past it land on the same value and stop being distinguishable from each other.
 
 ### 4.2 Parts that do not reach the total
 
@@ -765,8 +792,10 @@ rows; counting events answers the question a person asked.
 ```
 
 The band separates the two lists cleanly — sustained three-day displacement is caught, isolated
-one-day jumps mostly are not. The eight run-based rules touch neither, because on all six of
-these days the series only crossed the limit on the final day and the runs never accumulate.
+one-day jumps mostly are not; it catches 4 of the 6 days, and **2 of them never crossed it at
+all**. The eight run-based rules touch neither list. All eight count runs, so they need an
+excursion that lasts several days; a move that is large on one day and gone the next leaves
+every counter short, whether or not that day crossed the band.
 
 > **A rule set is not a strictly larger net than the rule it extends.** It catches different
 > days, and here it catches none of the six that the simpler rule was asked about.
