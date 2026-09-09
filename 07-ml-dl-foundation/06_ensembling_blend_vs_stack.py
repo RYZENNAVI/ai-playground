@@ -227,10 +227,19 @@ def main():
         gain = solo[best_solo] - score
         correlation_text = "-" if correlation is None else f"{correlation:.4f}"
         print(f"    {label:<28}{score:>13.2f}{gain:>9.2f}{correlation_text:>13}")
+    # Picking the smallest of these on the holdout is a choice made on the same
+    # rows the choice is then scored on, which is the leak step 3 named, one
+    # level up. It is called out here rather than left implicit, because a
+    # script that discloses one selection effect and hides another is worse than
+    # one that discloses neither.
     best_combination = min(rows[1:], key=lambda r: r[1])
     print(f"\n    The best combination here is {best_combination[0]}, and it beats")
     print(f"    the best single model by {solo[best_solo] - best_combination[1]:.2f} MAE, "
           f"or {(solo[best_solo] - best_combination[1]) / solo[best_solo]:.2%}.")
+    print(f"    That winner was chosen by reading {len(rows) - 1} scores off this holdout and")
+    print("    keeping the smallest, so the margin is the best of several draws rather")
+    print("    than an estimate of what the next dataset would give. Step 4's weights")
+    print("    came out of fold; this choice between whole routes did not.")
     combinations = rows[1:]
     worse = [r for r in combinations if r[1] > solo[best_solo]]
     share = (solo[best_solo] - best_combination[1]) / solo[best_solo]
