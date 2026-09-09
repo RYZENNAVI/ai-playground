@@ -5,7 +5,7 @@ Demonstrates why a table is indexed rather than chunked like prose:
     2. Turn every table row into its own chunk with the headers attached.
     3. Choose the index column, and count how many rows each choice can single out.
     4. Ask a pricing question against both index choices and read the rows returned.
-    5. Ask a question with two conditions in it, and read what similarity returns.
+    5. Ask a question with three conditions in it, and read what similarity returns.
     6. Answer that same question by filtering the fields, and compare row for row.
     7. Ask the prose document a question no filter can express, and read the cost.
 
@@ -211,7 +211,7 @@ def main():
         print(f"    {score:.3f}  {chunk}")
     print("  three rows carry the value 'Retail', so that index cannot separate them")
 
-    print("\n--- 5. A question with two conditions in it ---")
+    print("\n--- 5. A question with three conditions in it ---")
     question = "Did user U-100241 sign in on 2026-05-04?"
     print(f"  {question!r}")
     hits = search(question, event_chunks, event_vectors)
@@ -219,8 +219,9 @@ def main():
         print(f"    {score:.3f}  {chunk}")
     wanted = [h for h in hits
               if "U-100241" in h[0] and "2026-05-04" in h[0] and "Sign-in" in h[0]]
-    print(f"  {len(wanted)} of the {len(hits)} rows returned satisfy both conditions")
-    print("  similarity ranks by resemblance, and every sign-in row resembles this")
+    print(f"  {len(wanted)} of the {len(hits)} rows returned satisfy all three")
+    print("  similarity ranks by resemblance, and every row about signing in")
+    print("  resembles this one, whichever user or day it belongs to")
 
     print("\n--- 6. The same question, answered by filtering the columns ---")
     conditions = parse_conditions(question, events)
@@ -246,11 +247,14 @@ def main():
     print(f"  {question!r}")
     for chunk, score in search(question, prose_chunks, prose_vectors, top_k=2):
         print(f"    {score:.3f}  {chunk[:150]}...")
-    print(f"  no column holds this answer, so no filter can be written for it")
-    chars = sum(len(c) for c, _ in search(question, prose_chunks, prose_vectors))
-    print(f"  {TOP_K} chunks recalled carry {chars} characters, roughly "
-          f"{chars // 4} tokens, and every question pays that before the model answers")
-    print(f"  raising the recall count raises that bill in the same proportion")
+    print("  no column holds this answer, so no filter can be written for it")
+    for k in (2, TOP_K, len(prose_chunks)):
+        chars = sum(len(c) for c, _ in
+                    search(question, prose_chunks, prose_vectors, top_k=k))
+        print(f"  top_k={k:<2} recalls {chars} characters, roughly {chars // 4} "
+              f"tokens, paid on every question before the model answers")
+    print("  the chunks are not all the same length, so the bill rises with the")
+    print("  recall count without tracking it exactly")
 
 
 if __name__ == "__main__":

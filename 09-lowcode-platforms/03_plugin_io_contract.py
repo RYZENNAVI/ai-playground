@@ -117,8 +117,9 @@ def fetch_page(app_id, page):
 def map_permissively(entry):
     """Map an entry by reading whatever elements happen to be there.
 
-    Every field is fetched with a default, so a feed that stops sending one
-    produces a row that still looks complete. The row is the wrong shape and
+    Every field is fetched with a default and nothing is converted, so a
+    missing rating comes back as None and a present one comes back as the
+    string the XML held. Both are the wrong shape for the declared row, and
     nothing on the way out says so.
     """
     def text(path):
@@ -288,7 +289,8 @@ def main():
               f"{len(skipped)} entry(s) skipped")
     for title, reason in skipped:
         print(f"    skipped {title!r}: {reason}")
-    print("  the source holds 3 pages, so a limit of 20 costs 3 fetches here and")
+    print(f"  the source holds {len(PAGES)} pages, so a limit of 20 costs {fetched} "
+          f"fetches here and")
     print("  20 against a source that keeps answering; the number belongs in the")
     print("  contract, where whoever wires the node can see it")
 

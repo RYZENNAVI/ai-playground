@@ -84,8 +84,9 @@ PLUGINS = {"news_feed": plugin_news_feed, "review_feed": plugin_review_feed}
 def code_same_calendar_day(today, published):
     """Return 1 when a published timestamp falls on the reference date.
 
-    The date is compared as two integers rather than as text, so a timestamp
-    written as '2026-05-04 09:05' and a date written as '2026-05-04' still meet.
+    The timestamp is cut back to its date part before the comparison, so
+    '2026-05-04 09:05' and '2026-05-04' still meet. Both sides stay strings;
+    the ISO layout is what lets a string comparison give the right answer.
     """
     day = published.split(" ")[0]
     return {"same_day": 1 if day == today else 0}
@@ -407,7 +408,8 @@ def main():
     looped = deepcopy(library["market_sentiment"])
     looped["edges"].append({"from": "900001", "to": "107368"})
     order2, cycle2 = topological_order(looped)
-    print(f"  add one edge End -> FetchNews: {len(order2)} nodes can start, "
+    print(f"  add one edge End -> FetchNews: {len(order2)} of "
+          f"{len(looped['nodes'])} nodes can start, "
           f"{len(cycle2)} wait forever {cycle2}")
 
     print("\n--- 4. The main workflow, node by node ---")
@@ -426,12 +428,19 @@ def main():
         print(f"    {name:<20} {fn.__doc__.splitlines()[0]}")
     bad = split_scenes_excluding(SCENE_TEXT)
     good = split_scenes_by_separator(SCENE_TEXT)
-    print(f"  splitting 3 scenes with a [^Scene] character class: {len(bad)} part(s)")
+    bad_chars = sum(len(part) for part in bad)
+    good_chars = sum(len(part) for part in good)
+    print(f"  splitting 3 scenes with a [^Scene] character class: {len(bad)} part(s), "
+          f"{bad_chars} characters kept")
     for part in bad:
         print(f"    {part!r}")
-    print(f"  splitting the same text on the heading itself: {len(good)} part(s)")
+    print(f"  splitting the same text on the heading itself: {len(good)} part(s), "
+          f"{good_chars} characters kept")
     for part in good:
         print(f"    {part[:52]!r}")
+    print(f"  the part count is the same either way, so counting parts says nothing;"
+          f" the character class kept {bad_chars} of {good_chars} characters, each"
+          f" capture stopping at the first S, c, e or n in the body")
 
     print("\n--- 6. A batch body, run isolated and run carrying state ---")
     news = plugin_news_feed("brokerage")["items"]

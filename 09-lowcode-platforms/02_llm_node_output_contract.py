@@ -230,9 +230,11 @@ def main():
             print(f"             values outside it: {off}")
 
     print("\n--- 5. What the downstream code node does with those rows ---")
+    routed_raw = {}
     for name, rows in runs.items():
         pos, neu, neg = split_by_verdict(rows)
         routed = len(pos) + len(neu) + len(neg)
+        routed_raw[name] = routed
         print(f"  {name:<10} routed {routed}/{len(rows)}  "
               f"(positive {len(pos)}, neutral {len(neu)}, negative {len(neg)})")
         lost = [r["title"] for r in rows if r["verdict"] not in EXPECTED]
@@ -241,16 +243,23 @@ def main():
     print("  a row that matches no branch raises nothing anywhere; it is simply gone")
 
     print("\n--- 6. The same rows, with each label normalised first ---")
+    stubborn = set()
     for name, rows in runs.items():
         folded = [{**r, "verdict": normalise(r["verdict"])} for r in rows]
         pos, neu, neg = split_by_verdict(folded)
         routed = len(pos) + len(neu) + len(neg)
         print(f"  {name:<10} routed {routed}/{len(rows)}  "
-              f"(positive {len(pos)}, neutral {len(neu)}, negative {len(neg)})")
+              f"(positive {len(pos)}, neutral {len(neu)}, negative {len(neg)}), "
+              f"recovering {routed - routed_raw[name]}")
         still_off = sorted({r["verdict"] for r in folded if r["verdict"] not in EXPECTED})
+        stubborn.update(still_off)
         if still_off:
             print(f"             still outside the vocabulary: {still_off}")
-    print("  folding the label costs three lines and is where the enum belongs")
+    print("  folding costs three lines and recovers every label that differs from the")
+    print("  vocabulary only in case or punctuation. It cannot recover a word the")
+    print(f"  model picked for itself: {sorted(stubborn) or 'nothing here'} came back")
+    print("  unroutable either way, which is the enum's job in the prompt, not the")
+    print("  parser's job after the fact")
 
     print("\n--- 7. A deterministic edit, asked of the model and written in code ---")
     print(f"  words to remove: {STOPWORDS}")
