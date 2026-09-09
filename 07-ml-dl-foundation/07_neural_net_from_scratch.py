@@ -1,4 +1,4 @@
-"""Write a network with nothing but arrays, and check every gradient against the definition.
+"""Write a network with nothing but arrays, and check its gradients against the definition.
 
 Demonstrates the whole of a small network, with no framework anywhere in it:
     1. Define three activation functions with their derivatives, and tabulate both.
@@ -105,8 +105,14 @@ def measure_vanishing(depth):
     """Multiply the largest possible slope of each activation through a stack.
 
     The product below uses the best case for each activation, the slope at its
-    own peak. A real network cannot beat these numbers, so what they show is a
-    ceiling rather than a typical run.
+    own peak, so it is the most the activation functions alone can pass through
+    a stack of this depth.
+
+    It is not a bound on the gradient. Backpropagation multiplies the weight
+    matrices in as well, and a large weight scales the product straight back up,
+    which is why initialisation and normalisation are levers at all. What this
+    table isolates is the one factor those levers cannot touch: a sigmoid gives
+    away three quarters of the signal per layer before any weight is involved.
     """
     print(f"    {'layers':>7}" + "".join(f"{name:>16}" for name in ACTIVATIONS))
     for layers in depth:
@@ -137,9 +143,9 @@ def forward_example():
     print(f"    layer 2 weighted sum        {np.round(z2, 6)}")
     print(f"    layer 2 after sigmoid       {np.round(a2, 6)}")
     print(f"    output, no activation       {np.round(z3, 6)}")
-    print("    Nothing above is approximate. A network at this size is a pair of")
-    print("    matrix products with a squash in between, and it can be checked")
-    print("    against a calculator line by line.")
+    print("    Nothing above is approximate. A network at this size is three matrix")
+    print("    products with a squash after each of the first two, and it can be")
+    print("    checked against a calculator line by line.")
     return z3
 
 
@@ -273,7 +279,12 @@ def main():
     for name, derived, numerical, error in rows:
         print(f"    {name:<12}{derived:>14.8f}{numerical:>20.8f}{error:>17.2e}")
     worst = max(error for *_, error in rows)
-    print(f"\n    worst relative error {worst:.2e}")
+    total = sum(array.size for array in check_parameters.values())
+    print(f"\n    worst relative error {worst:.2e}, over {len(rows)} of the "
+          f"{total} parameters")
+    print("    Every parameter would take two extra forward passes each, so this is")
+    print("    a sample rather than a proof. A derivation that is wrong is usually")
+    print("    wrong for a whole array at once, which a sample from each array finds.")
     print("    A gradient that is wrong still trains, just towards somewhere else.")
     print("    This is the one check that separates the two cases, and it needs no")
     print("    framework: perturb a weight, watch the loss, divide.")
@@ -298,9 +309,12 @@ def main():
     print(f"    parameters left frozen: {frozen} of {total} ({frozen / total:.1%})")
     print("    Declaring the biases and never updating them is not a crash and not")
     print("    a warning. It is a small share of the parameters, and it is the")
-    print("    share that carries the offset: with the inputs standardised to")
-    print("    average zero, the weights alone have nothing to build an average of")
-    print(f"    {target.mean():.1f} out of. The loss curve goes down either way.")
+    print(f"    share that reaches an average of {target.mean():.1f} directly. The weights")
+    print("    are not helpless without it: the inputs average zero, but relu keeps")
+    print("    only the positive side, so the hidden layer has a positive average for")
+    print("    the output weights to scale. What it cannot do is move that average")
+    print("    without also changing how it responds to every input, which is the")
+    print("    one job a bias does on its own. The loss curve goes down either way.")
 
     plt.figure(figsize=(9, 5))
     plt.plot(history_with, label="biases updated")
