@@ -310,10 +310,13 @@ def build_districts(rng: np.random.Generator) -> pd.DataFrame:
 def build_facilities(rng: np.random.Generator) -> pd.DataFrame:
     """Draw a monthly bed table with a clamped ratio column and beds out of service.
 
-    Two properties are planted here. The reported ratio is clamped at 99, so a
-    facility running at 104 percent of its staffed beds reads as 99. And occupied
-    plus free does not reach the total, because some beds are out of service and
-    counted in neither.
+    Two properties are planted here. The reported ratio is rounded to a whole
+    percent and then clamped at 99, so the busiest facilities all read the same
+    value and stop being orderable. Occupancy is drawn against staffed beds while
+    the ratio is taken against total beds, so the ratio never reaches 104 percent
+    or anything above 100: what the clamp removes here is the top half-percent,
+    not an overflow. And occupied plus free does not reach the total, because
+    some beds are out of service and counted in neither.
     """
     facilities = [f"Facility {i:03d}" for i in range(1, FACILITY_COUNT + 1)]
     departments = ["Cardiology", "General Medicine", "Orthopaedics", "Paediatrics", "Surgery"]
@@ -435,8 +438,12 @@ def main() -> None:
     staff.to_csv(DATA / "staff.csv", index=False)
     reviews.to_csv(DATA / "staff_reviews.csv", index=False)
     print(f"{len(staff):,} rows -> staff.csv")
+    per_employee = reviews.groupby("staff_id").size()
     print(f"{len(reviews):,} rows -> staff_reviews.csv "
-          f"({len(reviews) // len(staff)} per employee)")
+          f"({per_employee.mean():.1f} per employee on average, "
+          f"{per_employee.min()} to {per_employee.max()}; "
+          f"{int((per_employee == per_employee.max()).sum())} of {len(staff)} have all "
+          f"{per_employee.max()})")
 
     print("\n--- 5. District daily counts ---")
     districts = build_districts(rng)

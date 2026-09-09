@@ -110,8 +110,21 @@ def compare_salary_means(staff, naive, narrowed, aggregated) -> None:
     print(f"        after aggregate-then-join {aggregated['base_salary'].mean():>12,.2f}")
     drift = naive["base_salary"].mean() - staff["base_salary"].mean()
     print(f"\n    The naive figure is off by {drift:+,.2f}, and the sign is not an accident.")
-    print("    Each employee appears once per review they received. Longer-serving people")
-    print("    have more reviews and earn more, so the join weights the higher salaries up.")
+    print("    Each employee appears once per review they received, so the average is")
+    print("    weighted by that count. Which employees the weighting favours is worth")
+    print("    reading off the data rather than assuming:")
+    counted = aggregated["reviews_counted"]
+    full = int(counted.max())
+    complete = aggregated[counted == full]
+    partial = aggregated[counted < full]
+    print(f"        {len(complete)} of {len(aggregated)} employees have the full {full} "
+          f"reviews, averaging {complete['base_salary'].mean():>10,.2f}")
+    print(f"        the other {len(partial)} have fewer, averaging "
+          f"{partial['base_salary'].mean():>17,.2f}")
+    print("    The review table spans a fixed number of quarters, so tenure stops")
+    print("    buying reviews once an employee has been there for all of them. The")
+    print("    weighting is not a gradient over tenure: it down-weights recent hires,")
+    print("    who are also the ones paid least.")
 
 
 def department_headcount(staff, naive, aggregated) -> None:

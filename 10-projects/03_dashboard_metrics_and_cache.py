@@ -59,6 +59,9 @@ def audit_reported_ratio(beds: pd.DataFrame) -> pd.DataFrame:
 
     at_cap = beds[beds["reported_utilization_pct"] >= REPORTED_RATIO_CAP]
     disagree = beds[beds["gap"].abs() > 0.5]
+    # Reading the cap value is not the same as having been capped: the upstream
+    # system rounds before it clamps, so a ratio of 98.6 also arrives as 99.
+    clamped = at_cap[at_cap["recomputed_pct"].round() > REPORTED_RATIO_CAP]
 
     print(f"    rows                                   {len(beds):>8,}")
     print(f"    rows reporting exactly {REPORTED_RATIO_CAP}%             {len(at_cap):>8,}")
@@ -66,8 +69,13 @@ def audit_reported_ratio(beds: pd.DataFrame) -> pd.DataFrame:
     if len(at_cap):
         print(f"\n    Among the rows reading {REPORTED_RATIO_CAP}%, the recomputed ratio runs from "
               f"{at_cap['recomputed_pct'].min():.1f}% to {at_cap['recomputed_pct'].max():.1f}%.")
-        print("    The reported column cannot go above the cap, so every facility past it")
-        print("    lands on the same value and the busiest ones stop being distinguishable.")
+        print(f"    Only {len(clamped):,} of those {len(at_cap):,} were actually clamped "
+              f"(recomputed above {REPORTED_RATIO_CAP});")
+        print(f"    the other {len(at_cap) - len(clamped):,} merely rounded up to it. Reading "
+              f"the cap value is not")
+        print("    evidence of having been capped, and separating the two is the whole")
+        print("    check. What the clamp does cost is order: the facilities past it all")
+        print("    land on the same value and stop being distinguishable from each other.")
 
     print(f"\n    mean utilization, as reported   {beds['reported_utilization_pct'].mean():>7.2f}%")
     print(f"    mean utilization, recomputed    {beds['recomputed_pct'].mean():>7.2f}%")

@@ -319,11 +319,14 @@ def main() -> None:
     print(f"\n    {'':<22}{'caught by the band':>20}{'caught by the 8 rules':>24}")
     print(f"    {'top 3 single-day moves':<22}{f'{band_one} of 3':>20}{f'{rules_one} of 3':>24}")
     print(f"    {'top 3 three-day moves':<22}{f'{band_three} of 3':>20}{f'{rules_three} of 3':>24}")
-    print("\n    The band separates the two lists; the eight run-based rules do not touch")
-    print("    either. Those rules need an excursion that persists past the day it peaks,")
-    print("    and on all six of these days the series only crossed the limit on the")
-    print("    final day. A rule set is not a strictly larger net than the rule it")
-    print("    extends: it catches different days, and here it catches none of these.")
+    print(f"\n    The band catches {band_one + band_three} of these 6 days; the eight "
+          f"run-based rules catch none.")
+    print("    All eight count runs, so they need an excursion that lasts several days.")
+    print("    A move that is large on one day and gone the next leaves every counter")
+    print(f"    short, whether or not that day crossed the band at all: "
+          f"{6 - band_one - band_three} of the six")
+    print("    above never crossed it. A rule set is not a strictly larger net than the")
+    print("    rule it extends: it catches different days, and here it catches none.")
 
     path = OUTPUTS / f"bands_{TICKER.lower()}.png"
     draw(frame, breaches, path)
