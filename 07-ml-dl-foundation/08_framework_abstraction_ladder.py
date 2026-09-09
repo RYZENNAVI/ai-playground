@@ -225,6 +225,18 @@ def main():
     print("    autograd removed was the writing of the derivatives, not any part")
     print("    of the arithmetic they stand for.")
 
+    # The gaps above are the stronger comparison, because two runs can reach the
+    # same score having taken different paths. The scores are printed as well so
+    # that every rung is answerable in the units the task is actually judged in.
+    def test_mae(parameters):
+        hidden = np.maximum(x_test @ parameters["w1"] + parameters["b1"], 0.0)
+        return float(np.mean(np.abs(hidden @ parameters["w2"] + parameters["b2"] - y_test)))
+
+    print(f"\n    {'rung':<14}{'test MAE':>10}")
+    for label, parameters in (("numpy", numpy_weights), ("pytorch", torch_weights),
+                              ("tensorflow", tf_weights)):
+        print(f"    {label:<14}{test_mae(parameters):>10.4f}")
+
     print("\n--- 6. The same run through the one-line interface ---")
     model = build_keras_model(weights)
     model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=LEARNING_RATE),
@@ -240,7 +252,8 @@ def main():
     print("    exactly the two things the earlier rungs had to state out loud.")
 
     predicted = model.predict(x_test, verbose=0)
-    print(f"    test MAE {float(np.mean(np.abs(predicted - y_test))):.4f}")
+    print(f"    {'keras':<14}{float(np.mean(np.abs(predicted - y_test))):>10.4f}"
+          f"   <- the fourth rung, on the same held-out rows as the three above")
 
     print("\n--- 7. Running the step eagerly against running it as a graph ---")
     xt = tf.constant(x_train)
