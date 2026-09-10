@@ -68,7 +68,8 @@ def score_seasonal(recovered: pd.Series, planted: np.ndarray) -> tuple[float, fl
     return corr, amplitude
 
 
-def stationary_call_rate(n: int, cycle: np.ndarray | None, truth: dict) -> float:
+def stationary_call_rate(n: int, cycle: np.ndarray | None, truth: dict,
+                         divide_back_out: bool = False) -> float:
     """Return how often the unit-root test calls a random walk of length n stationary.
 
     Every series drawn here is a random walk, so every stationary verdict is a
@@ -76,6 +77,11 @@ def stationary_call_rate(n: int, cycle: np.ndarray | None, truth: dict) -> float
     between calls is whether a fixed repeating cycle is laid over the walk
     before the test sees it. That isolates the cycle as the cause: the walk, the
     length and the test are identical in both conditions.
+
+    divide_back_out multiplies the cycle in and then divides it out again. That
+    is an identity, not an experiment, and the rate it returns has to match the
+    one measured without a cycle at all. It is here to show that the division
+    used on the real column further down loses nothing, not to add evidence.
     """
     rng = np.random.default_rng(POWER_SEED + n)
     sigma = truth["redeem_random_walk_sigma"]
@@ -83,6 +89,8 @@ def stationary_call_rate(n: int, cycle: np.ndarray | None, truth: dict) -> float
     for _ in range(POWER_TRIALS):
         walk = np.exp(np.cumsum(rng.normal(0.0, sigma, size=n)))
         series = walk if cycle is None else walk * cycle[:n]
+        if divide_back_out and cycle is not None:
+            series = series / cycle[:n]
         noise = rng.lognormal(0.0, truth["noise_sigma_log"]["redeem"], size=n)
         if adfuller(series * noise, autolag="AIC")[1] < ALPHA:
             calls += 1
@@ -118,7 +126,7 @@ def adf_report(series: pd.Series, label: str) -> float:
     return p_value
 
 
-def kpss_report(series: pd.Series, label: str) -> float:
+def kpss_report(series: pd.Series, label: str, regression: str = "c") -> float:
     """Run a KPSS test, whose null hypothesis is the reverse of the previous one.
 
     KPSS assumes stationarity and looks for evidence against it, so its verdict
@@ -126,16 +134,24 @@ def kpss_report(series: pd.Series, label: str) -> float:
     p-value into an agreement or a disagreement, and a disagreement is itself
     information: it usually means the series is neither clean noise nor a clean
     random walk.
+
+    regression says what the test is allowed to call stationary. 'c' asks
+    whether the series is stationary around a level, 'ct' around a straight
+    line. A column built with a growth term is not stationary around a level,
+    so asking the first question of it is asking the wrong one, and the answer
+    that comes back is not usable as a cross-check on anything.
     """
     # The lookup table this test interpolates in stops at 0.01 and 0.10, and it
     # warns whenever a statistic falls outside that range. Every call here does,
     # which is the point being reported below rather than something to fix.
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", InterpolationWarning)
-        stat, p_value, lags, crit = kpss(series.dropna(), regression="c", nlags="auto")
+        stat, p_value, lags, crit = kpss(series.dropna(), regression=regression,
+                                         nlags="auto")
     call = verdict(p_value, "stationarity rejected", "stationary")
-    print(f"  {label:<34} stat {stat:9.3f}  p {p_value:8.4f}  "
-          f"lags {lags:>2}  {'':>8}  -> {call}")
+    around = {"c": "a level", "ct": "a trend"}[regression]
+    print(f"  {label:<26} around {around}  stat {stat:7.3f}  p {p_value:7.4f}  "
+          f"lags {lags:>2}  -> {call}")
     return p_value
 
 
@@ -219,14 +235,19 @@ def main() -> None:
     cycle = cycle_over(window.index, flow_truth)
     bare = stationary_call_rate(n, None, flow_truth)
     dressed = stationary_call_rate(n, cycle, flow_truth)
-    undressed = stationary_call_rate(n, cycle / cycle, flow_truth)
+    undressed = stationary_call_rate(n, cycle, flow_truth, divide_back_out=True)
     print(f"  {POWER_TRIALS} random walks of {n} rows each, every stationary verdict "
           f"a mistake:")
     print(f"  {'walk on its own':<44} wrong {bare:>6.0%}")
     print(f"  {'same walk under the two cycles':<44} wrong {dressed:>6.0%}")
     print(f"  {'same walk, cycles divided back out':<44} wrong {undressed:>6.0%}")
     print(f"  laying the cycles over a walk multiplies the error rate by "
-          f"{dressed / max(bare, 1 / POWER_TRIALS):.1f}x, and removing them undoes it")
+          f"{dressed / max(bare, 1 / POWER_TRIALS):.1f}x")
+    print(f"  the third row is not a second finding: dividing out what was just "
+          f"multiplied in is")
+    print(f"  an identity, so it had to come back to {bare:.0%}. What it establishes is "
+          f"that the")
+    print(f"  removal is exact, which is what the next block relies on.")
     print("\n  the same removal on the real column:")
     deseasonalised = outflow / cycle
     p_clean = adf_report(deseasonalised, "outflow, cycles divided out")
@@ -262,21 +283,41 @@ def main() -> None:
           "for a holdout, which is where the next script settles it")
 
     print("\n  cross-checked against a test whose null hypothesis is reversed:")
-    k_in = kpss_report(inflow, "inflow, as generated")
-    k_out = kpss_report(outflow, "outflow, as generated")
-    k_d1 = kpss_report(outflow.diff(), "outflow, d=1")
-    for label, adf_p, kpss_p in [
-        ("inflow ", p_in, k_in),
-        ("outflow", p_out, k_out),
-        ("d=1    ", adfuller(outflow.diff().dropna(), autolag="AIC")[1], k_d1),
-    ]:
-        adf_says_stationary = adf_p < ALPHA
-        kpss_says_stationary = kpss_p >= ALPHA
-        agree = "agree" if adf_says_stationary == kpss_says_stationary else "DISAGREE"
-        print(f"  {label}  ADF stationary {str(adf_says_stationary):<5}  "
-              f"KPSS stationary {str(kpss_says_stationary):<5}  -> {agree}")
-    print("  KPSS p-values are clipped to the 0.01-0.10 lookup range, so read them "
-          "as a side of the boundary rather than as a measurement")
+    p_d1 = adfuller(outflow.diff().dropna(), autolag="AIC")[1]
+    columns = [("inflow ", inflow, p_in), ("outflow", outflow, p_out),
+               ("d=1    ", outflow.diff(), p_d1)]
+    scored = []
+    for label, series, adf_p in columns:
+        level = kpss_report(series, f"{label.strip()}, as generated"
+                            if label.strip() != "d=1" else "outflow, d=1")
+        trend = kpss_report(series, f"{label.strip()}, as generated"
+                            if label.strip() != "d=1" else "outflow, d=1", "ct")
+        scored.append((label, adf_p, level, trend))
+    print("\n  KPSS p-values are clipped to the 0.01-0.10 lookup range, so read them "
+          "as a side")
+    print("  of the boundary rather than as a measurement. Every level-only call above "
+          "sits at")
+    print("  the top of that range:")
+    print(f"  {'':<9}{'ADF stationary':>16}{'KPSS around a level':>22}"
+          f"{'KPSS around a trend':>22}")
+    for label, adf_p, level, trend in scored:
+        adf_says = adf_p < ALPHA
+        print(f"  {label}{str(adf_says):>16}{str(level >= ALPHA):>22}"
+              f"{str(trend >= ALPHA):>22}")
+    print("\n  The middle column agrees with ADF on all three, and that agreement is "
+          "worth nothing:")
+    print("  the outflow was built with a growth term, so it is not stationary around a "
+          "level, and")
+    print("  a test asked whether it is stationary around a level has been asked a "
+          "question with a")
+    print("  known answer. It fails to reject on everything, so it confirms whatever it "
+          "is put next to.")
+    print("  The right-hand column asks the question the generator actually poses and "
+          "contradicts ADF")
+    print("  on the raw outflow, which is the disagreement the generator says should be "
+          "there.")
+    print("  Two tests agreeing is only evidence when each of them could have said "
+          "something else.")
 
 
 if __name__ == "__main__":

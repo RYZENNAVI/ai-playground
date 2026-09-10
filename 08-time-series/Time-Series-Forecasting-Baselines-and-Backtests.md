@@ -336,12 +336,18 @@ inflow, as generated               stat    -4.776  p   0.0001  lags 14  n  169  
 ### 4.2 KPSS: the same question with the null reversed
 
 ```python
-def kpss_report(series: pd.Series, label: str) -> float:
+def kpss_report(series: pd.Series, label: str, regression: str = "c") -> float:
     """Run a KPSS test, whose null hypothesis is the reverse of the previous one.
 
     Running both is what turns a single borderline p-value into an agreement or a
     disagreement, and a disagreement is itself information: it usually means the
     series is neither clean noise nor a clean random walk.
+
+    regression says what the test is allowed to call stationary. 'c' asks
+    whether the series is stationary around a level, 'ct' around a straight
+    line. A column built with a growth term is not stationary around a level,
+    so asking the first question of it is asking the wrong one, and the answer
+    that comes back is not usable as a cross-check on anything.
     """
 ```
 
@@ -355,6 +361,26 @@ a boundary, not as a measurement. The script suppresses that specific warning an
 # warns whenever a statistic falls outside that range. Every call here does,
 # which is the point being reported below rather than something to fix.
 ```
+
+**The `regression` argument is the part that decides whether the cross-check is worth
+anything.** The script runs every column both ways:
+
+```
+                    ADF stationary   KPSS around a level   KPSS around a trend
+  inflow                      True                  True                  True
+  outflow                     True                  True                 False
+  d=1                         True                  True                  True
+```
+
+The middle column agrees with ADF on all three, and **that agreement is worth nothing**. The
+outflow was built with a growth term, so it is not stationary around a level; asking a test
+whether it is stationary around a level is asking a question whose answer is already known.
+It fails to reject on everything, so it confirms whatever it is put next to. The right-hand
+column asks the question the generator actually poses, and it **contradicts ADF on the raw
+outflow** — which is the disagreement the generator says should be there.
+
+⇒ **Two tests agreeing is only evidence when each of them could have said something else.**
+A cross-check has to be able to fail before its passing means anything.
 
 ### 4.3 Differencing
 
@@ -433,8 +459,13 @@ cause with a Monte Carlo in which **every series is a random walk, and therefore
 | The same walk under the weekday and month-position cycles | **28%** |
 | The same walk with those cycles divided back out | **9%** |
 
-**Laying the cycles over a walk multiplies the error rate by 3.1x, and removing them undoes
-it.** It is not the sample size; it is the cycles.
+**Laying the cycles over a walk multiplies the error rate by 3.1x.** It is not the sample
+size; it is the cycles.
+
+The third row is **not a second finding**. Dividing out what was just multiplied in is an
+identity, so it had to come back to 9% — it establishes that the removal is exact, which is
+what the next block relies on, and nothing more. A row that could only have come out one way
+is a check on the harness, not evidence for the claim.
 
 The mechanism: a strong deterministic cycle reads, in the test's own regression, as strong
 mean reversion. The test sees "it always comes back" — and what comes back is the position
