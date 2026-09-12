@@ -17,6 +17,7 @@ import os
 import re
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -155,7 +156,7 @@ def read_verdict(raw):
             return str(parsed["verdict"]), "json"
     except json.JSONDecodeError:
         pass
-    match = re.search(r'"?(?:verdict|sentiment)"?\s*[:=]\s*"?\**([A-Za-z]+)', raw,
+    match = re.search(r'"?(?:verdict|sentiment)"?\**\s*[:=]\s*\**\s*"?([A-Za-z]+)', raw,
                       re.IGNORECASE)
     if match:
         return match.group(1), "regex"
@@ -172,12 +173,14 @@ def split_by_verdict(rows):
 
 
 def normalise(verdict):
-    """Fold a label onto the expected vocabulary before comparing it."""
-    cleaned = verdict.strip().strip("*#.\"' ").lower()
-    for word in EXPECTED:
-        if word in cleaned:
-            return word
-    return cleaned
+    """Fold a label onto the expected vocabulary before comparing it.
+
+    The match is on the whole cleaned string, not a substring. A substring test
+    would be shorter and wrong: 'not positive' contains 'positive', so it would
+    fold onto the opposite of what the model said. Tidying case and punctuation
+    is the job here; guessing at a label the model did not give is not.
+    """
+    return verdict.strip().strip("*#.\"' ").lower()
 
 
 def strip_words_in_code(text, words):
@@ -185,6 +188,11 @@ def strip_words_in_code(text, words):
     pattern = re.compile(r"\b(" + "|".join(re.escape(w) for w in words) + r")\b",
                          re.IGNORECASE)
     return re.sub(r"\s{2,}", " ", pattern.sub("", text)).strip()
+
+
+def word_counts(text):
+    """Count the words in a piece of text, ignoring case and punctuation."""
+    return Counter(re.findall(r"[A-Za-z']+", text.lower()))
 
 
 def surviving_stopwords(text, words):
@@ -244,8 +252,10 @@ def main():
 
     print("\n--- 6. The same rows, with each label normalised first ---")
     stubborn = set()
+    folded_labels = {}
     for name, rows in runs.items():
         folded = [{**r, "verdict": normalise(r["verdict"])} for r in rows]
+        folded_labels[name] = [r["verdict"] for r in folded]
         pos, neu, neg = split_by_verdict(folded)
         routed = len(pos) + len(neu) + len(neg)
         print(f"  {name:<10} routed {routed}/{len(rows)}  "
@@ -255,11 +265,19 @@ def main():
         stubborn.update(still_off)
         if still_off:
             print(f"             still outside the vocabulary: {still_off}")
-    print("  folding costs three lines and recovers every label that differs from the")
+    print("  folding costs one line and recovers every label that differs from the")
     print("  vocabulary only in case or punctuation. It cannot recover a word the")
     print(f"  model picked for itself: {sorted(stubborn) or 'nothing here'} came back")
     print("  unroutable either way, which is the enum's job in the prompt, not the")
     print("  parser's job after the fact")
+    reference = folded_labels["json mode"]
+    for name in ("plain", "example"):
+        agree = sum(1 for a, b in zip(folded_labels[name], reference) if a == b)
+        print(f"  {name:<10} agrees with json mode on {agree}/{len(reference)} rows "
+              f"once folded")
+    print("  there is no hand-labelled sentiment anywhere in this script, so that is")
+    print("  agreement between variants, not accuracy. Steps 4 and 5 score the output")
+    print("  contract; nothing here scores the judgement behind the label")
 
     print("\n--- 7. A deterministic edit, asked of the model and written in code ---")
     print(f"  words to remove: {STOPWORDS}")
@@ -279,6 +297,17 @@ def main():
     print(f"               {len(left_model)} listed word(s) survive: {left_model}")
     print(f"  code node  : {in_code[:96]!r}")
     print(f"               {len(left_code)} listed word(s) survive: {left_code}")
+    # Counting only the residue answers half the instruction. The other half is
+    # 'keep all remaining words unchanged', and a model can satisfy the first
+    # while quietly failing the second.
+    dropped = word_counts(in_code) - word_counts(raw)
+    added = word_counts(raw) - word_counts(in_code)
+    print(f"  the two results agree word for word: "
+          f"{'yes' if not dropped and not added else 'no'}")
+    print(f"               words the rule keeps that the model dropped: "
+          f"{sorted(dropped.elements())}")
+    print(f"               words the model wrote that the rule does not: "
+          f"{sorted(added.elements())}")
     print("  the edit is defined by a rule, so the node that can apply a rule owns it")
 
 

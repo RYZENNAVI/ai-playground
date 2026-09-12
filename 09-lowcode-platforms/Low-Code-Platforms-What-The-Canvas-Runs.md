@@ -381,8 +381,8 @@ Measured with `deepseek-chat` at `temperature=0`:
 ```
 --- 4. Scored against the vocabulary the next node compares against ---
   plain      0/6 replies parsed as JSON, 0/6 verdicts match the vocabulary exactly
-             values outside it: ['Frustrated', 'Negative', 'Neutral', 'Positive']
-  example    6/6 replies parsed as JSON, 6/6 verdicts match the vocabulary exactly
+             values outside it: ['Frustrated', 'Mixed', 'Negative', 'Neutral', 'Positive']
+  example    0/6 replies parsed as JSON, 6/6 verdicts match the vocabulary exactly
   json mode  6/6 replies parsed as JSON, 6/6 verdicts match the vocabulary exactly
 
 --- 5. What the downstream code node does with those rows ---
@@ -392,18 +392,39 @@ Measured with `deepseek-chat` at `temperature=0`:
   json mode  routed 6/6  (positive 2, neutral 1, negative 3)
 ```
 
-**The plain prompt loses all six rows.** Not one of them is wrong about sentiment — the
-model answered `Sentiment: Positive` in prose, and one review came back with no label at
-all, only the word `Frustrated` in a sentence. The classification is fine. The contract
-is not.
+**The plain prompt loses all six rows.** The model answered `**Sentiment:** Positive` in
+prose, which the parser's regular expression can read — the `read by` column in step 1 says
+`regex` for all six — but the value it reads is `Positive`, not `positive`, and four of the
+six differ from the vocabulary in nothing but case.
+
+What this does **not** show is that the sentiment judgements were right. There is no
+hand-labelled answer key anywhere in this script, so nothing here can score the judgement
+behind the label. What step 6 can measure is agreement between variants, and it prints it:
+once folded, `plain` agrees with `json mode` on **4 of 6** rows — the other two are the two
+labels the model invented for itself. **Every number in steps 4 and 5 is about the output
+contract, not about accuracy.**
 
 ### 6.3 Two findings worth separating
 
-**The output example does the work; the format switch does not add to it.** For this model,
-pinning an example to the prompt already produces 6/6 parseable JSON with 6/6 in-vocabulary
-verdicts. `response_format` guarantees the *parser* — the reply will be a JSON object — but
-it guarantees nothing about the *vocabulary*. Those are two different contracts, and only
-one of them is what the code node depends on.
+**The two variants fix two different contracts, and the run separates them cleanly.**
+Pinning the output example takes the vocabulary from 0/6 to 6/6 — the labels come back as
+`positive`, `neutral`, `negative`, exactly the three words the code node compares against.
+It does *not* make the reply parseable: `example` still scores **0/6 parsed as JSON**,
+because the example in the prompt is itself a fragment —
+
+```
+"verdict": "positive/neutral/negative",
+"digest": "..."
+```
+
+— with no surrounding braces, and the model reproduced that shape faithfully, missing
+braces included. Switching `response_format` to `json_object` is what takes parsing to 6/6.
+
+So: **the example bought the vocabulary, the format switch bought the parser.** Neither
+substitutes for the other, and it is worth being precise about what `json_object` even
+promises: it guarantees the reply is a JSON object. It carries no enum. The three permitted
+labels live in the prompt text, not in a machine-checkable schema, and nothing in this
+script validates that the object holds exactly the two keys it was asked for.
 
 **Folding the label recovers most but not all of it.** Adding a three-line normaliser
 before the comparison:
@@ -419,14 +440,24 @@ def normalise(verdict):
 
 ```
 --- 6. The same rows, with each label normalised first ---
-  plain      routed 4/6  (positive 2, neutral 1, negative 1), recovering 4
-             still outside the vocabulary: ['frustrated']
+  plain      routed 4/6  (positive 1, neutral 1, negative 2), recovering 4
+             still outside the vocabulary: ['frustrated', 'mixed']
 ```
 
-Four of the six come back that were all lost before. The two that stay out are both
-`Frustrated`, because it is not a spelling of a value in the enum — it is a different word. **Normalising moves the failure from silent to
-visible, which is the whole of what it can do.** The enum belongs on the boundary, and
-whatever cannot be folded onto it has to be reported rather than dropped.
+Four of the six come back that were all lost before. The two that stay out are `frustrated`
+and `mixed` — neither is a spelling of a value in the enum; both are words the model chose
+for itself.
+
+The match is deliberately on the **whole** cleaned string. A substring test would be one
+character shorter and wrong: `'not positive'` contains `'positive'`, so it would fold onto
+the opposite of what the model said. Tidying case and punctuation is the job; guessing at a
+label the model never gave is not.
+
+And note what makes the two failures *visible*: it is step 5's report, which already printed
+every dropped title before any folding happened. **Normalising recovers labels; the report
+is what surfaces the ones it cannot.** Those are two jobs, and a pipeline needs both — the
+enum belongs on the boundary, and whatever cannot be folded onto it has to be reported
+rather than dropped.
 
 ### 6.4 A rule is not a prompt
 
@@ -437,17 +468,31 @@ words from a paragraph, leave everything else unchanged.
 STOPWORDS = ["broker", "brokerage", "application", "app", "user", "users", "not"]
 ```
 
+Counting leftovers only answers half the instruction. The other half is "keep all
+remaining words unchanged", and a model can satisfy the first while quietly failing the
+second — dropping an article, rephrasing a clause. So the check compares the two results
+word for word as well:
+
 ```
-model node : 'The app is slow, but report the research tab is reachable when reconnects. ...'
-             1 listed word(s) survive: ['app']
-code node  : 'The is slow, but report the research tab is reachable when the reconnects. ...'
+model node : 'The is slow, but report the research tab is reachable when the reconnects. one mentioned fees.'
              0 listed word(s) survive: []
+code node  : 'The is slow, but report the research tab is reachable when the reconnects. one mentioned fees.'
+             0 listed word(s) survive: []
+  the two results agree word for word: yes
+               words the rule keeps that the model dropped: []
+               words the model wrote that the rule does not: []
 ```
 
-The prompt even contains the line "Make sure the word *not* is removed" — a sentence that
-exists because somebody watched the model leave it in. **The edit is defined by a rule, so
-the node that can apply a rule owns it.** Sending it to a model costs a request, costs
-latency, and still leaves a word behind.
+**On this run the model got it exactly right.** That is worth stating plainly rather than
+reaching for a tidier conclusion. The prompt even contains the line "Make sure the word
+*not* is removed" — a sentence that exists because somebody once watched the model leave it
+in, and on a different day or a different model it will be earned again.
+
+Which is the actual point. The model's answer is correct *this time*, and the only way to
+know that is the comparison above — which means writing the rule in code anyway. Once it is
+written, the model call buys nothing: it costs a request, costs latency, and returns a
+result that is right or wrong in a way only the code path can adjudicate. **A rule that can
+be written down belongs in the node that can apply it.**
 
 ---
 
@@ -925,7 +970,7 @@ does it for the key inside `inputs`, which is exactly why section 9.5 costs four
 | # | Result |
 | :--- | :--- |
 | **01** | 23 nodes across three definitions execute end to end. One edited reference is caught statically: `123474.values wants 136482.summary, but 136482 emits ['digest', 'branch']`. One added back-edge leaves **1 node able to start and 7 waiting forever**. `[^Scene]` truncates three scenes to `'A r'`, `'Th'`, `'Ev'` — 7 characters of 174 — while still returning three parts. Across all 24 orderings of the four articles the marks form **1 distinct multiset** while the running totals take **4 distinct values**. The selector marks 1 of 4 elements `drop`; the cleanup node removes it |
-| **02** | `deepseek-chat`, `temperature=0`, six reviews per variant. Plain prompt: **0/6 parse as JSON, 0/6 match the vocabulary, 0/6 routed** — all six discarded without an error. With an output example: 6/6 and 6/6. With `response_format` as well: 6/6 and 6/6 — **the example is what fixed it, not the format switch**. Normalising the label recovers 4 of the 6 lost in the plain run; `frustrated` remains outside the enum. Model-applied stopword removal leaves 1 of 7 words in place; the code path leaves 0 |
+| **02** | `deepseek-chat`, `temperature=0`, six reviews per variant. Plain prompt: **0/6 parse as JSON, 0/6 match the vocabulary, 0/6 routed** — all six discarded without an error. An output example takes the vocabulary to **6/6** but leaves parsing at **0/6**, because the example is a brace-less fragment and the model copies it faithfully; `response_format` takes parsing to **6/6**. **The example buys the vocabulary, the format switch buys the parser.** Folding case and punctuation recovers 4 of the 6 lost in the plain run; `frustrated` and `mixed` are words the model chose and stay outside the enum. Once folded, plain agrees with json mode on **4/6** — agreement between variants, not accuracy, since the script has no answer key. The stopword edit came back matching the code path word for word on this run |
 | **03** | Three malformed calls refused before a page is fetched. The page with a missing rating: the permissive mapper returns 2 rows and raises nothing, and the output schema then finds **2 type violations across both rows**; the strict mapper stops and names the field. `page_limit=20` against a 3-page source costs 3 fetches, yields 7 rows and reports 1 skipped entry |
 | **04** | Index on `family`: **0/9 rows uniquely identified**, worst case 3 rows share a value. Index on `plan`: 9/9. A three-condition question returns 4 rows by similarity of which **0 satisfy all three**, spread across 0.795–0.791; the correct row is not in the top four. The parsed filter returns 1 row, matching a direct scan. Matching the event type literally silently drops that condition and returns 2 rows; folding case and punctuation returns 1. Prose recall costs 186 / 354 / 621 tokens at `top_k` 2 / 4 / 8 |
 | **05** | Server starts on a free loopback port. Blocking returns one body; streaming returns **5 events in 0.17s**. Two requests come back HTTP 400 for unrelated reasons: an empty `inputs` object on the right endpoint gets `app_unavailable`, and a well-formed chat body on the wrong endpoint gets `not_chat_app`. The probing client needs **4 requests** to find the declared key name. With the server stopped, the same loop makes 5 failed attempts and reports *"check the application configuration and API key"* |
