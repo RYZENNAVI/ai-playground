@@ -436,11 +436,18 @@ because the example in the prompt is itself a fragment —
 ```
 
 — with no surrounding braces, and the model reproduced that shape faithfully, missing
-braces included. Switching `response_format` to `json_object` is what takes parsing to 6/6.
+braces included.
 
-So: **the example bought the vocabulary, the format switch bought the parser.** Neither
-substitutes for the other, and it is worth being precise about what `json_object` even
-promises: it guarantees the reply is a JSON object. It carries no enum. The three permitted
+The third variant reaches **6/6 parsed**, but it is worth being careful about the credit:
+it changes *two* things at once. It adds a written constraint ("Reply with a single JSON
+object holding exactly the keys...") **and** it switches `response_format` to
+`json_object`. The measurement supports "the constraint together with the format switch
+takes parsing to 6/6" — it does not isolate either one, and this script runs no variant
+that would.
+
+What the run does separate cleanly is the *other* axis: **the example bought the
+vocabulary, and it bought nothing else.** Vocabulary went 0/6 → 6/6 while parsing stayed at
+0/6. It is also worth being precise about what `json_object` even promises: it guarantees the reply is a JSON object. It carries no enum. The three permitted
 labels live in the prompt text, not in a machine-checkable schema, and nothing in this
 script validates that the object holds exactly the two keys it was asked for.
 
@@ -449,11 +456,7 @@ before the comparison:
 
 ```python
 def normalise(verdict):
-    cleaned = verdict.strip().strip("*#.\"' ").lower()
-    for word in EXPECTED:
-        if word in cleaned:
-            return word
-    return cleaned
+    return verdict.strip().strip("*#.\"' ").lower()
 ```
 
 ```
@@ -487,16 +490,18 @@ STOPWORDS = ["broker", "brokerage", "application", "app", "user", "users", "not"
 ```
 
 Counting leftovers only answers half the instruction. The other half is "keep all
-remaining words unchanged", and a model can satisfy the first while quietly failing the
-second — dropping an article, rephrasing a clause. So the check compares the two results
-word for word as well:
+remaining words **and their order** unchanged", and a model can satisfy the first while
+quietly failing the second — dropping an article, reordering a clause. Note that a word
+*count* cannot see the second half either: `users trust brokers` and `brokers trust users`
+have identical counts. So the sequence is the test, and the counts are there to explain a
+failure rather than to detect one:
 
 ```
 model node : 'The is slow, but report the research tab is reachable when the reconnects. one mentioned fees.'
              0 listed word(s) survive: []
 code node  : 'The is slow, but report the research tab is reachable when the reconnects. one mentioned fees.'
              0 listed word(s) survive: []
-  the two results agree word for word: yes
+  the two results match token for token, order included: yes
                words the rule keeps that the model dropped: []
                words the model wrote that the rule does not: []
 ```
@@ -988,7 +993,7 @@ does it for the key inside `inputs`, which is exactly why section 9.5 costs four
 | # | Result |
 | :--- | :--- |
 | **01** | 23 nodes across three definitions execute end to end. One edited reference is caught statically: `123474.values wants 136482.summary, but 136482 emits ['digest', 'branch']`. One added back-edge leaves **1 node able to start and 7 waiting forever**. `[^Scene]` truncates three scenes to `'A r'`, `'Th'`, `'Ev'` — 7 characters of 174 — while still returning three parts. Across all 24 orderings of the four articles the marks form **1 distinct multiset** while the running totals take **4 distinct values**. The selector marks 1 of 4 elements `drop`; the cleanup node removes it |
-| **02** | `deepseek-chat`, `temperature=0`, six reviews per variant. Plain prompt: **0/6 parse as JSON, 0/6 match the vocabulary, 0/6 routed** — all six discarded without an error. An output example takes the vocabulary to **6/6** but leaves parsing at **0/6**, because the example is a brace-less fragment and the model copies it faithfully; `response_format` takes parsing to **6/6**. **The example buys the vocabulary, the format switch buys the parser.** Folding case and punctuation recovers 4 of the 6 lost in the plain run; `frustrated` and `mixed` are words the model chose and stay outside the enum. Once folded, plain agrees with json mode on **4/6** — agreement between variants, not accuracy, since the script has no answer key. The stopword edit came back matching the code path word for word on this run |
+| **02** | `deepseek-chat`, `temperature=0`, six reviews per variant. Plain prompt: **0/6 parse as JSON, 0/6 match the vocabulary, 0/6 routed** — all six discarded without an error. An output example takes the vocabulary to **6/6** but leaves parsing at **0/6**, because the example is a brace-less fragment and the model copies it faithfully. The third variant adds a written JSON constraint **and** `response_format` together, and reaches **6/6** parsed — the run credits the pair, not either one alone. **What it does isolate is that the example buys the vocabulary and nothing else.** Folding case and punctuation recovers 4 of the 6 lost in the plain run; `frustrated` and `mixed` are words the model chose and stay outside the enum. Once folded, plain agrees with json mode on **4/6** — agreement between variants, not accuracy, since the script has no answer key. The stopword edit came back matching the code path word for word on this run |
 | **03** | Three malformed calls refused before a page is fetched. The page with a missing rating: the permissive mapper returns 2 rows and raises nothing, and the output schema then finds **2 type violations across both rows**; the strict mapper stops and names the field. `page_limit=20` against a 3-page source costs 3 fetches, yields 7 rows and reports 1 skipped entry |
 | **04** | Index on `family`: **0/9 rows uniquely identified**, worst case 3 rows share a value. Index on `plan`: 9/9. A three-condition question returns 4 rows by similarity of which **0 satisfy all three**, spread across 0.795–0.791; the correct row is not in the top four. The parsed filter returns 1 row, matching a direct scan. Matching the event type literally silently drops that condition and returns 2 rows; folding case and punctuation returns 1. Prose recall costs 186 / 354 / 621 tokens at `top_k` 2 / 4 / 8 |
 | **05** | Server starts on a free loopback port. Blocking returns one body; streaming returns **5 events in 0.17s**. Two requests come back HTTP 400 for unrelated reasons: an empty `inputs` object on the right endpoint gets `app_unavailable`, and a well-formed chat body on the wrong endpoint gets `not_chat_app`. The probing client needs **4 requests** to find the declared key name. With the server stopped, the same loop makes 5 failed attempts and reports *"check the application configuration and API key"* |

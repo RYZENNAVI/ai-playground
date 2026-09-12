@@ -3,7 +3,7 @@
 Demonstrates where a model node and a code node meet, and what leaks through:
     1. Run the node on a plain instruction, the way a first draft states it.
     2. Run it again with an output example pinned to the prompt.
-    3. Run it a third time with the JSON response format switched on.
+    3. Run it a third time with a written JSON constraint and the format switch on.
     4. Score all three against the exact vocabulary the downstream node expects.
     5. Route every row through that downstream node and count what disappears.
     6. Normalise each label before comparing it, and route the same rows again.
@@ -214,7 +214,7 @@ def main():
     for step, (name, prompt, json_mode) in enumerate(VARIANTS, start=1):
         heading = {"plain": "a plain instruction",
                    "example": "an output example pinned to the prompt",
-                   "json mode": "the JSON response format switched on"}[name]
+                   "json mode": "a written constraint and the format switch, both"}[name]
         print(f"\n--- {step}. The node with {heading} ---")
         rows = []
         for review in REVIEWS:
@@ -300,10 +300,20 @@ def main():
     # Counting only the residue answers half the instruction. The other half is
     # 'keep all remaining words unchanged', and a model can satisfy the first
     # while quietly failing the second.
+    # Word counts alone cannot see order: 'users trust brokers' and 'brokers trust
+    # users' have identical counts. The instruction says the remaining words keep
+    # their order, so the sequence is the test and the counts explain a failure.
+    model_tokens, code_tokens = raw.split(), in_code.split()
     dropped = word_counts(in_code) - word_counts(raw)
     added = word_counts(raw) - word_counts(in_code)
-    print(f"  the two results agree word for word: "
-          f"{'yes' if not dropped and not added else 'no'}")
+    print(f"  the two results match token for token, order included: "
+          f"{'yes' if model_tokens == code_tokens else 'no'}")
+    if model_tokens != code_tokens:
+        first = next((i for i, (a, b) in enumerate(zip(model_tokens, code_tokens))
+                      if a != b), min(len(model_tokens), len(code_tokens)))
+        print(f"               they first part at token {first}: model wrote "
+              f"{' '.join(model_tokens[first:first + 3])!r}, rule wrote "
+              f"{' '.join(code_tokens[first:first + 3])!r}")
     print(f"               words the rule keeps that the model dropped: "
           f"{sorted(dropped.elements())}")
     print(f"               words the model wrote that the rule does not: "
