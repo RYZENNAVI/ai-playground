@@ -441,7 +441,7 @@ The size of the effect, measured on one differenced cash-flow column:
 much** — all three pass. And d=2 inflates the spread by **1.53x**, handing the model extra
 noise to fit.
 
-⇒ **The order of differencing cannot be settled by the test alone.** Section 6.7 puts the
+⇒ **The order of differencing cannot be settled by the test alone.** Section 6.9 puts the
 question on a holdout, and the answer there is not the one this section sets up.
 
 ### 4.6 Measured: a strong cycle hides a wandering level
@@ -886,6 +886,38 @@ The first sample of a differenced model **has no history to use** (the AR term w
 ⇒ The usual treatment is to blank the leading points. **This is the "runs, but the output
 needs manual repair" pattern**: nothing raises, the plot draws — but leaving those values in
 stretches the vertical axis of the whole chart.
+
+### 6.9 Measured: pricing the extra difference, and the knob nobody turned
+
+Section 4.5 left the differencing order unresolved: ADF passed d=0, d=1 and d=2 alike, and a
+test that only ever says "enough" cannot say "too much". The script settles it the only way
+left — by forecasting **30 days no model saw** and paying for the answer in error:
+
+| Order | AIC | Holdout RMSE, 30 days | vs best |
+| :--- | ---: | ---: | ---: |
+| (2, 0, 2) | 6032.2 | 107,195,972 | 1.32x |
+| (2, 1, 2) | 6002.7 | 111,569,384 | 1.37x |
+| (2, 2, 2) | 5992.6 | 100,336,063 | 1.24x |
+| **(2, 0, 2) x (1, 0, 1, 7)** | **5605.1** | **81,217,127** | **1.00x** |
+
+**Read the criterion column, not the AIC column.** AIC here is fit information only: it is
+computed on the training rows, and across different `d` it is not comparable at all, because
+differencing changes which series is being scored. The holdout RMSE is the criterion.
+
+Two readings, and the second is the one worth keeping:
+
+1. **The three differencing orders land within 1.11x of each other.** The extra difference
+   cost close to nothing — and note that d=2, the one section 4.5 flagged for inflating the
+   spread by 1.53x, actually came out **best of the three**. The argument the test could not
+   settle turned out not to be worth settling.
+2. **Adding a seven-day term moved the error further than every choice of `d` put
+   together** — down to 81.2M against 100–112M, a 1.24x improvement on the best of them,
+   where the whole `d` question spanned 1.11x.
+
+⇒ **The order of differencing was the wrong knob to argue over.** The largest structure in
+this column repeats every seven days, and none of the first three models were told that. A
+question that a test cannot settle is sometimes a question that does not matter; the effort
+belongs on the structure nobody has modelled yet.
 
 ---
 
@@ -1988,7 +2020,7 @@ Run them in order. `01` writes the data every other script reads; the rest are i
 | :--- | :--- |
 | `01_build_time_series_datasets.py` | Builds five series from mechanisms written in the file and records every parameter in `ground_truth.json`: a daily cash-flow panel (weekday x month-position factors, a random walk, four promotion days), a 30-year index (five drift regimes, a 250-observation cycle), a 198-row history too short for a yearly cycle, a 42-month total, and an ARMA series of fixed order |
 | `02_decompose_and_stationarity.py` | Decomposition at the right period and three wrong ones; STL against moving average; ADF and KPSS; the differencing ladder; **and the Monte Carlo showing that a strong cycle triples the rate at which a random walk is called stationary** |
-| `03_arima_grid_search_and_forecast.py` | An AIC grid on a series of known order — **the label is not recovered, the dynamics are**; **a convergence flag per candidate, because 17 of 40 hit the iteration cap and raise nothing**; a truncated candidate list changing the winner; a forecast scored against the generator's own noiseless expectation; four resampling scales; the drifting date loop with its assertions; in-sample against out-of-sample |
+| `03_arima_grid_search_and_forecast.py` | An AIC grid on a series of known order — **the label is not recovered, the dynamics are**; **a convergence flag per candidate, because 17 of 40 hit the iteration cap and raise nothing**; a truncated candidate list changing the winner; a forecast scored against the generator's own noiseless expectation; four resampling scales; the drifting date loop with its assertions; in-sample against out-of-sample; **and the differencing order priced on a holdout, where a seven-day term beats every choice of d** |
 | `04_prophet_trend_seasonality_changepoints.py` | The three additive terms and their magnitudes; **detected changepoints matched against planted ones**; what a looser prior buys; event lift recovered against a planted 1.55; a carrying capacity; **and the negative result on a sub-annual series** |
 | `05_periodic_factor_baseline.py` | Three implementations side by side — additive dummies, ratio one-at-a-time, joint alternation — **all scored against planted factors** and against a SARIMAX given the same weekly period |
 | `06_lstm_windowed_forecast.py` | Windowing with `series_to_supervised`; **a random split in which 100% of the observations touched by test rows also appear in training rows**; scaling from the training side only; a small PyTorch model against two untrained baselines; the training-set score against the holdout |
