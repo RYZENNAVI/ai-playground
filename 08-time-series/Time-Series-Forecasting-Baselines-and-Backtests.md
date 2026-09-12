@@ -1093,9 +1093,12 @@ Now the price of flexibility:
 | 0.05 | 17 | 4 / 4 | **11** | 11.50 |
 | 0.50 | 22 | 4 / 4 | **16** | 11.48 |
 
-⇒ **The four real changes are found at every setting. What a looser prior buys is the last
-column.** A looser prior always fits history better, and it pays for that fit with slope
-changes the generator never made.
+⇒ **The four real changes are found at every setting, so the "planted matched" column
+separates none of the three.** What a looser prior adds is the **"unplanted"** column:
+7 → 11 → 16 slope changes the generator never made. The last column does not grow at all —
+the in-sample fit *improves*, 11.72 → 11.48. That is the trade, and it is the wrong way
+round from the one a reader expects: a better fit to the history, bought with nine more
+changes that were never in it.
 
 **One measurement worth keeping separate.** On this series the fitted yearly term recovers
 only a part of the planted cycle:
@@ -1203,6 +1206,12 @@ The generator plants four promotion days at a lift of `1.55`:
 | 2013-12-12 | 1.41 | 1.55 |
 | 2014-06-18 | 1.38 | 1.55 |
 | 2014-08-08 | 1.45 | 1.55 |
+
+> **These four are fitted parameters, not constants.** `1.55` is the generator's, and it is
+> fixed. The `1.37`–`1.45` column is whatever this Prophet build's optimiser arrived at, and
+> it can move with the Prophet or Stan version. Read the gap — the fit recovers most of the
+> planted lift and consistently undershoots it — rather than the digits, and re-record the
+> column whenever the run is re-run.
 
 And the error, split by day type:
 

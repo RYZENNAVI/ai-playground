@@ -50,11 +50,19 @@ def as_prophet_frame(series: pd.Series) -> pd.DataFrame:
     return pd.DataFrame({"ds": series.index, "y": series.to_numpy(dtype=float)})
 
 
-def nearest_gap(found: pd.Series, target: pd.Timestamp) -> float:
-    """Return the distance in days from one planted date to the closest detected one."""
+def nearest_detected(found: pd.Index, target: pd.Timestamp) -> tuple:
+    """Return the gap in days to the closest detected changepoint, and which one it is.
+
+    Detecting nothing is a real outcome at a tight enough prior, so it is
+    answered here with an infinite gap and no date. Returning both values from
+    one call is what makes that answer usable: a guard that covers the distance
+    but leaves the caller to index the same empty set separately is not a guard.
+    """
     if len(found) == 0:
-        return float("inf")
-    return float(np.abs((found - target).days).min())
+        return float("inf"), None
+    offsets = np.abs((found - target).days)
+    position = int(offsets.argmin())
+    return float(offsets[position]), found[position]
 
 
 def main() -> None:
@@ -111,12 +119,13 @@ def main() -> None:
           f"{'gap, days':>10}")
     for date, slope in zip(index_truth["changepoint_date"], index_truth["segment_log_slope"][1:]):
         target = pd.Timestamp(date)
-        gap = nearest_gap(significant.index, target)
-        closest = significant.index[np.abs((significant.index - target).days).argmin()]
-        print(f"  {date:<14} {slope:>+14.5f}  {closest.date().isoformat():>18}  "
+        gap, closest = nearest_detected(significant.index, target)
+        label = closest.date().isoformat() if closest is not None else "none detected"
+        print(f"  {date:<14} {slope:>+14.5f}  {label:>18}  "
               f"{gap:>10.0f}")
-    matched = sum(nearest_gap(significant.index, pd.Timestamp(d)) <= MATCH_TOLERANCE_DAYS
-                  for d in index_truth["changepoint_date"])
+    matched = sum(
+        nearest_detected(significant.index, pd.Timestamp(d))[0] <= MATCH_TOLERANCE_DAYS
+        for d in index_truth["changepoint_date"])
     print(f"  {matched} of {len(index_truth['changepoint_date'])} planted changes have "
           f"a detected one within {MATCH_TOLERANCE_DAYS} days")
     print("  the fitter was never told where to look; it places candidates on a grid "
@@ -125,6 +134,7 @@ def main() -> None:
     print("\n--- 3. Turn the flexibility up and down ---")
     print(f"  {'prior scale':>12}  {'changes > 0.01':>15}  {'planted matched':>16}  "
           f"{'unplanted':>10}  {'in-sample RMSE':>15}")
+    unplanted_by_scale, rmse_by_scale = [], []
     for scale in CHANGEPOINT_SCALES:
         alt = fit_quietly(Prophet(changepoint_prior_scale=scale, yearly_seasonality=True,
                                   weekly_seasonality=False, daily_seasonality=False), frame)
@@ -132,7 +142,8 @@ def main() -> None:
         alt_deltas = pd.Series(alt.params["delta"].mean(axis=0), index=alt.changepoints)
         alt_significant = alt_deltas[alt_deltas.abs() > 0.01]
         alt_matched = sum(
-            nearest_gap(alt_significant.index, pd.Timestamp(d)) <= MATCH_TOLERANCE_DAYS
+            nearest_detected(alt_significant.index,
+                             pd.Timestamp(d))[0] <= MATCH_TOLERANCE_DAYS
             for d in index_truth["changepoint_date"])
         rmse = float(np.sqrt(np.mean(
             (frame["y"].to_numpy() - alt_fit["yhat"].to_numpy()) ** 2)))
@@ -140,13 +151,21 @@ def main() -> None:
             min(abs((cp - pd.Timestamp(d)).days)
                 for d in index_truth["changepoint_date"]) > MATCH_TOLERANCE_DAYS
             for cp in alt_significant.index)
+        unplanted_by_scale.append(unplanted)
+        rmse_by_scale.append(rmse)
         print(f"  {scale:>12.2f}  {len(alt_significant):>15}  "
               f"{alt_matched:>10} of {len(index_truth['changepoint_date'])}  "
               f"{unplanted:>10}  {rmse:>15.2f}")
-    print(f"  the four planted changes are found at every setting; what a looser prior "
-          f"adds is the last column")
-    print("  a looser prior always fits the history better, and buys that fit with "
-          "slope changes the generator never made")
+    print(f"  the four planted changes are found at every setting, so the 'planted "
+          f"matched' column")
+    print(f"  separates none of them. What a looser prior adds is the 'unplanted' "
+          f"column: {unplanted_by_scale}")
+    print(f"  slope changes the generator never made. The last column, the in-sample "
+          f"fit, does not")
+    print(f"  grow at all - it falls, {rmse_by_scale[0]:.2f} -> {rmse_by_scale[-1]:.2f}. "
+          f"That is the trade: a better")
+    print(f"  fit to the history bought with {unplanted_by_scale[-1] - unplanted_by_scale[0]} "
+          f"more changes that were never in it")
 
     print("\n--- 4. Declare the promotion days as events ---")
     inflow = as_prophet_frame(flow["total_purchase_amt"])
