@@ -814,11 +814,18 @@ scales = {"day": index,
 memory of seven and trust the result.** It can be fitted; that is not the same as being
 worth reading.
 
-⇒ **Aggregating is not free smoothing: it deletes every cycle shorter than the new step.**
-Monthly is often the level modelled rather than daily, because **the daily jitter drowns the
-trend.**
+⇒ **Aggregating is not free smoothing:** averaging into a coarser step strongly attenuates
+whatever repeats faster than that step, and can erase it outright. Monthly is often the level
+modelled rather than daily, because **the daily jitter drowns the trend.**
 
-### 6.7 Building future dates
+### 6.7 Labelling the forecast: building future dates
+
+This looks like a swerve out of model selection and into date arithmetic. It is not. §6.4a
+asked the fitted model for four months and got **four numbers** — `get_forecast(steps=4)`
+returns a horizon, not a calendar. Whoever calls it supplies the months those values are
+filed under, and a forecast nobody can line up against the months it is about is not a
+forecast anyone can use. **Getting the label wrong raises nothing**, which puts it in the
+same family as everything else in this module.
 
 A very common hand-rolled loop: take the number of days in the current month, add it to the
 cursor, repeat.

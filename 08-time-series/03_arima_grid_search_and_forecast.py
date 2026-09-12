@@ -5,7 +5,7 @@ Demonstrates where an autoregressive forecast comes from, end to end:
     2. Resample one daily series to three coarser scales and read what each one can still show.
     3. Search a seasonal grid on the monthly table and forecast past the end of it.
     4. Truncate the candidate list the way a slice does, and compare the winner against the full search.
-    5. Build future dates by adding month lengths, and audit where the labels land.
+    5. Label those forecast values: build the future dates two ways, and audit where they land.
     6. Ask the fitted model for in-sample and out-of-sample values, and keep the two apart.
     7. Price one difference too many on a holdout, then price the cycle none of those models knew.
 
@@ -267,7 +267,14 @@ def main() -> None:
           "number says which orders were never tried: the count of candidates has to "
           "be printed next to the winner or the reader cannot tell these two runs apart")
 
-    print("\n--- 5. Build the forecast dates two ways and audit both ---")
+    # Step 3 asked for four values and got four numbers. It did not get four dates:
+    # get_forecast returns a horizon, and whoever calls it supplies the calendar
+    # those values are filed under. That is still forecast auditing rather than a
+    # detour into date arithmetic - a forecast nobody can line up against the
+    # months it is about is not usable, and the mislabelling raises nothing.
+    print("\n--- 5. Attach dates to those four values, two ways, and audit both ---")
+    print("  the four numbers above carry no calendar of their own; these are the four")
+    print("  labels they would be filed under, built by the two routines people reach for")
     last = retail.index[-1]
     by_hand = month_ends_by_day_count(last, FORECAST_MONTHS)
     by_offset = pd.date_range(last, periods=FORECAST_MONTHS + 1, freq="ME")[1:]
@@ -277,7 +284,10 @@ def main() -> None:
     off_by = [(d - (d + pd.offsets.MonthEnd(0))).days for d in by_hand]
     print(f"  days off the true month end, by hand: {off_by}")
 
-    scanned = pd.date_range("2007-01-01", "2007-12-31", freq="D")
+    # One example is one example. The same routine is run from every start date in
+    # the year the forecast lands in, so the failure rate is counted rather than
+    # inferred from the four labels above.
+    scanned = pd.date_range(f"{last.year}-01-01", f"{last.year}-12-31", freq="D")
     duplicates = skipped = drifted = 0
     for start in scanned:
         produced = month_ends_by_day_count(start, 6)
@@ -285,7 +295,8 @@ def main() -> None:
         duplicates += len(set(produced)) < len(produced)
         skipped += len(set(months)) < len(months)
         drifted += any(d != d + pd.offsets.MonthEnd(0) for d in produced)
-    print(f"  scanned {len(scanned)} start dates, six steps each:")
+    print(f"  scanned every start date in {last.year} ({len(scanned)} of them), "
+          f"six steps each:")
     print(f"    sequences with a repeated date              {duplicates:>4}")
     print(f"    sequences that visit one month twice        {skipped:>4}")
     print(f"    sequences that miss the month end at least once {drifted:>4}")
