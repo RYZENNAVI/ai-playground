@@ -1354,6 +1354,18 @@ the `unsqueeze(-1)` in the script produces.
 training row.** And **59 of the 60 test rows have an immediate neighbour in the training
 set**, differing from it by one step.
 
+The sharper version of the same count is narrower and worse. Observation overlap only says
+the two sides read some of the same history; the question for a supervised split is whether
+the value a test row is *asked to predict* was already handed to the model as an input:
+
+```
+test targets already present in a training row: 60 of 60 (100%)
+```
+
+⇒ **Every answer was in the question paper.** Not "the periods overlap" — the specific
+number each test row is scored on had already been read, as an input, by the rows the weights
+were fitted on.
+
 ⇒ A score measured on those rows answers **how well the model interpolates inside history it
 has already read** — which is not the question a forecast asks.
 
@@ -1372,29 +1384,40 @@ def shared_observation_count(left_rows, right_rows, window, horizon, total) -> i
 ### 8.3 Scale from the earlier side only
 
 ```
-scaling centre 321,299,237 and spread 75,380,048, both computed on training rows only
+train      293 rows, up to 2014-05-03
+validation  60 rows, watched during training
+final test  60 rows, not read until step 5
+observations shared between train and final test: 0
+between train and validation: 14 (the boundary, which is unavoidable)
+scaling centre 321,108,884 and spread 75,377,112, computed on the training rows only
+- not on validation, and not on the final test
 computing the centre on every row instead would have used 322,119,055,
-a 0.26% shift that carries information from the test period into every training row
+a 0.31% shift that carries information from the later periods into every training row
 ```
 
-0.26% sounds like nothing. **The size of the leak is not the point; the existence of it is.**
+0.31% sounds like nothing. **The size of the leak is not the point; the existence of it is.**
 It stops the holdout from being a holdout.
 
-### 8.4 The network, and two baselines that need no training
+### 8.4 The network, two practical baselines, and one oracle
 
-A single LSTM layer plus a linear head — **9,841 parameters, 120 epochs, full batch** — is
-deliberately small, because **the network is not what this script is about.** What matters is
-what it is compared against:
+A single LSTM layer plus a linear head — **9,841 parameters, 120 epochs, full batch of 293
+rows** — is deliberately small, because **the network is not what this script is about.** What
+matters is what it is compared against. The comparison has three different kinds of thing in
+it, and collapsing them into one leaderboard is how an oracle gets mistaken for a baseline:
 
-The reference route is given the generator's own factors; like the one in section 9.6 it is
-a score, not a lower bound.
+| Kind | Route | Final-test RMSE over 60 days | Relative |
+| :--- | :--- | ---: | ---: |
+| **Oracle**, not deployable | Oracle planted factors | **28,297,049** | **1.00x** |
+| **Learned** | Recurrent model | 31,970,965 | 1.13x |
+| **Practical baseline** | Same weekday last week | 56,013,383 | 1.98x |
+| **Practical baseline** | Yesterday repeated | 73,887,789 | 2.61x |
 
-| Route | Holdout RMSE over 60 days | Relative |
-| :--- | ---: | ---: |
-| **Planted periodic factors** (the reference) | **28,289,609** | **1.00x** |
-| Recurrent model | 32,601,665 | 1.15x |
-| Same weekday last week | 56,013,383 | 1.98x |
-| Yesterday repeated | 73,887,789 | 2.61x |
+> **The top row is not a baseline anyone could have built on the day.** It reads the weekday
+> and month-position factors the generator used, straight out of `ground_truth.json`; only
+> its base level is estimated, from the 293 training targets. It is the score available to
+> something that **already knew the structure** — a measuring stick for how much structure the
+> other routes recovered, not a bound anything is obliged to beat, and not a ceiling (RMSE is
+> better when lower, and nothing here proves no model could go under it).
 
 **Two readings:**
 
@@ -1412,11 +1435,18 @@ there.**
 
 | | RMSE |
 | :--- | ---: |
-| Training rows | 23,621,720 |
-| Holdout rows | 32,601,665 (**1.38x**) |
+| Training rows | 21,465,694 |
+| Validation rows (watched during training) | 41,155,212 (**1.92x**) |
+| Final test rows (opened once, at the end) | 31,970,965 (**1.49x**) |
 
 **The first number is the one a plot of predictions over the training period shows** — and it
-exists before any forecast has been made.
+exists before any forecast has been made. The other two were both measured on rows the weights
+never saw; what separates them is that **the validation number was visible while the run was
+still being set up, and the final test number was not.**
+
+And they disagree. Two held-out windows, sixty rows each, adjacent in time — and **validation
+scores 1.29x the final test**. The later window is the easier one. ⇒ **One holdout is a
+sample, not a verdict**, which is the question section 10 exists to settle.
 
 > A common shape of the mistake: train, then call `model.predict(train_x)`, then draw the
 > predictions over the original series. The two lines hug. **That picture is not evidence** —
@@ -2037,7 +2067,7 @@ Run them in order. `01` writes the data every other script reads; the rest are i
 | `03_arima_grid_search_and_forecast.py` | An AIC grid on a series of known order — **the label is not recovered, the dynamics are**; **a convergence flag per candidate, because 17 of 40 hit the iteration cap and raise nothing**; a truncated candidate list changing the winner; a forecast scored against the generator's own noiseless expectation; four resampling scales; the drifting date loop with its assertions; in-sample against out-of-sample; **and the differencing order priced on a holdout, where a seven-day term beats every choice of d** |
 | `04_prophet_trend_seasonality_changepoints.py` | The three additive terms and their magnitudes; **detected changepoints matched against planted ones**; what a looser prior buys; event lift recovered against a planted 1.55; a carrying capacity; **and the negative result on a sub-annual series** |
 | `05_periodic_factor_baseline.py` | Three implementations side by side — additive dummies, ratio one-at-a-time, joint alternation — **all scored against planted factors** and against a SARIMAX given the same weekly period |
-| `06_lstm_windowed_forecast.py` | Windowing with `series_to_supervised`; **a random split in which 100% of the observations touched by test rows also appear in training rows**; scaling from the training side only; a small PyTorch model against two untrained baselines; the training-set score against the holdout |
+| `06_lstm_windowed_forecast.py` | Windowing with `series_to_supervised`; **a random split in which 100% of the test rows' target values had already been read as training inputs**; a three-way time split with the final test sealed until the end; scaling from the training side only; a small PyTorch model against two practical baselines and one oracle; training against validation against final test |
 | `07_rolling_origin_backtest.py` | Four cut-offs, four routes; the fold-to-fold spread against the gap between routes; training-period error against held-out error; a submission file written, read back, and checked against eight format rules |
 
 **Two openings deliberately left unbuilt**, since neither is implemented here:

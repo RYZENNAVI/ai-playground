@@ -3,10 +3,15 @@
 Demonstrates the part of sequence forecasting that is not the network:
     1. Slide a window over the series and read off what one supervised row contains.
     2. Split those rows at random, and count how many observations end up on both sides.
-    3. Split them by time instead, and scale using only what the earlier side knows.
-    4. Train a recurrent model on the time-ordered split and track both curves.
-    5. Score it on the held-out tail against two baselines that need no training at all.
+    3. Split them by time into train, validation and final test, scaling from the train side only.
+    4. Train a recurrent model, watching train and validation while the final test stays sealed.
+    5. Open the final test once, and score it against two practical baselines and one oracle.
     6. Score it again on the rows it was trained on, and compare the two numbers.
+
+This experiment is deliberately one-step-ahead. series_to_supervised takes a
+horizon argument, but the three baselines in step 5 are written as single-step
+comparisons, and raising HORIZON would leave them broadcasting quietly against a
+wider target block rather than failing. The assertion below is what stops that.
 
 Module 08: Time Series Forecasting - Windowing and Split Discipline.
 """
@@ -26,10 +31,22 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 SEED = 20260827
 WINDOW = 14
 HORIZON = 1
+# The last TEST_DAYS rows are the final test and are not read until step 5. The
+# VALID_DAYS rows immediately before them are the validation set, which is what
+# the training loop is allowed to watch. Keeping those two separate is the whole
+# point: a set that is consulted while the run is still being tuned has become a
+# validation set no matter what it is called.
 TEST_DAYS = 60
+VALID_DAYS = 60
 HIDDEN = 48
 EPOCHS = 120
 LEARNING_RATE = 0.01
+
+# The three baselines in step 5 are one-step comparisons, and the last-week one
+# reads position -7 of the window. Neither survives a change to these two
+# constants silently, so neither is left to chance.
+assert HORIZON == 1, "the step 5 baselines are written for one-step-ahead forecasting"
+assert WINDOW >= 7, "the last-week baseline reads seven positions back in the window"
 
 
 def series_to_supervised(values: np.ndarray, window: int, horizon: int
@@ -48,6 +65,23 @@ def series_to_supervised(values: np.ndarray, window: int, horizon: int
     return np.array(rows_x), np.array(rows_y)
 
 
+def touched_observations(rows: np.ndarray, window: int, horizon: int,
+                         total: int) -> set:
+    """Return every observation index the given supervised rows read or predict.
+
+    total is the length of the underlying series and is checked rather than
+    carried: a row index that would reach past the end of the series means the
+    rows and the series do not belong to each other, which is worth failing on
+    rather than silently counting a stretch that does not exist.
+    """
+    marks: set = set()
+    for i in rows:
+        end = int(i) + window + horizon
+        assert end <= total, f"row {i} reaches observation {end} of a {total}-point series"
+        marks.update(range(int(i), end))
+    return marks
+
+
 def shared_observation_count(left_rows: np.ndarray, right_rows: np.ndarray,
                              window: int, horizon: int, total: int) -> int:
     """Count observations of the original series that appear on both sides of a split.
@@ -56,12 +90,13 @@ def shared_observation_count(left_rows: np.ndarray, right_rows: np.ndarray,
     be counted exactly rather than estimated: mark every observation each side
     touches, and intersect the two sets.
     """
-    def touched(indices: np.ndarray) -> set[int]:
-        marks: set[int] = set()
-        for i in indices:
-            marks.update(range(i, i + window + horizon))
-        return marks
-    return len(touched(left_rows) & touched(right_rows))
+    return len(touched_observations(left_rows, window, horizon, total)
+               & touched_observations(right_rows, window, horizon, total))
+
+
+def target_observations(rows: np.ndarray, window: int, horizon: int) -> list:
+    """Return the observation indices these rows are asked to predict."""
+    return [int(i) + window + k for i in rows for k in range(horizon)]
 
 
 class Forecaster(nn.Module):
@@ -91,6 +126,14 @@ def main() -> None:
                        parse_dates=["report_date"], date_format="%Y%m%d")
     flow = flow.set_index("report_date")
     series = flow["total_purchase_amt"].astype(float)
+    # Every split below is positional: "the first N rows" only means "the earliest
+    # N rows" if the index really is in time order with no repeats, and a target
+    # column with a gap in it would put a NaN into a window without raising.
+    # These are the three assumptions the whole script rests on, so they are
+    # checked rather than assumed.
+    assert series.index.is_monotonic_increasing, "the index is not in time order"
+    assert not series.index.has_duplicates, "the index repeats a date"
+    assert series.notna().all(), "the target column has missing values"
     values = series.to_numpy()
 
     print("--- 1. Slide a window over the series ---")
@@ -122,61 +165,96 @@ def main() -> None:
     print(f"  observations the test rows touch: {test_touched}")
     print(f"  of those, {shared} also appear in a training row "
           f"({shared / test_touched:.0%})")
-    neighbours = sum(
-        (i - 1 in set(random_train_idx.tolist())) or (i + 1 in set(random_train_idx.tolist()))
-        for i in random_test_idx)
+    random_train_set = set(random_train_idx.tolist())
+    neighbours = sum((i - 1 in random_train_set) or (i + 1 in random_train_set)
+                     for i in random_test_idx)
     print(f"  {neighbours} of {len(random_test_idx)} test rows have an immediate "
           f"neighbour in the training set, differing from it by one step")
+    # Observation overlap says the two sides read some of the same history. The
+    # sharper question for a supervised split is narrower: was the value a test
+    # row is asked to predict already handed to the model as an input somewhere
+    # in training? That is the answer being memorised rather than forecast.
+    train_touched = touched_observations(random_train_idx, WINDOW, HORIZON, len(values))
+    test_targets = target_observations(random_test_idx, WINDOW, HORIZON)
+    seen_targets = sum(j in train_touched for j in test_targets)
+    print(f"  test targets already present in a training row: {seen_targets} of "
+          f"{len(test_targets)} ({seen_targets / len(test_targets):.0%})")
+    print("  that is the direct form of the problem: the value each test row is asked "
+          "to predict was already read, as an input, by the rows the weights were "
+          "fitted on")
     print("  a score measured on these rows answers how well the model interpolates "
           "inside history it has already read, which is not the question a forecast asks")
 
-    print("\n--- 3. Split by time, and scale from the earlier side only ---")
-    train_x_raw, test_x_raw = features[:cut], features[cut:]
-    train_y_raw, test_y_raw = targets[:cut], targets[cut:]
+    print("\n--- 3. Split by time into train, validation and final test ---")
+    valid_start = len(features) - TEST_DAYS - VALID_DAYS
+    test_start = len(features) - TEST_DAYS
+    train_x_raw, train_y_raw = features[:valid_start], targets[:valid_start]
+    valid_x_raw, valid_y_raw = (features[valid_start:test_start],
+                                targets[valid_start:test_start])
+    test_x_raw, test_y_raw = features[test_start:], targets[test_start:]
     ordered_shared = shared_observation_count(
-        np.arange(cut), np.arange(cut, len(features)), WINDOW, HORIZON, len(values))
-    print(f"  {len(train_x_raw)} training rows up to "
-          f"{series.index[cut + WINDOW - 1].date()}, {len(test_x_raw)} test rows after it")
-    print(f"  observations shared across the cut: {ordered_shared} "
-          f"(the {WINDOW + HORIZON - 1} at the boundary, which is unavoidable)")
+        np.arange(valid_start), np.arange(test_start, len(features)),
+        WINDOW, HORIZON, len(values))
+    print(f"  train      {len(train_x_raw):>3} rows, up to "
+          f"{series.index[valid_start + WINDOW - 1].date()}")
+    print(f"  validation {len(valid_x_raw):>3} rows, watched during training")
+    print(f"  final test {len(test_x_raw):>3} rows, not read until step 5")
+    print(f"  observations shared between train and final test: {ordered_shared}")
+    boundary = shared_observation_count(
+        np.arange(valid_start), np.arange(valid_start, test_start),
+        WINDOW, HORIZON, len(values))
+    print(f"  between train and validation: {boundary} "
+          f"(the {WINDOW + HORIZON - 1} at the boundary, which is unavoidable: the "
+          f"first")
+    print(f"  validation window is made of days that had already happened, and using "
+          f"them is what forecasting is)")
     centre = float(train_x_raw.mean())
     spread = float(train_x_raw.std())
-    print(f"  scaling centre {centre:,.0f} and spread {spread:,.0f}, "
-          f"both computed on training rows only")
+    print(f"  scaling centre {centre:,.0f} and spread {spread:,.0f}, computed on the "
+          f"training rows only - not on validation, and not on the final test")
     full_centre = float(features.mean())
     print(f"  computing the centre on every row instead would have used "
           f"{full_centre:,.0f}, a {abs(full_centre - centre) / centre:.2%} shift that "
-          f"carries information from the test period into every training row")
+          f"carries information from the later periods into every training row")
 
     def scale(block: np.ndarray) -> np.ndarray:
         return (block - centre) / spread
 
     train_x = torch.tensor(scale(train_x_raw), dtype=torch.float32).unsqueeze(-1)
     train_y = torch.tensor(scale(train_y_raw), dtype=torch.float32)
+    valid_x = torch.tensor(scale(valid_x_raw), dtype=torch.float32).unsqueeze(-1)
+    valid_y = torch.tensor(scale(valid_y_raw), dtype=torch.float32)
     test_x = torch.tensor(scale(test_x_raw), dtype=torch.float32).unsqueeze(-1)
     test_y = torch.tensor(scale(test_y_raw), dtype=torch.float32)
 
-    print("\n--- 4. Train on the time-ordered split ---")
+    print("\n--- 4. Train, watching validation and leaving the final test sealed ---")
     model = Forecaster()
     optimiser = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
     loss_fn = nn.MSELoss()
     params = sum(p.numel() for p in model.parameters())
     print(f"  {params:,} parameters, {EPOCHS} epochs, full batch of "
           f"{len(train_x)} rows")
-    print(f"  {'epoch':>6}  {'train loss':>12}  {'holdout loss':>13}")
+    print(f"  {'epoch':>6}  {'train loss':>12}  {'validation loss':>16}")
     for epoch in range(1, EPOCHS + 1):
         model.train()
         optimiser.zero_grad()
-        loss = loss_fn(model(train_x), train_y)
-        loss.backward()
+        loss_fn(model(train_x), train_y).backward()
         optimiser.step()
         if epoch % 20 == 0 or epoch == 1:
+            # Both numbers are recomputed after the step. The loss that drove the
+            # update belongs to the weights as they were before it; printing it
+            # beside a validation loss measured after it puts two parameter
+            # states on the same line and calls the pair a training curve.
             model.eval()
             with torch.no_grad():
-                held = loss_fn(model(test_x), test_y)
-            print(f"  {epoch:>6}  {loss.item():>12.4f}  {held.item():>13.4f}")
+                shown_train = loss_fn(model(train_x), train_y)
+                shown_valid = loss_fn(model(valid_x), valid_y)
+            print(f"  {epoch:>6}  {shown_train.item():>12.4f}  "
+                  f"{shown_valid.item():>16.4f}")
+    print("  the final test was not evaluated once in this loop; every decision above "
+          "this line was made without it")
 
-    print("\n--- 5. Score the tail against baselines that were never trained ---")
+    print("\n--- 5. Open the final test, once ---")
     model.eval()
     with torch.no_grad():
         predicted = model(test_x).numpy() * spread + centre
@@ -184,39 +262,74 @@ def main() -> None:
     persistence = test_x_raw[:, -1:]
     last_week = test_x_raw[:, -7:-6]
     flow_truth = truth["cash_flow"]
-    target_dates = series.index[cut + WINDOW:cut + WINDOW + len(actual)]
+    target_dates = series.index[test_start + WINDOW:test_start + WINDOW + len(actual)]
+    train_dates = series.index[WINDOW:WINDOW + len(train_y_raw)]
     weekday_factor = np.array(flow_truth["purchase_weekday_factor"])
     day_factor = np.array(flow_truth["day_of_month_factor"])
-    factor_pred = (train_y_raw.mean()
-                   / (weekday_factor.mean() * day_factor.mean())
+
+    # The oracle's base level is estimated from the training targets only, by
+    # dividing each one by the two factors its own date carries and averaging.
+    # Taking the mean of the whole factor arrays instead would weight every
+    # weekday and every month position equally, which is not how the training
+    # dates actually fall.
+    train_scale = (weekday_factor[train_dates.dayofweek.to_numpy()]
+                   * day_factor[train_dates.day.to_numpy() - 1])
+    base_level = float(np.mean(train_y_raw.ravel() / train_scale))
+    factor_pred = (base_level
                    * weekday_factor[target_dates.dayofweek.to_numpy()]
                    * day_factor[target_dates.day.to_numpy() - 1]).reshape(-1, 1)
-    print(f"  holdout {target_dates[0].date()} .. {target_dates[-1].date()}, "
-          f"{len(actual)} days")
-    scores = {
-        "recurrent model": rmse(actual, predicted),
+    print(f"  final test {target_dates[0].date()} .. {target_dates[-1].date()}, "
+          f"{len(actual)} days, scored for the first time here")
+    practical = {
         "yesterday repeated": rmse(actual, persistence),
         "same weekday last week": rmse(actual, last_week),
-        "planted periodic factors": rmse(actual, factor_pred),
     }
-    best = min(scores.values())
-    for label, score in scores.items():
-        print(f"  {label:<26} RMSE {score:>14,.0f}  {score / best:>6.2f}x")
+    learned = {"recurrent model": rmse(actual, predicted)}
+    oracle = {"oracle planted factors": rmse(actual, factor_pred)}
+    best = min({**practical, **learned, **oracle}.values())
+    for heading, group in (("practical baselines, no training", practical),
+                           ("learned model", learned),
+                           ("oracle reference, not deployable", oracle)):
+        print(f"  {heading}:")
+        for label, score in group.items():
+            print(f"    {label:<24} RMSE {score:>14,.0f}  {score / best:>6.2f}x")
+    print(f"  the last row is not a baseline anyone could have built on the day: it "
+          f"reads the")
+    print(f"  weekday and month-position factors the generator used, out of "
+          f"ground_truth.json.")
+    print(f"  Only its base level is estimated, from the {len(train_y_raw)} training "
+          f"targets. It is the score")
+    print(f"  available to something that already knew the structure, not a bound "
+          f"anything must beat.")
     print(f"  a window of {WINDOW} contains the weekly cycle, so the model can learn "
           f"it; it never sees the calendar, so the month-position effect is only "
           f"available to it through whatever the last two weeks happen to imply")
+    scores = {**learned, **practical, **oracle}
 
     print("\n--- 6. Score it on the rows it was trained on ---")
     with torch.no_grad():
         fitted = model(train_x).numpy() * spread + centre
+        validated = model(valid_x).numpy() * spread + centre
     train_score = rmse(train_y_raw, fitted)
+    valid_score = rmse(valid_y_raw, validated)
     test_score = scores["recurrent model"]
-    print(f"  training rows RMSE {train_score:>14,.0f}")
-    print(f"  holdout rows  RMSE {test_score:>14,.0f}  "
+    print(f"  training rows   RMSE {train_score:>14,.0f}")
+    print(f"  validation rows RMSE {valid_score:>14,.0f}  "
+          f"({valid_score / train_score:.2f}x the training number)")
+    print(f"  final test rows RMSE {test_score:>14,.0f}  "
           f"({test_score / train_score:.2f}x the training number)")
-    print("  the first number is what a plot of predictions over the training period "
-          "shows, and it is available before any forecast has been made")
-    print("  only the second one was measured on data the weights never saw")
+    print("  the first number is what a plot of predictions over the training period")
+    print("  shows, and it is available before any forecast has been made. The other two")
+    print("  were both measured on rows the weights never saw - the difference between")
+    print("  them is that the validation number was visible while the run was still")
+    print("  being set up, and the final test number was not.")
+    print(f"  they also disagree: validation scores {valid_score / test_score:.2f}x the "
+          f"final test here, on")
+    print("  sixty rows each. Two held-out windows of the same length, next to each "
+          "other in")
+    print("  time, and the later one is easier. One holdout is a sample, not a "
+          "verdict - which")
+    print("  is the question script 07 exists to settle.")
 
 
 if __name__ == "__main__":
