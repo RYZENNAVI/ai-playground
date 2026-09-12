@@ -135,7 +135,22 @@ the canvas draws that edge exactly the same either way
 ```
 
 That last line is the point of the exercise. **The two graphs are visually identical.**
-One of them cannot run. A platform that does not perform this check hands the difference to
+One of them cannot run.
+
+Not every reference sits under `inputs`, though. A batch says what it walks in `over`, and
+a selector says what it tests in `cases[].when`. Neither is drawn as an edge, and neither
+is reachable by walking the inputs map, so both have to be checked explicitly:
+
+```
+edit the batch's 'over' and the selector's 'when' instead:
+  136482.over wants 107368.rows, but 107368 emits ['items']
+  159567.cases[0].when wants 130992.same_date, but 130992 emits ['same_day']
+```
+
+One more caveat about where this check lives: **`run_workflow` never calls `validate`.** It
+is the editor's gate, not the runtime's. A definition handed straight to the engine — by an
+API client, a migration script, a generated template — skips it entirely and fails at the
+node that reads the missing port. A platform that does not perform this check hands the difference to
 the runtime, where it surfaces as a `KeyError` in the middle of a long job, or — if the
 mapper downstream is forgiving — as a missing value nobody notices.
 
@@ -167,7 +182,8 @@ non-empty. On a canvas, that back-edge is one drag of the mouse.
 
 ### 3.1 What code nodes are for
 
-The engine registers three, and none of them holds business logic:
+The engine registers three. None of them decides anything a model would decide;
+the rule each applies is a fixed comparison:
 
 | Function | What it does |
 | :--- | :--- |
@@ -244,9 +260,21 @@ The script runs one function over the same four articles twice: once isolated, o
 carrying a running total.
 
 ```
-isolated iterations: [1, 1, 0, 1]   (any order gives this)
-carried across them: [1, 2, 2, 3]   (only this order gives this)
+isolated iterations: [1, 1, 0, 1]
+carried across them: [1, 2, 2, 3]
+over all 24 orderings of the same 4 articles: the marks always form the same multiset
+(1 distinct), because each article's mark reads only that article
+the running totals take 4 distinct values over those same 24 orderings; 6 of them end
+up as [1, 2, 2, 3]
 ```
+
+The script enumerates all 24 orderings rather than asserting the difference. The claim
+has to be stated carefully: reordering the articles *does* move the marks around, so
+`[1, 1, 0, 1]` is not order-invariant as a list. What is invariant is the multiset — every
+ordering produces three ones and one zero, because each article's mark reads only that
+article. The running total is not even invariant as a multiset: it takes four distinct
+values, one per position the zero can occupy, and the printed `[1, 2, 2, 3]` is what 6 of
+the 24 orderings give.
 
 The first result is a property of each element. The second is a property of the sequence.
 **A running total cannot live inside a batch body**, and neither can anything else that has
@@ -896,7 +924,7 @@ does it for the key inside `inputs`, which is exactly why section 9.5 costs four
 
 | # | Result |
 | :--- | :--- |
-| **01** | 23 nodes across three definitions execute end to end. One edited reference is caught statically: `123474.values wants 136482.summary, but 136482 emits ['digest', 'branch']`. One added back-edge leaves **1 node able to start and 7 waiting forever**. `[^Scene]` truncates three scenes to `'A r'`, `'Th'`, `'Ev'` — 7 characters of 174 — while still returning three parts. Isolated iterations give `[1, 1, 0, 1]`; the same computation carrying state gives `[1, 2, 2, 3]`. The selector marks 1 of 4 elements `drop`; the cleanup node removes it |
+| **01** | 23 nodes across three definitions execute end to end. One edited reference is caught statically: `123474.values wants 136482.summary, but 136482 emits ['digest', 'branch']`. One added back-edge leaves **1 node able to start and 7 waiting forever**. `[^Scene]` truncates three scenes to `'A r'`, `'Th'`, `'Ev'` — 7 characters of 174 — while still returning three parts. Across all 24 orderings of the four articles the marks form **1 distinct multiset** while the running totals take **4 distinct values**. The selector marks 1 of 4 elements `drop`; the cleanup node removes it |
 | **02** | `deepseek-chat`, `temperature=0`, six reviews per variant. Plain prompt: **0/6 parse as JSON, 0/6 match the vocabulary, 0/6 routed** — all six discarded without an error. With an output example: 6/6 and 6/6. With `response_format` as well: 6/6 and 6/6 — **the example is what fixed it, not the format switch**. Normalising the label recovers 4 of the 6 lost in the plain run; `frustrated` remains outside the enum. Model-applied stopword removal leaves 1 of 7 words in place; the code path leaves 0 |
 | **03** | Three malformed calls refused before a page is fetched. The page with a missing rating: the permissive mapper returns 2 rows and raises nothing, and the output schema then finds **2 type violations across both rows**; the strict mapper stops and names the field. `page_limit=20` against a 3-page source costs 3 fetches, yields 7 rows and reports 1 skipped entry |
 | **04** | Index on `family`: **0/9 rows uniquely identified**, worst case 3 rows share a value. Index on `plan`: 9/9. A three-condition question returns 4 rows by similarity of which **0 satisfy all three**, spread across 0.795–0.791; the correct row is not in the top four. The parsed filter returns 1 row, matching a direct scan. Matching the event type literally silently drops that condition and returns 2 rows; folding case and punctuation returns 1. Prose recall costs 186 / 354 / 621 tokens at `top_k` 2 / 4 / 8 |

@@ -19,6 +19,7 @@ import json
 import re
 import sys
 from copy import deepcopy
+from itertools import permutations
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -130,7 +131,10 @@ def model_node(title, args):
     real model behind this same node type and measures what it returns.
     """
     if title == "Digest":
-        first = args["body"].split(".")[0].strip()
+        # A bare split(".") would cut "gained 1.2 percent" after the 1. A sentence
+        # end is a period followed by whitespace or the end of the text; a decimal
+        # point is followed by a digit.
+        first = re.split(r"\.(?=\s|$)", args["body"].strip())[0].strip()
         return {"text": f"{args['title']} - {first}."}
     if title == "Classify":
         rating = args.get("rating", 3)
@@ -191,21 +195,32 @@ def validate(spec, library):
     known = set(ports) | {"item"}
     problems = []
 
+    def check_ref(node_id, label, ref, in_batch):
+        if ref.startswith("literal:"):
+            return
+        source, _, port = ref.partition(".")
+        if source == "item":
+            if not in_batch:
+                problems.append(f"{node_id}.{label} reads 'item' outside a batch")
+            return
+        if source not in known:
+            problems.append(f"{node_id}.{label} points at unknown node {source}")
+        elif port not in ports[source]:
+            problems.append(
+                f"{node_id}.{label} wants {source}.{port}, but {source} emits "
+                f"{ports[source] or ['nothing']}")
+
     def check(node, in_batch):
         for name, ref in node.get("inputs", {}).items():
-            if ref.startswith("literal:"):
-                continue
-            source, _, port = ref.partition(".")
-            if source == "item":
-                if not in_batch:
-                    problems.append(f"{node['id']}.{name} reads 'item' outside a batch")
-                continue
-            if source not in known:
-                problems.append(f"{node['id']}.{name} points at unknown node {source}")
-            elif port not in ports[source]:
-                problems.append(
-                    f"{node['id']}.{name} wants {source}.{port}, but {source} emits "
-                    f"{ports[source] or ['nothing']}")
+            check_ref(node["id"], name, ref, in_batch)
+        # A batch says what it walks and a selector says what it tests, and neither
+        # of those sits under 'inputs'. They are references all the same, so a typo
+        # in one fails at run time unless it is checked here too.
+        if node["type"] == "batch":
+            check_ref(node["id"], "over", node["over"], in_batch)
+        if node["type"] == "selector":
+            for pos, case in enumerate(node["cases"]):
+                check_ref(node["id"], f"cases[{pos}].when", case["when"], in_batch)
         if node["type"] == "subworkflow":
             target = library.get(node["workflow"])
             if target is None:
@@ -400,6 +415,19 @@ def main():
     for problem in validate(broken, library):
         print(f"    {problem}")
     print("  the canvas draws that edge exactly the same either way")
+    bent = deepcopy(library["market_sentiment"])
+    for node in bent["nodes"]:
+        if node["id"] == "136482":
+            node["over"] = "107368.rows"
+            for inner in node["body"]:
+                if inner["type"] == "selector":
+                    inner["cases"][0]["when"] = "130992.same_date"
+    print("  edit the batch's 'over' and the selector's 'when' instead:")
+    for problem in validate(bent, library):
+        print(f"    {problem}")
+    print("  neither of those two sits under 'inputs', and neither is drawn as an edge")
+    print("  run_workflow never calls validate: this is the editor's gate, not the")
+    print("  runtime's, so a definition handed straight to the engine skips it")
 
     print("\n--- 3. Execution order, and a graph that has none ---")
     order, cycle = topological_order(library["market_sentiment"])
@@ -423,7 +451,8 @@ def main():
         print(f"  {'  ' * depth}{title:<20} {shape}")
 
     print("\n--- 5. What the code nodes are for ---")
-    print("  none of them holds business logic; each one reshapes data for the next node:")
+    print("  each one reshapes data for the next node rather than deciding anything a")
+    print("  model would decide; the rule each applies is a fixed comparison:")
     for name, fn in CODE_FNS.items():
         print(f"    {name:<20} {fn.__doc__.splitlines()[0]}")
     bad = split_scenes_excluding(SCENE_TEXT)
@@ -453,8 +482,26 @@ def main():
     for element in news:
         seen += code_same_calendar_day("2026-05-04", element["published"])["same_day"]
         carried.append(seen)
-    print(f"  isolated iterations: {isolated}   (any order gives this)")
-    print(f"  carried across them: {carried}   (only this order gives this)")
+    marks_by_order, totals_by_order = set(), []
+    for perm in permutations(range(len(news))):
+        marks = [code_same_calendar_day("2026-05-04", news[i]["published"])["same_day"]
+                 for i in perm]
+        marks_by_order.add(tuple(sorted(marks)))
+        running, totals = 0, []
+        for mark in marks:
+            running += mark
+            totals.append(running)
+        totals_by_order.append(tuple(totals))
+    orders = len(totals_by_order)
+    distinct_totals = set(totals_by_order)
+    matching = totals_by_order.count(tuple(carried))
+    print(f"  isolated iterations: {isolated}")
+    print(f"  carried across them: {carried}")
+    print(f"  over all {orders} orderings of the same 4 articles: the marks always form"
+          f" the same multiset ({len(marks_by_order)} distinct), because each article's"
+          f" mark reads only that article")
+    print(f"  the running totals take {len(distinct_totals)} distinct values over those"
+          f" same {orders} orderings; {matching} of them end up as {list(carried)}")
     print("  a running total is the second kind, so it cannot live inside a batch;")
     print("  anything that has to hold across elements is written in before the split")
 
