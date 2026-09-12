@@ -4,7 +4,7 @@ Demonstrates the part of sequence forecasting that is not the network:
     1. Slide a window over the series and read off what one supervised row contains.
     2. Split those rows at random, and count how many observations end up on both sides.
     3. Split them by time into train, validation and final test, scaling from the train side only.
-    4. Train a recurrent model, watching train and validation while the final test stays sealed.
+    4. Train a recurrent model on train, selecting the checkpoint on validation alone.
     5. Open the final test once, and score it against two practical baselines and one oracle.
     6. Score it again on the rows it was trained on, and compare the two numbers.
 
@@ -31,11 +31,17 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 SEED = 20260827
 WINDOW = 14
 HORIZON = 1
-# The last TEST_DAYS rows are the final test and are not read until step 5. The
-# VALID_DAYS rows immediately before them are the validation set, which is what
-# the training loop is allowed to watch. Keeping those two separate is the whole
-# point: a set that is consulted while the run is still being tuned has become a
-# validation set no matter what it is called.
+# The last TEST_DAYS rows are the final test: nothing before step 5 fits on them,
+# scores them, or chooses anything from them. The VALID_DAYS rows immediately
+# before them are the validation set, which is what the training loop is allowed
+# to watch. Keeping those two separate is the whole point: a set that is
+# consulted while the run is still being tuned has become a validation set no
+# matter what it is called.
+#
+# "Sealed" here means sealed against decisions, not against the interpreter. The
+# rows are sliced and scaled in step 3 like every other block, and step 2's
+# random-split demonstration deals every row including these. Those are
+# diagnostics printed for a reader; neither one reaches a parameter or a choice.
 TEST_DAYS = 60
 VALID_DAYS = 60
 HIDDEN = 48
@@ -92,6 +98,21 @@ def shared_observation_count(left_rows: np.ndarray, right_rows: np.ndarray,
     """
     return len(touched_observations(left_rows, window, horizon, total)
                & touched_observations(right_rows, window, horizon, total))
+
+
+def input_observations(rows: np.ndarray, window: int, total: int) -> set:
+    """Return the observation indices these rows read as inputs, targets excluded.
+
+    Narrower than touched_observations on purpose. Asking whether a value was
+    handed to the model as an input is a different question from asking whether
+    it appeared anywhere in a row, and the second one is easier to pass.
+    """
+    marks: set = set()
+    for i in rows:
+        end = int(i) + window
+        assert end <= total, f"row {i} reads observation {end} of a {total}-point series"
+        marks.update(range(int(i), end))
+    return marks
 
 
 def target_observations(rows: np.ndarray, window: int, horizon: int) -> list:
@@ -174,9 +195,12 @@ def main() -> None:
     # sharper question for a supervised split is narrower: was the value a test
     # row is asked to predict already handed to the model as an input somewhere
     # in training? That is the answer being memorised rather than forecast.
-    train_touched = touched_observations(random_train_idx, WINDOW, HORIZON, len(values))
+    # Inputs only, not the whole row. A training row's own target is a value the
+    # model was scored against, not one it was shown, and counting those would
+    # make the claim in the next line wider than what was measured.
+    train_inputs = input_observations(random_train_idx, WINDOW, len(values))
     test_targets = target_observations(random_test_idx, WINDOW, HORIZON)
-    seen_targets = sum(j in train_touched for j in test_targets)
+    seen_targets = sum(j in train_inputs for j in test_targets)
     print(f"  test targets already present in a training row: {seen_targets} of "
           f"{len(test_targets)} ({seen_targets / len(test_targets):.0%})")
     print("  that is the direct form of the problem: the value each test row is asked "
@@ -198,7 +222,8 @@ def main() -> None:
     print(f"  train      {len(train_x_raw):>3} rows, up to "
           f"{series.index[valid_start + WINDOW - 1].date()}")
     print(f"  validation {len(valid_x_raw):>3} rows, watched during training")
-    print(f"  final test {len(test_x_raw):>3} rows, not read until step 5")
+    print(f"  final test {len(test_x_raw):>3} rows, not fitted on, scored, or "
+          f"selected from before step 5")
     print(f"  observations shared between train and final test: {ordered_shared}")
     boundary = shared_observation_count(
         np.arange(valid_start), np.arange(valid_start, test_start),
@@ -227,7 +252,7 @@ def main() -> None:
     test_x = torch.tensor(scale(test_x_raw), dtype=torch.float32).unsqueeze(-1)
     test_y = torch.tensor(scale(test_y_raw), dtype=torch.float32)
 
-    print("\n--- 4. Train, watching validation and leaving the final test sealed ---")
+    print("\n--- 4. Train on train, and pick the checkpoint on validation ---")
     model = Forecaster()
     optimiser = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
     loss_fn = nn.MSELoss()
@@ -256,24 +281,29 @@ def main() -> None:
             best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
         if epoch % 20 == 0 or epoch == 1:
             print(f"  {epoch:>6}  {shown_train:>12.4f}  {shown_valid:>16.4f}")
-    print("  the final test was not evaluated once in this loop; every decision above "
-          "this line was made without it")
+    print("  the final test was not evaluated once in this loop; the checkpoint below "
+          "and every")
+    print("  setting above were chosen without it")
 
-    # The training loss can always be driven lower by running longer; the
-    # validation loss is the one that says whether the extra rounds bought
-    # anything. Keeping the weights from its lowest point is the whole reason a
-    # validation set is carved out separately from the final test - a run that
-    # only prints the curve has done the measuring and thrown away the answer.
+    # This is checkpoint selection, not early stopping: the loop above runs all
+    # EPOCHS rounds, and what happens here is that the weights from the best
+    # validation epoch are put back. Stopping early would have saved the compute;
+    # restoring the checkpoint only buys the model. Keeping the distinction
+    # straight matters because the two are described interchangeably and only one
+    # of them is what this code does.
     model.load_state_dict(best_state)
     print(f"  validation bottomed at epoch {best_epoch} ({best_valid:.4f}) and ended at "
           f"{last_valid:.4f} after {EPOCHS}")
     print(f"  the last {EPOCHS - best_epoch} epochs lowered the training loss and raised "
-          f"the validation loss by {last_valid / best_valid - 1:.0%}: that is the point "
-          f"where the model")
-    print(f"  stopped learning the series and started learning this sample of it. The "
-          f"weights from")
-    print(f"  epoch {best_epoch} are restored, chosen on validation alone, with the final "
-          f"test still unread")
+          f"the validation loss by {last_valid / best_valid - 1:.0%}, which is what "
+          f"overfitting")
+    print(f"  to this split looks like. One validation window of {len(valid_y_raw)} rows "
+          f"is consistent with that")
+    print(f"  reading rather than proof of it. The weights from")
+    print(f"  epoch {best_epoch} are restored, chosen on validation alone and with no "
+          f"reference to the final test.")
+    print(f"  the loop still ran all {EPOCHS} rounds: this is checkpoint selection, not "
+          f"early stopping")
     print(f"  note that the printed rows every 20 epochs put the low point at 80; the "
           f"real one is")
     print(f"  epoch {best_epoch}, and the curve is only checked every epoch because "
@@ -282,7 +312,7 @@ def main() -> None:
           f"a decision")
     print(f"  depends on gets measured.")
 
-    print("\n--- 5. Open the final test, once ---")
+    print("\n--- 5. Score the final test, for the first time ---")
     model.eval()
     with torch.no_grad():
         predicted = model(test_x).numpy() * spread + centre
@@ -307,20 +337,29 @@ def main() -> None:
                    * weekday_factor[target_dates.dayofweek.to_numpy()]
                    * day_factor[target_dates.day.to_numpy() - 1]).reshape(-1, 1)
     print(f"  final test {target_dates[0].date()} .. {target_dates[-1].date()}, "
-          f"{len(actual)} days, scored for the first time here")
+          f"{len(actual)} days, scored here and nowhere earlier")
     practical = {
         "yesterday repeated": rmse(actual, persistence),
         "same weekday last week": rmse(actual, last_week),
     }
     learned = {"recurrent model": rmse(actual, predicted)}
     oracle = {"oracle planted factors": rmse(actual, factor_pred)}
-    best = min({**practical, **learned, **oracle}.values())
+    # Two ratio columns, each with its denominator named. One number divided by an
+    # unstated denominator is where "2.6x better than X" comes from when the 2.6
+    # was measured against something that is not X.
+    oracle_rmse = next(iter(oracle.values()))
+    model_rmse = next(iter(learned.values()))
+    print(f"    {'route':<24} {'RMSE':>18}  {'/ oracle':>9}  {'/ model':>8}")
     for heading, group in (("practical baselines, no training", practical),
                            ("learned model", learned),
                            ("oracle reference, not deployable", oracle)):
         print(f"  {heading}:")
         for label, score in group.items():
-            print(f"    {label:<24} RMSE {score:>14,.0f}  {score / best:>6.2f}x")
+            print(f"    {label:<24} {score:>18,.0f}  {score / oracle_rmse:>8.2f}x  "
+                  f"{score / model_rmse:>7.2f}x")
+    for label, score in practical.items():
+        print(f"  the recurrent model's RMSE is {1 - model_rmse / score:.1%} below "
+              f"{label}")
     print(f"  the last row is not a baseline anyone could have built on the day: it "
           f"reads the")
     print(f"  weekday and month-position factors the generator used, out of "

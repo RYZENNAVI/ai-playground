@@ -1363,8 +1363,10 @@ test targets already present in a training row: 60 of 60 (100%)
 ```
 
 ⇒ **Every answer was in the question paper.** Not "the periods overlap" — the specific
-number each test row is scored on had already been read, as an input, by the rows the weights
-were fitted on.
+number each test row is scored on had already been read, **as an input**, by the rows the
+weights were fitted on. The set being intersected against is the training rows' *inputs*
+only, with their own targets excluded; counting those too would make the claim wider than
+the measurement.
 
 ⇒ A score measured on those rows answers **how well the model interpolates inside history it
 has already read** — which is not the question a forecast asks.
@@ -1383,10 +1385,16 @@ def shared_observation_count(left_rows, right_rows, window, horizon, total) -> i
 
 ### 8.3 Scale from the earlier side only
 
+**"Sealed" here means sealed against decisions, not against the interpreter.** The final
+test rows are sliced and scaled in step 3 like every other block, and step 2's random-split
+demonstration deals every row including those. Both are diagnostics printed for a reader;
+neither reaches a parameter, a checkpoint, or a setting. The claim being made is the narrower
+and checkable one: **nothing fits on, scores, or selects from the final test before step 5.**
+
 ```
 train      293 rows, up to 2014-05-03
 validation  60 rows, watched during training
-final test  60 rows, not read until step 5
+final test  60 rows, not fitted on, scored, or selected from before step 5
 observations shared between train and final test: 0
 between train and validation: 14 (the boundary, which is unavoidable)
 scaling centre 321,108,884 and spread 75,377,112, computed on the training rows only
@@ -1405,12 +1413,17 @@ rows** — is deliberately small, because **the network is not what this script 
 matters is what it is compared against. The comparison has three different kinds of thing in
 it, and collapsing them into one leaderboard is how an oracle gets mistaken for a baseline:
 
-| Kind | Route | Final-test RMSE over 60 days | Relative |
-| :--- | :--- | ---: | ---: |
-| **Oracle**, not deployable | Oracle planted factors | **28,297,049** | **1.00x** |
-| **Learned** | Recurrent model | 31,297,420 | 1.11x |
-| **Practical baseline** | Same weekday last week | 56,013,383 | 1.98x |
-| **Practical baseline** | Yesterday repeated | 73,887,789 | 2.61x |
+| Kind | Route | Final-test RMSE over 60 days | ÷ oracle | ÷ model |
+| :--- | :--- | ---: | ---: | ---: |
+| **Oracle**, not deployable | Oracle planted factors | **28,297,049** | **1.00x** | 0.90x |
+| **Learned** | Recurrent model | 31,297,420 | 1.11x | **1.00x** |
+| **Practical baseline** | Same weekday last week | 56,013,383 | 1.98x | 1.79x |
+| **Practical baseline** | Yesterday repeated | 73,887,789 | 2.61x | 2.36x |
+
+**Two ratio columns, because one ratio needs its denominator named.** A single "relative"
+column invites the reading that 2.61x is how much better the network is than repeating
+yesterday. It is not — it is how much worse *repeating yesterday* is than the **oracle**.
+Against the network the same baseline is 2.36x.
 
 > **The top row is not a baseline anyone could have built on the day.** It reads the weekday
 > and month-position factors the generator used, straight out of `ground_truth.json`; only
@@ -1421,9 +1434,10 @@ it, and collapsing them into one leaderboard is how an oracle gets mistaken for 
 
 **Two readings:**
 
-1. **The network did learn the weekly rhythm** — 2.6x better than repeating yesterday, 2x
-   better than repeating last week. **A 14-day window contains two whole weeks, so the weekly
-   cycle is visible inside every single row.**
+1. **The network did learn the weekly rhythm.** Its RMSE is **57.6% below** repeating
+   yesterday and **44.1% below** repeating the same weekday last week — equivalently, those
+   two baselines carry 2.36x and 1.79x the network's error. **A 14-day window contains two
+   whole weeks, so the weekly cycle is visible inside every single row.**
 2. **It did not beat a model that only multiplies** — because **it never sees a calendar.**
    The month-position effect reaches it only through whatever the last fortnight happens to
    imply.
@@ -1431,7 +1445,7 @@ it, and collapsing them into one leaderboard is how an oracle gets mistaken for 
 ⇒ **A window carries the cycles that fit inside it. What does not fit inside it is simply not
 there.**
 
-#### Stopping where the validation curve says to
+#### Restoring the best validation checkpoint
 
 Running all 120 epochs is a choice, and the validation curve prices it:
 
@@ -1446,9 +1460,15 @@ validation bottomed at epoch 64 (0.2551) and ended at 0.2981 after 120
 ```
 
 **The training loss falls the whole way; the validation loss turns around and climbs 17%.**
-Past that turn the model is no longer learning the series, it is learning this sample of it.
-Restoring the weights from the lowest validation epoch — chosen on validation alone, with the
-final test still unread — is what the validation set was carved out to make possible:
+That pattern is what overfitting to this split looks like — on one validation window of sixty
+rows it is consistent with the reading, not a proof of it. Restoring the weights from the
+lowest validation epoch — chosen on validation alone, with no reference to the final test — is
+what the validation set was carved out to make possible.
+
+**This is checkpoint selection, not early stopping.** The loop still runs all 120 rounds;
+what changes is which set of weights survives it. Stopping early would have saved the
+compute, restoring the checkpoint only buys the model, and the two get described
+interchangeably often enough to be worth separating here.
 
 The left column below is the same script with the restore removed — it is what the run
 printed before this change, not something the current script outputs:
@@ -2104,7 +2124,7 @@ Run them in order. `01` writes the data every other script reads; the rest are i
 | `03_arima_grid_search_and_forecast.py` | An AIC grid on a series of known order — **the label is not recovered, the dynamics are**; **a convergence flag per candidate, because 17 of 40 hit the iteration cap and raise nothing**; a truncated candidate list changing the winner; a forecast scored against the generator's own noiseless expectation; four resampling scales; the drifting date loop with its assertions; in-sample against out-of-sample; **and the differencing order priced on a holdout, where a seven-day term beats every choice of d** |
 | `04_prophet_trend_seasonality_changepoints.py` | The three additive terms and their magnitudes; **detected changepoints matched against planted ones**; what a looser prior buys; event lift recovered against a planted 1.55; a carrying capacity; **and the negative result on a sub-annual series** |
 | `05_periodic_factor_baseline.py` | Three implementations side by side — additive dummies, ratio one-at-a-time, joint alternation — **all scored against planted factors** and against a SARIMAX given the same weekly period |
-| `06_lstm_windowed_forecast.py` | Windowing with `series_to_supervised`; **a random split in which 100% of the test rows' target values had already been read as training inputs**; a three-way time split with the final test sealed until the end; scaling from the training side only; a small PyTorch model against two practical baselines and one oracle; training against validation against final test |
+| `06_lstm_windowed_forecast.py` | Windowing with `series_to_supervised`; **a random split in which 100% of the test rows' target values had already been read as training inputs**; a three-way time split in which nothing fits on, scores, or selects from the final test before the last step; scaling from the training side only; a small PyTorch model against two practical baselines and one oracle; training against validation against final test |
 | `07_rolling_origin_backtest.py` | Four cut-offs, four routes; the fold-to-fold spread against the gap between routes; training-period error against held-out error; a submission file written, read back, and checked against eight format rules |
 
 **Two openings deliberately left unbuilt**, since neither is implemented here:
