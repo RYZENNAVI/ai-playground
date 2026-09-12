@@ -1834,7 +1834,7 @@ should believe it.**
 
 ```
 scored on the last cut-off alone: 37,436,714
-scored on each of the four:       19,793,706, 41,675,398, 17,100,660, 37,436,714
+scored on each of the four:       19,793,706, 41,675,398, 17,100,659, 37,436,714
 spread across folds 2.44x, mean 29,001,619, sd 10,702,733
 the single number sits 0.8 standard deviations from the average of the four
 ```
@@ -1867,18 +1867,20 @@ Four routes across four folds:
 
 | Route | 04-30 | 05-31 | 06-30 | 07-31 | **Mean** | sd |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **Periodic factors** | 19,793,706 | 41,675,398 | 17,100,660 | 37,436,714 | **29,001,619** | 10,702,733 |
+| **Periodic factors** | 19,793,706 | 41,675,398 | 17,100,659 | 37,436,714 | **29,001,619** | 10,702,733 |
 | Additive model | 42,008,686 | 49,728,395 | 43,326,919 | 44,900,461 | 44,991,115 | **2,920,380** |
 | Last week repeated | 54,897,742 | 73,890,602 | 63,526,833 | 69,119,873 | 65,358,762 | 7,066,243 |
 | SARIMAX, weekly | 60,468,955 | 85,873,323 | 82,726,444 | 91,945,929 | 80,253,663 | 11,893,685 |
 
 **Two readings:**
 
-1. **Periodic factors win all four folds**, so this ranking does not depend on which cut-off
-   was chosen
-2. **Its own fold-to-fold spread is 2.44x — wider than the gap between the top two routes.**
-   ⇒ **Report the standard deviation next to the mean**, or a reader takes 29,001,619 for a
-   stable quantity
+1. **Periodic factors win all four folds**, so the **identity of the winner** does not
+   depend on which cut-off was chosen. That is the claim the code checks, and it is narrower
+   than "the ranking does not depend on the cut-off" — nothing here verifies that places two
+   through four hold still as well
+2. **Its own fold-to-fold spread is 2.44x — wider than the 1.55x gap between the top two mean
+   scores.** ⇒ **Report the standard deviation next to the mean**, or a reader takes
+   29,001,619 for a stable quantity
 
 ### 10.3 Training-period error is a different measurement
 
@@ -1934,6 +1936,31 @@ where it otherwise sits inside ±1e7**), while the seasonal component is cleanes
 > disruption, a model trained on the stable stretch fails across the board. **There is no
 > solution here, only a heuristic (inertia).**
 
+### 10.4a A backtest answers the question it was run on
+
+Every fold in section 10.2 was scored on **one** column, `total_purchase_amt`. The obvious
+next move is to take its winner and forecast both targets with it. That move is wrong here,
+and the size of the error is measurable: the script now backtests each target separately.
+
+| Route | Purchase, mean RMSE | Redeem, mean RMSE |
+| :--- | ---: | ---: |
+| **Periodic factors** | **29,001,619** — 1st | 105,946,151 — **4th** |
+| **SARIMAX, weekly** | 80,253,663 — 4th | **75,975,758** — 1st |
+| Additive model | 44,991,115 | 91,018,547 |
+| Last week repeated | 65,358,762 | 102,612,221 |
+
+**The two columns rank the four routes almost in reverse.** The route that wins purchase is
+*last* on redeem, at **1.39x** the best route for that column — so carrying the purchase
+winner across would have produced the redeem forecast with the worst of the four candidates.
+
+The generator says why: the redeem column was built with a growth term and a wandering level
+that the purchase column does not have. A product of weekday and month-position factors has
+nowhere to put either of those, and an autoregressive model does.
+
+⇒ **A backtest is evidence about the series it was run on.** Two columns in the same file,
+written by the same upstream system, on the same dates, are still two series — and the script
+now selects a route per target rather than assuming one answer covers both.
+
 ### 10.5 Units and format
 
 Five hard requirements for a machine-scored submission of this kind:
@@ -1983,7 +2010,8 @@ $$\text{error}_i = \frac{|z_i - \hat{z}_i|}{z_i}, \qquad
 ```
 pass  row count matches the horizon
 pass  dates are distinct
-pass  dates are the requested month
+pass  dates are in the requested order
+pass  every date is eight digits
 pass  no header row was written
 pass  three columns
 pass  no missing values
@@ -1993,6 +2021,18 @@ pass  amounts are whole numbers
 
 > **Why it has to be read back rather than checked in memory**: **the header, the dtypes and
 > the date format are all decided by the write.** Only reading the file confirms them.
+
+**Two of these checks are only worth anything in their current form**, and both were weaker
+before:
+
+- **"dates are in the requested order"** compares the list against the expected list. The
+  obvious spelling, `set(written) == set(expected)`, accepts **any permutation** of the right
+  dates — and a submission is read positionally by whatever consumes it.
+- **"no header row was written"** compares the first cell of the first *line of the file*
+  against the first expected date. The obvious spelling, `not first_cell.isalpha()`, is
+  satisfied by `'report_date'` as well as by `'20140901'` — the underscore makes `isalpha()`
+  false — so it **passes whether or not a header was written**. A check that cannot fail is
+  not a check; it is a line that reads like one.
 
 **A zero-score checklist**: **magnitude, date format, header row, file encoding.** And a
 sense of scale for how much this matters — **ten points of difference can move a leaderboard
@@ -2125,7 +2165,7 @@ Run them in order. `01` writes the data every other script reads; the rest are i
 | `04_prophet_trend_seasonality_changepoints.py` | The three additive terms and their magnitudes; **detected changepoints matched against planted ones**; what a looser prior buys; event lift recovered against a planted 1.55; a carrying capacity; **and the negative result on a sub-annual series** |
 | `05_periodic_factor_baseline.py` | Three implementations side by side — additive dummies, ratio one-at-a-time, joint alternation — **all scored against planted factors** and against a SARIMAX given the same weekly period |
 | `06_lstm_windowed_forecast.py` | Windowing with `series_to_supervised`; **a random split in which 100% of the test rows' target values had already been read as training inputs**; a three-way time split in which nothing fits on, scores, or selects from the final test before the last step; scaling from the training side only; a small PyTorch model against two practical baselines and one oracle; training against validation against final test |
-| `07_rolling_origin_backtest.py` | Four cut-offs, four routes; the fold-to-fold spread against the gap between routes; training-period error against held-out error; a submission file written, read back, and checked against eight format rules |
+| `07_rolling_origin_backtest.py` | Four cut-offs, four routes; the fold-to-fold spread against the gap between routes; training-period error against held-out error; **a route backtested and chosen per target, because the two columns rank the routes almost in reverse**; a submission file written, read back, and checked against nine format rules |
 
 **Two openings deliberately left unbuilt**, since neither is implemented here:
 

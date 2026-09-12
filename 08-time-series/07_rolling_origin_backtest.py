@@ -32,6 +32,13 @@ ORIGINS = ["2014-04-30", "2014-05-31", "2014-06-30", "2014-07-31"]
 SUBMISSION_START = "2014-09-01"
 COLUMNS = ["total_purchase_amt", "total_redeem_amt"]
 
+# Same alternating fit as 05, and the same stopping rule: run until neither
+# factor set moves, rather than a fixed number of rounds that says nothing about
+# whether it was enough. EPS floors a denominator that is itself a fitted value.
+PERIODIC_MAX_ROUNDS = 20
+PERIODIC_TOL = 1e-6
+EPS = 1e-8
+
 
 def quiet_prophet() -> None:
     """Silence the fitting backend before it writes a line for every fit.
@@ -54,13 +61,19 @@ def seasonal_naive(train: pd.Series, dates: pd.DatetimeIndex) -> np.ndarray:
 
 
 def periodic_factors(train: pd.Series, dates: pd.DatetimeIndex,
-                     rounds: int = 20) -> np.ndarray:
+                     max_rounds: int = PERIODIC_MAX_ROUNDS,
+                     tol: float = PERIODIC_TOL) -> np.ndarray:
     """Forecast as level times a weekday factor times a month-position factor.
 
     The two factors are fitted together, alternating between them, so that a
     weekday which happens to fall on month ends more often than average is not
     credited with the month-end lift. Nothing here is optimised against a loss:
     the forecast is a product of group averages.
+
+    This is the same routine as the one in 05, down to the stopping rule: it runs
+    until neither factor set moves by more than tol, capped at max_rounds. Two
+    scripts implementing the same estimator with two different stopping rules is
+    a difference nobody would find by reading either one of them alone.
     """
     frame = pd.DataFrame({"y": train.to_numpy(),
                           "weekday": train.index.dayofweek,
@@ -68,15 +81,16 @@ def periodic_factors(train: pd.Series, dates: pd.DatetimeIndex,
     level = frame["y"].mean()
     weekday = pd.Series(1.0, index=range(7))
     day = pd.Series(1.0, index=range(1, 32))
-    for _ in range(rounds):
-        weekday = (frame["y"] / (level * frame["day"].map(day))
-                   ).groupby(frame["weekday"]).mean()
-        weekday = weekday / weekday.mean()
-        day = (frame["y"] / (level * frame["weekday"].map(weekday))
-               ).groupby(frame["day"]).mean()
-        day = day / day.mean()
-    weekday = weekday.reindex(range(7)).fillna(1.0)
-    day = day.reindex(range(1, 32)).fillna(1.0)
+    for _ in range(max_rounds):
+        before = np.r_[weekday.to_numpy(), day.to_numpy()]
+        explained_by_day = (level * frame["day"].map(day)).clip(lower=EPS)
+        weekday = (frame["y"] / explained_by_day).groupby(frame["weekday"]).mean()
+        weekday = (weekday / weekday.mean()).reindex(range(7)).fillna(1.0)
+        explained_by_weekday = (level * frame["weekday"].map(weekday)).clip(lower=EPS)
+        day = (frame["y"] / explained_by_weekday).groupby(frame["day"]).mean()
+        day = (day / day.mean()).reindex(range(1, 32)).fillna(1.0)
+        if np.abs(np.r_[weekday.to_numpy(), day.to_numpy()] - before).max() < tol:
+            break
     return (level
             * weekday.reindex(dates.dayofweek).to_numpy()
             * day.reindex(dates.day).to_numpy())
@@ -115,13 +129,20 @@ def rmse(actual: np.ndarray, predicted: np.ndarray) -> float:
 
 
 def fold_score(series: pd.Series, origin: str, route) -> tuple[float, int]:
-    """Fit a route on everything up to one cut-off date and score the next HORIZON days."""
+    """Fit a route on everything up to one cut-off date and score the next HORIZON days.
+
+    The route is asked for the whole horizon and the prediction is then lined up
+    against the scored days by date. Truncating the prediction to the number of
+    surviving actuals instead would be the same thing only while the horizon has
+    no gaps in it: one missing day in the middle silently shifts every prediction
+    after it onto the wrong date, and the RMSE that comes back is still a number.
+    """
     cut = pd.Timestamp(origin)
     train = series.loc[:cut]
     future = pd.date_range(cut + pd.Timedelta(days=1), periods=HORIZON, freq="D")
     actual = series.reindex(future).dropna()
-    predicted = route(train, future)[:len(actual)]
-    return rmse(actual.to_numpy(), predicted), len(train)
+    predicted = pd.Series(route(train, future), index=future).reindex(actual.index)
+    return rmse(actual.to_numpy(), predicted.to_numpy()), len(train)
 
 
 def main() -> None:
@@ -172,12 +193,19 @@ def main() -> None:
               f"{np.std(scores):>11,.0f}")
     winners = {min(table, key=lambda n: table[n][i]) for i in range(len(ORIGINS))}
     print(f"  routes that win at least one fold: {sorted(winners)}")
+    if len(winners) == 1:
+        print(f"  {next(iter(winners))} wins all {len(ORIGINS)} folds, so the identity of "
+              f"the winner does not depend on which cut-off was chosen - note that this "
+              f"is a claim about the winner, not about the whole ranking")
+    else:
+        print(f"  different routes win different folds, so which one looks best depends "
+              f"on which cut-off was chosen")
     worst_spread = max((max(s) / min(s), n) for n, s in table.items())
-    print(f"  the winner is the same in all {len(ORIGINS)} folds, so the ranking here "
-          f"does not depend on which cut-off was chosen")
+    top_two_gap = np.mean(ranked[1][1]) / np.mean(ranked[0][1])
+    comparison = "more than" if worst_spread[0] > top_two_gap else "no more than"
     print(f"  the fold-to-fold spread does: {worst_spread[1]} moves "
-          f"{worst_spread[0]:.2f}x between its best and worst fold, which is more "
-          f"than the gap between the top two routes")
+          f"{worst_spread[0]:.2f}x between its best and worst fold, {comparison} the "
+          f"{top_two_gap:.2f}x gap between the top two mean scores")
 
     print("\n--- 4. The fitted routes measured on the days they were fitted on ---")
     cut = pd.Timestamp(ORIGINS[-1])
@@ -211,16 +239,42 @@ def main() -> None:
     print(f"  same order here: {fitted_rank == held_rank}; the two rankings are free "
           f"to differ, and only the second one was measured on days no route had read")
 
-    print("\n--- 5. Refit on everything and forecast the month after the data ---")
-    best_route_name = ranked[0][0]
-    best_route = ROUTES[best_route_name]
+    print("\n--- 5. Choose a route per target, refit, and forecast ---")
+    # Every fold above was scored on the purchase column. Carrying its winner
+    # across to the redeem column would be assuming the two behave alike, and the
+    # generator did not build them alike: the redeem column carries a growth term
+    # and a wandering level that the purchase column does not. Each target gets
+    # its own backtest and its own winner.
     future = pd.date_range(SUBMISSION_START, periods=HORIZON, freq="D")
     submission = pd.DataFrame({"report_date": future.strftime("%Y%m%d")})
+    best_by_column = {}
     for column in COLUMNS:
-        predicted = best_route(flow[column], future)
+        column_table = table if column == "total_purchase_amt" else {
+            name: [fold_score(flow[column], origin, route) [0] for origin in ORIGINS]
+            for name, route in ROUTES.items()}
+        column_ranked = sorted(column_table.items(), key=lambda kv: np.mean(kv[1]))
+        best_name = column_ranked[0][0]
+        best_by_column[column] = best_name
+        print(f"  {column}:")
+        for name, scores in column_ranked:
+            mark = "  <- selected" if name == best_name else ""
+            print(f"    {name:<20} mean RMSE {np.mean(scores):>14,.0f}{mark}")
+        predicted = ROUTES[best_name](flow[column], future)
         submission[column.replace("total_", "").replace("_amt", "")] = np.round(
             np.clip(predicted, 0, None)).astype("int64")
-    print(f"  route {best_route_name}, refitted on all {len(flow)} days")
+    if len(set(best_by_column.values())) == 1:
+        print(f"  both targets select the same route")
+    else:
+        print(f"  the two targets select different routes: "
+              f"{', '.join(f'{c} -> {r}' for c, r in best_by_column.items())}")
+        carried = best_by_column["total_purchase_amt"]
+        redeem_scores = {n: np.mean(s) for n, s in column_table.items()}
+        print(f"  carrying the purchase winner across would have used {carried!r} on "
+              f"redeem, where it scores")
+        print(f"  {redeem_scores[carried] / min(redeem_scores.values()):.2f}x the best "
+              f"route for that column - a backtest answers the question it was run on, "
+              f"not a neighbouring one")
+    print(f"  each route refitted on all {len(flow)} days")
     print(f"  horizon {future[0].date()} .. {future[-1].date()}")
     print(f"  {'report_date':<12} {'purchase':>12} {'redeem':>12}")
     for _, row in submission.head(5).iterrows():
@@ -238,12 +292,23 @@ def main() -> None:
     submission.to_csv(path, index=False, header=False, encoding="utf-8")
     reread = pd.read_csv(path, header=None, names=submission.columns,
                          dtype={"report_date": str})
+    expected_dates = future.strftime("%Y%m%d").tolist()
+    first_line = path.read_text(encoding="utf-8").splitlines()[0]
     checks = {
         "row count matches the horizon": len(reread) == HORIZON,
         "dates are distinct": reread["report_date"].nunique() == HORIZON,
-        "dates are the requested month": set(reread["report_date"]) == set(
-            future.strftime("%Y%m%d")),
-        "no header row was written": not reread["report_date"].iloc[0].isalpha(),
+        # Comparing sets would accept any permutation of the right dates, and a
+        # submission is read positionally by whatever consumes it.
+        "dates are in the requested order": reread["report_date"].tolist()
+                                            == expected_dates,
+        "every date is eight digits": bool(
+            reread["report_date"].str.fullmatch(r"\d{8}").all()),
+        # Checked against the first line of the file rather than through the
+        # parser. The obvious spelling of this test, `not first_cell.isalpha()`,
+        # is satisfied by the string 'report_date' as well as by '20140901',
+        # because of the underscore - it passes whether or not a header was
+        # written, which makes it no test at all.
+        "no header row was written": first_line.split(",")[0] == expected_dates[0],
         "three columns": reread.shape[1] == 3,
         "no missing values": int(reread.isna().sum().sum()) == 0,
         "no negative amounts": bool((reread[["purchase", "redeem"]] >= 0).all().all()),
