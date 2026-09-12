@@ -516,8 +516,10 @@ def main():
     depths = sorted({(d, s) for d, s, _, _, _ in trace})
     for depth, spec_id in depths:
         print(f"  depth {depth}: {library[spec_id]['name']}")
-    print(f"  guard stops at depth {MAX_CALL_DEPTH}; a definition that calls itself "
-          f"raises instead of hanging")
+    print(f"  guard stops at depth {MAX_CALL_DEPTH} and names the workflow it stopped in;")
+    print("  without it a self-calling definition still raises - Python's own recursion")
+    print("  limit sees to that - but only after hundreds of nested levels, each one")
+    print("  having run its plugin and model calls, and with a message naming nothing")
     print(f"\n  hotwords: {result['hotwords']}")
     print("  report:")
     for line in result["report"].splitlines():

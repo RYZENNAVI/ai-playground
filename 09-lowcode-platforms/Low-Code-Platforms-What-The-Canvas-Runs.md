@@ -342,8 +342,26 @@ End                  report='MARKET\n3 item(s); first is: Index clos', hotwords=
 ```
 
 `MAX_CALL_DEPTH = 3` exists because a definition may call another that calls back into it.
-**On the canvas both are one tidy box.** Without the guard the failure is a hang, not an
-error.
+**On the canvas both are one tidy box.**
+
+It is worth being exact about what the guard buys, because the obvious claim — that without
+it the engine hangs — is wrong. `run_workflow` is ordinary Python recursion, so the
+interpreter's own recursion limit stops it either way. Pointing a definition's sub-workflow
+node at itself and raising `MAX_CALL_DEPTH` out of the way gives:
+
+```
+guard ON  (3) -> RecursionError: call depth 4 exceeded at 'loop_a'
+guard OFF     -> RecursionError: maximum recursion depth exceeded
+```
+
+Both raise. The difference is **when** and **with what**. The guard fires at the fourth
+level and names the workflow it stopped in. The interpreter's limit fires hundreds of levels
+down, and by then every one of those levels has already run its plugin calls and its model
+calls — on a real platform, hundreds of requests billed before anything surfaces — and the
+message it raises names no workflow at all.
+
+**A guard is not there to turn a hang into an error. It is there to make the error arrive
+early, cheaply, and with the name of the thing that caused it.**
 
 ---
 
