@@ -29,7 +29,15 @@ TRAIN_START = "2014-03-01"
 TRAIN_END = "2014-07-31"
 TEST_START = "2014-08-01"
 TEST_END = "2014-08-31"
-ALTERNATING_ROUNDS = 20
+ALTERNATING_MAX_ROUNDS = 20
+# The alternating fit stops when no factor moves by more than this between two
+# rounds. A fixed round count runs the same number of times whether or not
+# anything is still changing, and says nothing about whether it was enough.
+ALTERNATING_TOL = 1e-6
+# Floor for the denominator each round divides by. It never binds on this data,
+# where every factor stays near 1, but the routine divides by a fitted quantity
+# and a fitted quantity is allowed to come back at zero.
+EPS = 1e-8
 WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
@@ -69,8 +77,9 @@ def ratio_factors(frame: pd.DataFrame, column: str) -> tuple[float, pd.Series, p
 
 
 def alternating_factors(frame: pd.DataFrame, column: str,
-                        rounds: int = ALTERNATING_ROUNDS
-                        ) -> tuple[float, pd.Series, pd.Series]:
+                        max_rounds: int = ALTERNATING_MAX_ROUNDS,
+                        tol: float = ALTERNATING_TOL
+                        ) -> tuple[float, pd.Series, pd.Series, int]:
     """Fit both multiplicative effects together, by holding one fixed while updating the other.
 
     Each round divides the observed value by what the other effect already
@@ -78,19 +87,29 @@ def alternating_factors(frame: pd.DataFrame, column: str,
     more often is no longer credited with the month-end lift. Renormalising after
     every update keeps the level from drifting into the factors, which is what
     makes the two rounds comparable.
+
+    The loop stops when no factor moves by more than tol, and returns the number
+    of rounds it took. A fixed count would run the same number of times whether
+    or not anything was still changing, and would leave the reader unable to tell
+    a converged fit from one that was cut off.
     """
     level = frame[column].mean()
     weekday = pd.Series(1.0, index=sorted(frame["weekday"].unique()))
     day = pd.Series(1.0, index=sorted(frame["day"].unique()))
 
-    for _ in range(rounds):
-        explained_by_day = level * frame["day"].map(day)
+    used = 0
+    for used in range(1, max_rounds + 1):
+        before = np.r_[weekday.to_numpy(), day.to_numpy()]
+        explained_by_day = (level * frame["day"].map(day)).clip(lower=EPS)
         weekday = normalise(
             (frame[column] / explained_by_day).groupby(frame["weekday"]).mean())
-        explained_by_weekday = level * frame["weekday"].map(weekday)
+        explained_by_weekday = (level * frame["weekday"].map(weekday)).clip(lower=EPS)
         day = normalise(
             (frame[column] / explained_by_weekday).groupby(frame["day"]).mean())
-    return level, weekday, day
+        moved = np.abs(np.r_[weekday.to_numpy(), day.to_numpy()] - before).max()
+        if moved < tol:
+            break
+    return level, weekday, day, used
 
 
 def predict_from_factors(dates: pd.DatetimeIndex, level: float,
@@ -135,6 +154,29 @@ def main() -> None:
           f"day and Tuesday around {observed_weekday[1]:.2f}: the swing across the "
           f"week is a factor of {observed_weekday.max() / observed_weekday.min():.2f}")
 
+    # The second cycle the heading promises. Printing all 31 positions would bury
+    # the shape, so the rows shown are the three the generator pushes highest and
+    # the three it pushes lowest, chosen from the planted values rather than from
+    # the observed ones so that the selection cannot flatter the fit.
+    observed_day = normalise(train.groupby("day")[column].mean())
+    common = observed_day.index.intersection(planted_day.index)
+    extremes = sorted(set(planted_day[common].nlargest(3).index)
+                      | set(planted_day[common].nsmallest(3).index))
+    print(f"  {'month position':<10} {'observed factor':>16} {'planted factor':>16} "
+          f"{'gap':>8}  {'rows':>5}")
+    for d in extremes:
+        rows = int((train["day"] == d).sum())
+        print(f"  day {d:<6} {observed_day[d]:>16.4f} {planted_day[d]:>16.4f} "
+              f"{observed_day[d] - planted_day[d]:>+8.4f}  {rows:>5}")
+    print(f"  the three positions the generator lifts most and the three it cuts most; "
+          f"the swing across")
+    print(f"  the month is a factor of "
+          f"{observed_day[common].max() / observed_day[common].min():.2f}, against "
+          f"{observed_weekday.max() / observed_weekday.min():.2f} across the week, and "
+          f"each position")
+    print(f"  is averaged over only {int(train.groupby('day').size().min())} to "
+          f"{int(train.groupby('day').size().max())} rows")
+
     print("\n--- 2. Fit both effects as additive dummies ---")
     ols = smf.ols(f"{column} ~ C(weekday) + C(day)", data=train.reset_index()).fit()
     print(f"  {len(ols.params)} coefficients from {len(train)} rows, "
@@ -155,14 +197,15 @@ def main() -> None:
           f"{np.abs(day_r[common_days] - planted_day[common_days]).max():.4f}")
 
     print("\n--- 4. Fit both effects together, alternating between them ---")
-    level_a, weekday_a, day_a = alternating_factors(train, column)
-    print(f"  {ALTERNATING_ROUNDS} rounds, level {level_a:,.0f}")
+    level_a, weekday_a, day_a, rounds_used = alternating_factors(train, column)
+    print(f"  converged after {rounds_used} rounds (no factor moving more than "
+          f"{ALTERNATING_TOL:g}, cap {ALTERNATING_MAX_ROUNDS}), level {level_a:,.0f}")
     print(f"  weekday factors {np.round(weekday_a.to_numpy(), 3).tolist()}")
     print(f"  largest weekday gap to planted "
           f"{np.abs(weekday_a - planted_weekday).max():.4f}")
     print(f"  largest month-position gap to planted "
           f"{np.abs(day_a[common_days] - planted_day[common_days]).max():.4f}")
-    settle = alternating_factors(train, column, rounds=1)[1]
+    settle = alternating_factors(train, column, max_rounds=1)[1]
     print(f"  after one round the weekday factors are already within "
           f"{np.abs(settle - weekday_a).max():.5f} of where they end up")
 
@@ -175,7 +218,7 @@ def main() -> None:
             test.index, level_r, weekday_r, day_r),
         "alternating, joint": predict_from_factors(
             test.index, level_a, weekday_a, day_a),
-        "planted factors": truth_pred,
+        "planted-factor reference": truth_pred,
     }
     arima_fit = ARIMA(train[column], order=(2, 0, 2),
                       seasonal_order=(1, 0, 1, 7)).fit()
@@ -188,7 +231,12 @@ def main() -> None:
                         if TEST_START <= d <= TEST_END]
     ordinary = ~test.index.isin(pd.to_datetime(campaign_in_test))
     baseline = rmse(actual[ordinary], truth_pred[ordinary])
-    print(f"  {'route':<26} {'all 31 days':>14}  {'ordinary days':>14}  {'vs planted':>11}")
+    print(f"  {'route':<26} {'all 31 days':>14}  {'ordinary days':>14}  "
+          f"{'vs reference':>13}")
+    # Not a lower bound on anything. It is handed the generator's own two factor
+    # sets, but its level is still the training mean, the holdout still carries
+    # noise, and it is as blind to the promotion day as every other route. It is
+    # the score a route gets for knowing the cycles and nothing else.
     for label, predicted in routes.items():
         print(f"  {label:<26} {rmse(actual, predicted):>14,.0f}  "
               f"{rmse(actual[ordinary], predicted[ordinary]):>14,.0f}  "
@@ -201,14 +249,15 @@ def main() -> None:
               f"it alone carries "
               f"{err ** 2 / np.sum((actual - truth_pred) ** 2):.0%} of the squared "
               f"error of the best route, which is why the two columns differ")
-    print(f"  on ordinary days the planted factors set the floor, and the three "
-          f"fitted routes land within "
+    print(f"  on ordinary days the planted-factor reference is the best of the five, "
+          f"and the three fitted routes land within "
           f"{max(rmse(actual[ordinary], routes[k][ordinary]) / baseline for k in ['additive dummies', 'ratio, one at a time', 'alternating, joint']):.2f}x "
           f"of it")
     print(f"  the autoregressive model was given the same weekly period and reaches "
           f"{rmse(actual[ordinary], routes['ARIMA with a weekly term'][ordinary]) / baseline:.2f}x: "
           f"on this series the two approaches are close, and the factor model gets "
-          f"there with {len(weekday_a) + len(day_a)} numbers and no optimiser")
+          f"there with {len(weekday_a)} weekday factors, {len(day_a)} month-position "
+          f"factors and one level - {len(weekday_a) + len(day_a) + 1} numbers, no optimiser")
 
     print("\n--- 6. Measure the imbalance that biases the one-at-a-time estimate ---")
     counts = pd.crosstab(train["weekday"], train["day"])

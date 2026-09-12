@@ -1386,9 +1386,12 @@ A single LSTM layer plus a linear head — **9,841 parameters, 120 epochs, full 
 deliberately small, because **the network is not what this script is about.** What matters is
 what it is compared against:
 
+The reference route is given the generator's own factors; like the one in section 9.6 it is
+a score, not a lower bound.
+
 | Route | Holdout RMSE over 60 days | Relative |
 | :--- | ---: | ---: |
-| **Planted periodic factors** (the ceiling) | **28,289,609** | **1.00x** |
+| **Planted periodic factors** (the reference) | **28,289,609** | **1.00x** |
 | Recurrent model | 32,601,665 | 1.15x |
 | Same weekday last week | 56,013,383 | 1.98x |
 | Yesterday repeated | 73,887,789 | 2.61x |
@@ -1560,8 +1563,9 @@ by the other.
 
 ```python
 def alternating_factors(frame: pd.DataFrame, column: str,
-                        rounds: int = ALTERNATING_ROUNDS
-                        ) -> tuple[float, pd.Series, pd.Series]:
+                        max_rounds: int = ALTERNATING_MAX_ROUNDS,
+                        tol: float = ALTERNATING_TOL
+                        ) -> tuple[float, pd.Series, pd.Series, int]:
     """Fit both multiplicative effects together, by holding one fixed while updating the other.
 
     Each round divides the observed value by what the other effect already
@@ -1569,6 +1573,11 @@ def alternating_factors(frame: pd.DataFrame, column: str,
     more often is no longer credited with the month-end lift. Renormalising after
     every update keeps the level from drifting into the factors, which is what
     makes the two rounds comparable.
+
+    The loop stops when no factor moves by more than tol, and returns the number
+    of rounds it took. A fixed count would run the same number of times whether
+    or not anything was still changing, and would leave the reader unable to tell
+    a converged fit from one that was cut off.
     """
 ```
 
@@ -1576,9 +1585,9 @@ Three design points:
 
 | Design | Why |
 | :--- | :--- |
-| **Twenty alternating rounds** | Each factor is a condition of the other, so they can only be approached in turn |
+| **Alternate until nothing moves** (`tol=1e-6`, capped at 20) | Each factor is a condition of the other, so they can only be approached in turn. A fixed round count runs the same number of times whether or not anything is still changing — and says nothing about whether it was enough. **On this data it converges after 13 rounds**, and the count is printed |
 | **Renormalise to mean 1 after every update** | Otherwise one set can be multiplied by ten and the other divided by ten with the product unchanged — the values stop meaning anything (**scale is not identifiable**) |
-| **`eps=1e-8`** | Keeps the denominator away from zero |
+| **`EPS = 1e-8` on the denominator** | Each round divides by a *fitted* quantity, and a fitted quantity is allowed to come back at zero. It never binds on this data; that is not a reason to divide without it |
 
 > **This is the same idea as alternating least squares in matrix factorisation**: when two
 > groups of unknowns are entangled, **fix one and solve for the other, then swap.** The
@@ -1596,21 +1605,26 @@ Training 153 days, holding out 31, against factors written into the generator.
 | One effect at a time | 0.0422 | 0.1149 | 0.0185 |
 | **Joint alternation** | **0.0255** | **0.1105** | **0.0129 (30% smaller)** |
 
-**Holdout scores**, with two reference points that bracket the field:
+**Holdout scores**, with two reference points that bracket the field. The first of them is
+**not a lower bound on anything** — it is handed the generator's own two factor sets, but its
+level is still the training mean, the holdout still carries noise, and it is as blind to the
+promotion day as every other route. Call it the score a route gets for knowing the cycles and
+nothing else, not a floor:
 
-| Route | All 31 days | Ordinary days | vs planted |
+| Route | All 31 days | Ordinary days | vs reference |
 | :--- | ---: | ---: | ---: |
-| **Planted factors** (the ceiling) | 35,640,260 | **19,721,628** | **1.00x** |
+| **Planted-factor reference** | 35,640,260 | **19,721,628** | **1.00x** |
 | Additive dummies | 38,540,707 | 23,075,054 | 1.17x |
 | Ratio, one at a time | 38,691,960 | 23,124,870 | 1.17x |
-| Joint alternation | 39,045,749 | 23,789,227 | 1.21x |
+| Joint alternation | 39,045,742 | 23,789,186 | 1.21x |
 | **SARIMAX with a weekly term** | 39,159,792 | **27,239,251** | **1.38x** |
 | Last week repeated | 68,488,662 | 62,836,277 | 3.19x |
 
 **Three readings:**
 
-1. **All three factor routes (1.17–1.21x) land closer to the ceiling than a SARIMAX that was
-   given the same weekly period (1.38x)** — using **38 numbers and no optimiser.**
+1. **All three factor routes (1.17–1.21x) land closer to the reference than a SARIMAX that
+   was given the same weekly period (1.38x)** — using **7 weekday factors, 31 month-position
+   factors and one level: 39 numbers, and no optimiser.**
 2. **The two columns differ because a promotion day falls inside the holdout.** That single
    day carries **70% of the squared error** of the best route, and **no route here knows it
    exists.**
