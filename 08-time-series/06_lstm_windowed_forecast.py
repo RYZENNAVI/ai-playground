@@ -235,24 +235,52 @@ def main() -> None:
     print(f"  {params:,} parameters, {EPOCHS} epochs, full batch of "
           f"{len(train_x)} rows")
     print(f"  {'epoch':>6}  {'train loss':>12}  {'validation loss':>16}")
+    best_valid, best_epoch, best_state = float("inf"), 0, None
+    last_valid = float("nan")
     for epoch in range(1, EPOCHS + 1):
         model.train()
         optimiser.zero_grad()
         loss_fn(model(train_x), train_y).backward()
         optimiser.step()
+        # Both numbers are recomputed after the step. The loss that drove the
+        # update belongs to the weights as they were before it; printing it
+        # beside a validation loss measured after it puts two parameter states on
+        # the same line and calls the pair a training curve.
+        model.eval()
+        with torch.no_grad():
+            shown_train = loss_fn(model(train_x), train_y).item()
+            shown_valid = loss_fn(model(valid_x), valid_y).item()
+        last_valid = shown_valid
+        if shown_valid < best_valid:
+            best_valid, best_epoch = shown_valid, epoch
+            best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
         if epoch % 20 == 0 or epoch == 1:
-            # Both numbers are recomputed after the step. The loss that drove the
-            # update belongs to the weights as they were before it; printing it
-            # beside a validation loss measured after it puts two parameter
-            # states on the same line and calls the pair a training curve.
-            model.eval()
-            with torch.no_grad():
-                shown_train = loss_fn(model(train_x), train_y)
-                shown_valid = loss_fn(model(valid_x), valid_y)
-            print(f"  {epoch:>6}  {shown_train.item():>12.4f}  "
-                  f"{shown_valid.item():>16.4f}")
+            print(f"  {epoch:>6}  {shown_train:>12.4f}  {shown_valid:>16.4f}")
     print("  the final test was not evaluated once in this loop; every decision above "
           "this line was made without it")
+
+    # The training loss can always be driven lower by running longer; the
+    # validation loss is the one that says whether the extra rounds bought
+    # anything. Keeping the weights from its lowest point is the whole reason a
+    # validation set is carved out separately from the final test - a run that
+    # only prints the curve has done the measuring and thrown away the answer.
+    model.load_state_dict(best_state)
+    print(f"  validation bottomed at epoch {best_epoch} ({best_valid:.4f}) and ended at "
+          f"{last_valid:.4f} after {EPOCHS}")
+    print(f"  the last {EPOCHS - best_epoch} epochs lowered the training loss and raised "
+          f"the validation loss by {last_valid / best_valid - 1:.0%}: that is the point "
+          f"where the model")
+    print(f"  stopped learning the series and started learning this sample of it. The "
+          f"weights from")
+    print(f"  epoch {best_epoch} are restored, chosen on validation alone, with the final "
+          f"test still unread")
+    print(f"  note that the printed rows every 20 epochs put the low point at 80; the "
+          f"real one is")
+    print(f"  epoch {best_epoch}, and the curve is only checked every epoch because "
+          f"something acts on it. A")
+    print(f"  quantity that is printed for a human to glance at gets sampled; one that "
+          f"a decision")
+    print(f"  depends on gets measured.")
 
     print("\n--- 5. Open the final test, once ---")
     model.eval()

@@ -1408,7 +1408,7 @@ it, and collapsing them into one leaderboard is how an oracle gets mistaken for 
 | Kind | Route | Final-test RMSE over 60 days | Relative |
 | :--- | :--- | ---: | ---: |
 | **Oracle**, not deployable | Oracle planted factors | **28,297,049** | **1.00x** |
-| **Learned** | Recurrent model | 31,970,965 | 1.13x |
+| **Learned** | Recurrent model | 31,297,420 | 1.11x |
 | **Practical baseline** | Same weekday last week | 56,013,383 | 1.98x |
 | **Practical baseline** | Yesterday repeated | 73,887,789 | 2.61x |
 
@@ -1431,13 +1431,50 @@ it, and collapsing them into one leaderboard is how an oracle gets mistaken for 
 ⇒ **A window carries the cycles that fit inside it. What does not fit inside it is simply not
 there.**
 
+#### Stopping where the validation curve says to
+
+Running all 120 epochs is a choice, and the validation curve prices it:
+
+```
+epoch   train loss   validation loss
+   60      0.1318       0.2688
+   80      0.1007       0.2646
+  100      0.0890       0.2813
+  120      0.0811       0.2981
+
+validation bottomed at epoch 64 (0.2551) and ended at 0.2981 after 120
+```
+
+**The training loss falls the whole way; the validation loss turns around and climbs 17%.**
+Past that turn the model is no longer learning the series, it is learning this sample of it.
+Restoring the weights from the lowest validation epoch — chosen on validation alone, with the
+final test still unread — is what the validation set was carved out to make possible:
+
+The left column below is the same script with the restore removed — it is what the run
+printed before this change, not something the current script outputs:
+
+| | Run to 120 | Restored from epoch 64 |
+| :--- | ---: | ---: |
+| Training rows RMSE | 21,465,694 | 26,269,768 |
+| **Final test RMSE** | 31,970,965 | **31,297,420** |
+| Test ÷ train | 1.49x | **1.19x** |
+
+The final test improves by 2.1% — modest, and the more telling column is the training one,
+which gets **worse by 22%**. That is the trade being made explicit: the extra epochs were
+buying a better-looking fit to history and paying for it on the part that matters.
+
+> **One detail worth keeping.** The rows printed every 20 epochs put the low point at 80. The
+> real one is **64** — the minimum fell between two print points. The curve is sampled every
+> 20 epochs for a human to glance at, and measured every epoch because a decision depends on
+> it. A quantity a decision rests on has to be measured at the resolution of the decision.
+
 ### 8.5 The training-set score is not a forecast
 
 | | RMSE |
 | :--- | ---: |
-| Training rows | 21,465,694 |
-| Validation rows (watched during training) | 41,155,212 (**1.92x**) |
-| Final test rows (opened once, at the end) | 31,970,965 (**1.49x**) |
+| Training rows | 26,269,768 |
+| Validation rows (watched during training) | 38,070,473 (**1.45x**) |
+| Final test rows (opened once, at the end) | 31,297,420 (**1.19x**) |
 
 **The first number is the one a plot of predictions over the training period shows** — and it
 exists before any forecast has been made. The other two were both measured on rows the weights
@@ -1445,7 +1482,7 @@ never saw; what separates them is that **the validation number was visible while
 still being set up, and the final test number was not.**
 
 And they disagree. Two held-out windows, sixty rows each, adjacent in time — and **validation
-scores 1.29x the final test**. The later window is the easier one. ⇒ **One holdout is a
+scores 1.22x the final test**. The later window is the easier one. ⇒ **One holdout is a
 sample, not a verdict**, which is the question section 10 exists to settle.
 
 > A common shape of the mistake: train, then call `model.predict(train_x)`, then draw the
