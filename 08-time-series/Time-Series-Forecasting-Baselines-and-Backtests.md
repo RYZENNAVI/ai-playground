@@ -646,12 +646,38 @@ def search_orders(series: pd.Series, candidates: list[tuple[int, int, int]],
     one score cannot be checked: the reader cannot see how many candidates were
     tried, whether any failed to converge, or how close the runner-up was. All
     three of those change what the winning order is worth.
+
+    Convergence is read off the optimiser rather than inferred from the absence
+    of an exception. A fit that ran out of iterations raises nothing and still
+    returns an AIC, so a search that only catches exceptions will rank a number
+    the optimiser never arrived at. Those rows stay in the table and are sorted
+    below every converged one, so they can be read but cannot win.
     """
 ```
 
 The mechanics are conventional — a Cartesian product of ranges, a running best, a
-`try/except` around each fit so that a non-converging combination is skipped instead of
-killing the loop. **What is not conventional is returning the table.**
+`try/except` around each fit. **What is not conventional is returning the table, with a
+convergence flag on every row.**
+
+#### The failure a `try/except` does not catch
+
+This is worth spelling out, because it is the quiet one. `statsmodels` defaults to
+**50 optimiser iterations**. On this 40-candidate seasonal grid that budget leaves most fits
+stopped early — and a fit that ran out of iterations **raises nothing**. It returns a result
+object with an AIC attached, and a `ConvergenceWarning` on stderr that a module-level
+`warnings.filterwarnings("ignore")` removes entirely. The search then ranks a number the
+optimiser never arrived at:
+
+| Optimiser budget | Converged | Best AIC overall | Did it converge? | Best *converged* fit |
+| ---: | ---: | :--- | :--- | :--- |
+| 50 (the default) | **6 / 40** | (4, 0, 0) at 187.45 | **No** | (0, 0, 0) at 197.83 |
+| 1000 | 23 / 40 | (3, 0, 3) at 185.25 | Yes | (3, 0, 3) at 185.25 |
+
+⇒ **Two separate repairs, and both are needed.** Raise the budget, so that failing to
+converge means something rather than being the default outcome. And record
+`fit.mle_retvals["converged"]` on every row, sorting the failures below every converged fit
+so they can be read but cannot win. The blanket warning filter is narrowed to the two classes
+the script has a stated reason to silence — everything else is left audible.
 
 > A bare `except:` is worse than `except ValueError`: it swallows every error, including a
 > misspelled attribute. If all candidates fail, the following line raises `NameError` with
@@ -665,7 +691,7 @@ killing the loop. **What is not conventional is returning the table.**
 | Order | AIC | Gap to best |
 | :--- | ---: | ---: |
 | (1, 0, 3) | 5009.77 | 0.00 |
-| (3, 0, 3) | 5009.90 | 0.13 |
+| (3, 0, 3) | 5009.87 | 0.11 |
 | **(2, 0, 1)** — planted | 5010.64 | 0.88 |
 | (3, 0, 0) | 5011.46 | 1.69 |
 
@@ -677,7 +703,7 @@ So the script converts each fit back into a process and compares autocorrelation
 | Order | AIC | Max ACF gap to planted, lags 1-12 |
 | :--- | ---: | ---: |
 | (1, 0, 3) | 5009.77 | 0.0827 |
-| (3, 0, 3) | 5009.90 | 0.0724 |
+| (3, 0, 3) | 5009.87 | 0.0742 |
 | (2, 0, 1) | 5010.64 | 0.0494 |
 
 **The top orders carry almost the same autocorrelation as the planted recursion, written
@@ -702,16 +728,52 @@ the **first** factor near its smallest values.
 
 Measured on the monthly table, full grid against the truncated one:
 
-| | Candidates | Range of p | Winner | AIC |
-| :--- | ---: | :--- | :--- | ---: |
-| Full grid | 40 | [0,1,2,3,4] | **(4, 0, 0)** | 187.45 |
-| Truncated | 20 | [0,1,2] | **(0, 0, 3)** | 189.68 |
+| | Candidates | Converged | Range of p | Winner | AIC |
+| :--- | ---: | ---: | :--- | :--- | ---: |
+| Full grid | 40 | 23 | [0,1,2,3,4] | **(3, 0, 3)** | 185.25 |
+| Truncated | 20 | 14 | [0,1,2] | **(1, 0, 3)** | 185.47 |
 
-**Of the twenty candidates never fitted, the best was (4,0,0) — ranked first overall.**
+**Of the twenty candidates never fitted, the best was (3,0,3) — ranked first overall.**
 
 ⇒ **Both runs print a best AIC, and nothing in that number says which orders were never
 tried.** The candidate count has to be printed next to the winner, or the two runs are
 indistinguishable to a reader.
+
+### 6.4a Forecasting forward, scored against the generator
+
+The winning order is refitted on the whole table and asked for four months. Two things in
+that block are easy to get wrong and both are checkable.
+
+**The band has to be asked for at the level it is labelled with.** `conf_int()` defaults to
+`alpha=0.05` — a 95% interval. A block that prints it under an "80% band" heading is
+mislabelling its own output by a wide margin:
+
+| Level | Mean width of the band |
+| :--- | ---: |
+| `conf_int(alpha=0.20)` — 80% | **13.96** |
+| `conf_int()` — 95%, the default | 21.35 |
+
+**And the reference it is scored against has to be the generator, not a line through the
+last point.** The retail column was built as
+`(base + slope x step) x month-of-year factor + noise`. Anchoring a straight line on the last
+observation inherits that observation's noise and drops the month factor entirely, so it is
+not the planted expectation — it is just a line. Rebuilding it from the parameters in
+`ground_truth.json` gives the noiseless expectation the generator actually implies:
+
+```
+month        forecast                80% band
+2007-07         854.0          847.2 .. 860.7
+2007-08         853.3          846.5 .. 860.1
+2007-09         853.5          846.6 .. 860.4
+2007-10         848.7          841.3 .. 856.2
+
+the generator's noiseless expectation is [853.8, 858.7, 849.3, 856.7]
+mean absolute gap to that expectation: 4.5
+the 80% band covers the generator's expectation in 3 of the 4 months
+```
+
+⇒ A forecast scored against a reference that was not the generating mechanism measures the
+reference as much as the forecast.
 
 ### 6.5 In-sample and out-of-sample
 
@@ -727,8 +789,8 @@ Measured on the same series:
 
 | | RMSE |
 | :--- | ---: |
-| Last twelve months, fitted by a model **that saw them** | 5.78 |
-| Last twelve months, forecast by a model **that did not** | 6.37 |
+| Last twelve months, fitted by a model **that saw them** | 4.14 |
+| Last twelve months, forecast by a model **that did not** | **10.44 (2.5x)** |
 
 **Only the second number describes a forecast.**
 
@@ -748,7 +810,9 @@ scales = {"day": index,
 | quarter | 111 | 0.306 | 0.152 |
 | year | 29 | 0.329 | 0.207 |
 
-**The yearly series has 29 points — too few to fit anything with a memory of seven.**
+**The yearly series has only 29 points — far too little history to fit anything with a
+memory of seven and trust the result.** It can be fitted; that is not the same as being
+worth reading.
 
 ⇒ **Aggregating is not free smoothing: it deletes every cycle shorter than the new step.**
 Monthly is often the level modelled rather than daily, because **the daily jitter drowns the
@@ -1908,7 +1972,7 @@ Run them in order. `01` writes the data every other script reads; the rest are i
 | :--- | :--- |
 | `01_build_time_series_datasets.py` | Builds five series from mechanisms written in the file and records every parameter in `ground_truth.json`: a daily cash-flow panel (weekday x month-position factors, a random walk, four promotion days), a 30-year index (five drift regimes, a 250-observation cycle), a 198-row history too short for a yearly cycle, a 42-month total, and an ARMA series of fixed order |
 | `02_decompose_and_stationarity.py` | Decomposition at the right period and three wrong ones; STL against moving average; ADF and KPSS; the differencing ladder; **and the Monte Carlo showing that a strong cycle triples the rate at which a random walk is called stationary** |
-| `03_arima_grid_search_and_forecast.py` | An AIC grid on a series of known order — **the label is not recovered, the dynamics are**; a truncated candidate list changing the winner; four resampling scales; the drifting date loop with its assertions; in-sample against out-of-sample |
+| `03_arima_grid_search_and_forecast.py` | An AIC grid on a series of known order — **the label is not recovered, the dynamics are**; **a convergence flag per candidate, because 17 of 40 hit the iteration cap and raise nothing**; a truncated candidate list changing the winner; a forecast scored against the generator's own noiseless expectation; four resampling scales; the drifting date loop with its assertions; in-sample against out-of-sample |
 | `04_prophet_trend_seasonality_changepoints.py` | The three additive terms and their magnitudes; **detected changepoints matched against planted ones**; what a looser prior buys; event lift recovered against a planted 1.55; a carrying capacity; **and the negative result on a sub-annual series** |
 | `05_periodic_factor_baseline.py` | Three implementations side by side — additive dummies, ratio one-at-a-time, joint alternation — **all scored against planted factors** and against a SARIMAX given the same weekly period |
 | `06_lstm_windowed_forecast.py` | Windowing with `series_to_supervised`; **a random split in which 100% of the observations touched by test rows also appear in training rows**; scaling from the training side only; a small PyTorch model against two untrained baselines; the training-set score against the holdout |

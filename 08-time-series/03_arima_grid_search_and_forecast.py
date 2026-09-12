@@ -7,7 +7,7 @@ Demonstrates where an autoregressive forecast comes from, end to end:
     4. Truncate the candidate list the way a slice does, and compare the winner against the full search.
     5. Build future dates by adding month lengths, and audit where the labels land.
     6. Ask the fitted model for in-sample and out-of-sample values, and keep the two apart.
-    7. Price one difference too many, then price the cycle none of those models were told about.
+    7. Price one difference too many on a holdout, then price the cycle none of those models knew.
 
 Module 08: Time Series Forecasting - ARIMA Grid Search.
 """
@@ -24,9 +24,22 @@ import pandas as pd
 import statsmodels.api as sm
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.arima_process import ArmaProcess
+from statsmodels.tools.sm_exceptions import ConvergenceWarning
 
 sys.stdout.reconfigure(encoding="utf-8")
-warnings.filterwarnings("ignore")
+
+# Two warning classes are silenced, both deliberately and both narrowly.
+# ConvergenceWarning, because every fit now reports its own convergence flag in
+# the table below, which is a stronger record than a message on stderr. And the
+# starting-parameter notices, because enforce_stationarity and
+# enforce_invertibility are switched off on purpose so that the whole grid gets
+# fitted rather than only the well-behaved corner of it. A blanket
+# filterwarnings("ignore") would also have hidden the convergence failures this
+# script exists to count.
+warnings.simplefilter("ignore", ConvergenceWarning)
+warnings.filterwarnings("ignore", message="Non-invertible starting MA parameters")
+warnings.filterwarnings("ignore", message="Non-stationary starting autoregressive")
+warnings.filterwarnings("ignore", message="Too few observations to estimate starting")
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 TRUNCATED_TO = 20
@@ -42,6 +55,11 @@ GRID_D = range(2)
 GRID_Q = range(4)
 LONGEST_MEMORY = max(GRID_P) + max(GRID_Q)
 
+# The optimiser's iteration budget. statsmodels defaults to 50, which on this
+# grid leaves most candidates stopped early rather than finished; the search
+# then ranks them on an AIC the optimiser never actually arrived at.
+MAX_ITER = 1000
+
 
 def load_inputs() -> tuple[pd.Series, pd.Series, pd.DataFrame, dict]:
     """Read the ARMA series, the monthly retail table, the cash flow and the truth file."""
@@ -55,7 +73,10 @@ def load_inputs() -> tuple[pd.Series, pd.Series, pd.DataFrame, dict]:
 
     flow = pd.read_csv(DATA_DIR / "fund_flow_daily.csv",
                        parse_dates=["report_date"], date_format="%Y%m%d")
-    flow = flow.set_index("report_date")
+    # The index is contiguous daily, but pandas does not record that on its own.
+    # Leaving it unset makes statsmodels infer a frequency and say so on stderr
+    # for every fit; stating it is both quieter and one fewer thing inferred.
+    flow = flow.set_index("report_date").asfreq("D")
     return arma, retail, flow, truth
 
 
@@ -67,22 +88,34 @@ def search_orders(series: pd.Series, candidates: list[tuple[int, int, int]],
     one score cannot be checked: the reader cannot see how many candidates were
     tried, whether any failed to converge, or how close the runner-up was. All
     three of those change what the winning order is worth.
+
+    Convergence is read off the optimiser rather than inferred from the absence
+    of an exception. A fit that ran out of iterations raises nothing and still
+    returns an AIC, so a search that only catches exceptions will rank a number
+    the optimiser never arrived at. Those rows stay in the table and are sorted
+    below every converged one, so they can be read but cannot win.
     """
     rows = []
     for order in candidates:
         try:
             if seasonal is None:
-                fit = ARIMA(series, order=order).fit()
+                fit = ARIMA(series, order=order).fit(method_kwargs={"maxiter": MAX_ITER})
             else:
                 fit = sm.tsa.statespace.SARIMAX(
                     series, order=order, seasonal_order=seasonal,
                     enforce_stationarity=False, enforce_invertibility=False,
-                ).fit(disp=False)
+                ).fit(disp=False, maxiter=MAX_ITER)
         except (ValueError, np.linalg.LinAlgError) as exc:
-            rows.append({"order": order, "aic": np.nan, "note": type(exc).__name__})
+            rows.append({"order": order, "aic": np.nan, "converged": False,
+                         "note": type(exc).__name__})
             continue
-        rows.append({"order": order, "aic": fit.aic, "note": ""})
-    table = pd.DataFrame(rows).sort_values("aic", kind="stable").reset_index(drop=True)
+        converged = bool(getattr(fit, "mle_retvals", {}).get("converged", True))
+        rows.append({"order": order, "aic": fit.aic, "converged": converged,
+                     "note": "" if converged else "hit the iteration cap"})
+    table = pd.DataFrame(rows)
+    table = (table.sort_values(["converged", "aic"], ascending=[False, True],
+                               kind="stable")
+             .reset_index(drop=True))
     return table
 
 
@@ -115,11 +148,12 @@ def main() -> None:
     grid = [(p, 0, q) for p, q in product(range(4), range(4))]
     table = search_orders(arma, grid)
     winner = table.loc[0, "order"]
-    print(f"  {len(grid)} candidate orders, {table['aic'].notna().sum()} of them fitted")
-    print(f"  {'order':>12}  {'AIC':>10}  {'gap to best':>12}")
+    print(f"  {len(grid)} candidate orders, {table['aic'].notna().sum()} of them fitted, "
+          f"{int(table['converged'].sum())} of them converged")
+    print(f"  {'order':>12}  {'AIC':>10}  {'gap to best':>12}  {'converged':>10}")
     for _, row in table.head(5).iterrows():
         print(f"  {str(row['order']):>12}  {row['aic']:>10.2f}  "
-              f"{row['aic'] - table.loc[0, 'aic']:>12.2f}")
+              f"{row['aic'] - table.loc[0, 'aic']:>12.2f}  {str(row['converged']):>10}")
     print(f"  best by AIC {winner}, planted {planted_order} -> "
           f"labels match: {tuple(winner) == planted_order}")
     within_two = int((table["aic"] <= table.loc[0, "aic"] + 2).sum())
@@ -132,7 +166,8 @@ def main() -> None:
         np.r_[1, np.array(arma_truth["ma_coefficients"])])
     print(f"  {'order':>12}  {'AIC':>10}  {'max ACF gap to planted, lags 1-12':>36}")
     for _, row in table.head(3).iterrows():
-        fit = ARIMA(arma, order=tuple(row["order"])).fit()
+        fit = ARIMA(arma, order=tuple(row["order"])).fit(
+            method_kwargs={"maxiter": MAX_ITER})
         fitted_process = ArmaProcess(np.r_[1, -fit.arparams], np.r_[1, fit.maparams])
         gap = np.abs(fitted_process.acf(13)[1:] - planted_process.acf(13)[1:]).max()
         print(f"  {str(row['order']):>12}  {row['aic']:>10.2f}  {gap:>36.4f}")
@@ -151,36 +186,61 @@ def main() -> None:
         rel = series.std() / series.mean()
         step = series.diff().abs().max() / series.mean()
         print(f"  {name:<9} {len(series):>7}  {rel:>9.3f}  {step:>13.3f}")
-    print(f"  the yearly series has {len(scales['year'])} points: too few to fit anything "
-          f"with a memory of {LONGEST_MEMORY}")
-    print("  aggregating is not free smoothing, it deletes the cycles shorter than "
-          "the new step")
+    print(f"  the yearly series has only {len(scales['year'])} points: far too little "
+          f"history to fit anything with a memory of {LONGEST_MEMORY} and trust the result")
+    print("  aggregating is not free smoothing: averaging into a coarser step strongly "
+          "attenuates whatever repeats faster than that step, and can erase it outright")
 
     print("\n--- 3. Search a seasonal grid on the monthly table and forecast forward ---")
     full_grid = [(p, d, q) for p, d, q in product(GRID_P, GRID_D, GRID_Q)]
     retail_table = search_orders(retail, full_grid,
                                  seasonal=(1, 0, 1, SEASONAL_PERIOD))
     best_order = tuple(retail_table.loc[0, "order"])
-    print(f"  {len(full_grid)} candidates, best {best_order}, "
-          f"AIC {retail_table.loc[0, 'aic']:.2f}, "
+    converged_count = int(retail_table["converged"].sum())
+    unconverged_best = retail_table[~retail_table["converged"]].sort_values("aic")
+    print(f"  {len(full_grid)} candidates, {converged_count} converged, "
+          f"best {best_order}, AIC {retail_table.loc[0, 'aic']:.2f}, "
           f"runner-up gap {retail_table.loc[1, 'aic'] - retail_table.loc[0, 'aic']:.2f}")
+    if len(unconverged_best):
+        top_bad = unconverged_best.iloc[0]
+        print(f"  {len(unconverged_best)} candidates hit the iteration cap; the best AIC "
+              f"among them is {tuple(top_bad['order'])} at {top_bad['aic']:.2f}")
+        print(f"  that number is not a score the optimiser arrived at, so it is sorted "
+              f"below every converged fit rather than allowed to win")
     model = sm.tsa.statespace.SARIMAX(
         retail, order=best_order, seasonal_order=(1, 0, 1, SEASONAL_PERIOD),
-        enforce_stationarity=False, enforce_invertibility=False).fit(disp=False)
+        enforce_stationarity=False, enforce_invertibility=False).fit(
+            disp=False, maxiter=MAX_ITER)
     forecast = model.get_forecast(steps=FORECAST_MONTHS)
     mean = forecast.predicted_mean
-    band = forecast.conf_int()
+    # conf_int defaults to alpha=0.05, which is a 95% interval. The band printed
+    # here is the 80% one, so the level has to be passed rather than assumed.
+    band = forecast.conf_int(alpha=0.20)
     print(f"  {'month':<10} {'forecast':>10}  {'80% band':>22}")
     for stamp, value in mean.items():
         lo, hi = band.loc[stamp]
         print(f"  {stamp.strftime('%Y-%m'):<10} {value:>10.1f}  "
               f"{f'{lo:.1f} .. {hi:.1f}':>22}")
-    implied = retail.iloc[-1] + retail_truth["monthly_slope"] * np.arange(
-        1, FORECAST_MONTHS + 1)
-    print(f"  planted slope {retail_truth['monthly_slope']}/month implies "
-          f"{np.round(implied, 1).tolist()}")
-    print(f"  mean absolute gap to the planted straight line: "
-          f"{np.abs(mean.to_numpy() - implied).mean():.1f}")
+    # The generator is (base + slope x step) x month-of-year factor, plus noise.
+    # Anchoring a straight line on the last observation would inherit that
+    # observation's noise and drop the month factor entirely, so the reference
+    # is rebuilt from the generator's own parameters instead.
+    future_steps = np.arange(len(retail), len(retail) + FORECAST_MONTHS)
+    month_factors = np.asarray(retail_truth["month_of_year_factor"])[
+        mean.index.month.to_numpy() - 1]
+    planted = (retail_truth["base"]
+               + retail_truth["monthly_slope"] * future_steps) * month_factors
+    print(f"  the generator is (base {retail_truth['base']} + slope "
+          f"{retail_truth['monthly_slope']}/month) x a month-of-year factor, so its "
+          f"noiseless")
+    print(f"  expectation for these four months is "
+          f"{np.round(planted, 1).tolist()}")
+    print(f"  mean absolute gap to that expectation: "
+          f"{np.abs(mean.to_numpy() - planted).mean():.1f}")
+    inside = int(((band.iloc[:, 0].to_numpy() <= planted)
+                  & (planted <= band.iloc[:, 1].to_numpy())).sum())
+    print(f"  the 80% band covers the generator's expectation in {inside} of the "
+          f"{FORECAST_MONTHS} months")
 
     print("\n--- 4. Truncate the candidate list, and see which order wins then ---")
     truncated = full_grid[:TRUNCATED_TO]
@@ -190,8 +250,10 @@ def main() -> None:
     p_values_trunc = sorted({o[0] for o in truncated})
     print(f"  full list      {len(full_grid):>3} candidates, p ranges over {p_values_full}")
     print(f"  truncated list {len(truncated):>3} candidates, p ranges over {p_values_trunc}")
-    print(f"  full search best      {best_order}  AIC {retail_table.loc[0, 'aic']:.2f}")
-    print(f"  truncated search best {trunc_best}  AIC {trunc_table.loc[0, 'aic']:.2f}")
+    print(f"  full search best      {best_order}  AIC {retail_table.loc[0, 'aic']:.2f}  "
+          f"({int(retail_table['converged'].sum())} of {len(full_grid)} converged)")
+    print(f"  truncated search best {trunc_best}  AIC {trunc_table.loc[0, 'aic']:.2f}  "
+          f"({int(trunc_table['converged'].sum())} of {len(truncated)} converged)")
     print(f"  same winner: {trunc_best == best_order}")
     dropped = [o for o in full_grid if o not in truncated]
     dropped_scores = retail_table[retail_table["order"].isin(dropped)]
@@ -242,7 +304,8 @@ def main() -> None:
     in_rmse = float(np.sqrt((resid ** 2).mean()))
     holdout_fit = sm.tsa.statespace.SARIMAX(
         retail.iloc[:-12], order=best_order, seasonal_order=(1, 0, 1, SEASONAL_PERIOD),
-        enforce_stationarity=False, enforce_invertibility=False).fit(disp=False)
+        enforce_stationarity=False, enforce_invertibility=False).fit(
+            disp=False, maxiter=MAX_ITER)
     out_pred = holdout_fit.get_forecast(steps=12).predicted_mean
     out_rmse = float(np.sqrt(((retail.iloc[-12:].to_numpy() - out_pred.to_numpy()) ** 2).mean()))
     print(f"  last 12 months, fitted by a model that saw them      RMSE {in_rmse:8.2f}")
@@ -258,13 +321,14 @@ def main() -> None:
     print(f"  {'order':>22}  {'AIC':>10}  {'holdout RMSE':>14}  {'vs best':>9}")
     scores = {}
     for d in [0, 1, 2]:
-        fit = ARIMA(train, order=(2, d, 2)).fit()
+        fit = ARIMA(train, order=(2, d, 2)).fit(method_kwargs={"maxiter": MAX_ITER})
         pred = fit.forecast(steps=len(test))
         scores[f"(2, {d}, 2)"] = (
             fit.aic, float(np.sqrt(((test.to_numpy() - pred.to_numpy()) ** 2).mean())))
     weekly = sm.tsa.statespace.SARIMAX(
         train, order=(2, 0, 2), seasonal_order=(1, 0, 1, 7),
-        enforce_stationarity=False, enforce_invertibility=False).fit(disp=False)
+        enforce_stationarity=False, enforce_invertibility=False).fit(
+            disp=False, maxiter=MAX_ITER)
     weekly_pred = weekly.get_forecast(steps=len(test)).predicted_mean
     scores["(2, 0, 2) x (1,0,1,7)"] = (
         weekly.aic,
@@ -274,8 +338,14 @@ def main() -> None:
         print(f"  {label:>22}  {aic:>10.1f}  {rmse:>14,.0f}  {rmse / best_rmse:>8.2f}x")
     spread = max(r for _, r in list(scores.values())[:3]) / min(
         r for _, r in list(scores.values())[:3])
-    print(f"  the three differencing orders land within {spread:.2f}x of each other, "
-          f"so on this series the extra difference cost close to nothing")
+    print(f"  AIC is printed as fit information only. It is computed on the training "
+          f"rows and is")
+    print(f"  not comparable across different d in any case, because differencing "
+          f"changes the series")
+    print(f"  being scored. The criterion used here is the holdout RMSE: 30 days no "
+          f"model saw.")
+    print(f"  the three differencing orders land within {spread:.2f}x of each other on "
+          f"that criterion, so on this series the extra difference cost close to nothing")
     print(f"  adding the weekly cycle moved the error further than every choice of d "
           f"put together")
     print("  the order of differencing was the wrong knob to argue over: the largest "
