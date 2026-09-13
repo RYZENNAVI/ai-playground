@@ -372,7 +372,9 @@ def main() -> None:
     for row in routed:
         item = row["item"]
         # The answer is produced from whatever the router chose, not from the
-        # correct report, so a routing mistake shows up here as a wrong answer. A
+        # correct report, so a routing mistake propagates into answering instead of
+        # being silently corrected. It usually surfaces as a wrong answer, though not
+        # always: an N/A question can still come back N/A from the wrong pages. A
         # reply naming no known report opens no pages rather than falling back to
         # the expected report, which would feed the answer key into the system.
         report = row["report"]

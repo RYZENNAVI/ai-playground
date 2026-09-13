@@ -1503,8 +1503,10 @@ instead of five. More rules in a single request means more chances to break one.
 
 Routing first also means a routing mistake cannot be recovered later: the correct pages are
 never put in front of the model that answers. The script therefore answers from **whatever
-the router chose**, not from the correct report, so a routing error surfaces as a wrong
-answer rather than being silently corrected. That includes a reply naming no known report: it
+the router chose**, not from the correct report, so a routing error propagates into answering
+rather than being silently corrected. It usually surfaces as a wrong answer, but not always —
+a question whose correct answer is `N/A` can still come back `N/A` from the wrong pages, or
+from none — which is one more reason routing is scored on its own. That includes a reply naming no known report: it
 opens no pages. An earlier version fell back to the expected report in that case, which fed
 the answer key into the system it was scoring.
 
