@@ -652,8 +652,11 @@ which is the same number **only while every row carries a distinct x value.**
 ```
 
 Forty rows, ten dates. The row rule sees `40 > 20` and picks a line; the axis needs ten
-positions. Both pictures are drawn to `outputs/` so the difference is visible rather than
-asserted, and the first rows of the frame show why the line zigzags:
+positions, and the same threshold applied to those picks a bar. That is the verdict of this
+script's own rule, not a claim that every ten-date result belongs in bars. Both pictures are
+drawn to `outputs/` by the same flat helper, which plots all forty rows by position — so the
+bar picture shows the other rule's choice, not a ten-position axis. The first rows of the
+frame show why the line zigzags:
 
 ```
 trade_date ticker  close
@@ -711,7 +714,12 @@ partial one leaves a column that looks fine:
 
 **Every populated cell holds another date's value.** No exception, no warning.
 
-Three attachments that work, all returning `220 of 239`:
+Three attachments that work, all returning `220 of 239 arrived, 0 misplaced`. The count
+alone would not show that — step 6 had a count that looked fine — so each variant is also
+checked cell by cell against the average looked up by date. The same check on the step-6
+column reports all 197 filled cells misplaced, so it is a check that can fail. `.to_numpy()`
+is correct here only because the report was built from the window in the same row order;
+positional attachment is right exactly when position carries the same meaning on both sides.
 
 ```python
 variants = {

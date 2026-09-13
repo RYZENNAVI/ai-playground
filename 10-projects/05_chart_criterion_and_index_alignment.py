@@ -148,8 +148,8 @@ def main() -> None:
         print(f"\n    They disagree on '{name}': {len(frame)} rows but only "
               f"{frame['trade_date'].nunique()} dates.")
         print(f"    The row rule sees {len(frame)} > {ROW_THRESHOLD} and picks a {left}.")
-        print(f"    The axis needs {frame['trade_date'].nunique()} positions, so the "
-              f"honest answer is a {right}.")
+        print(f"    The axis needs {frame['trade_date'].nunique()} positions, so the same "
+              f"threshold applied to them picks a {right}.")
 
         print("\n--- 4. Both pictures, drawn and saved ---")
         for chart_type, label in ((left, "by-row-count"), (right, "by-distinct-x")):
@@ -214,10 +214,18 @@ def main() -> None:
         ".reset_index(drop=True)": moving_average.reset_index(drop=True),
         ".set_axis(report.index)": moving_average.set_axis(report.index),
     }
+    # A count is what step 6 showed cannot be trusted, so each variant is also
+    # checked cell by cell against the average looked up by date, not by position.
+    by_date = dict(zip(windowed["trade_date"], moving_average))
     for label, values in variants.items():
         probe = pd.DataFrame({"trade_date": windowed["trade_date"].tolist()})
         probe["moving_average"] = values
-        print(f"    {label:<26}{probe['moving_average'].notna().sum():>6} of {len(probe)} arrived")
+        expected = probe["trade_date"].map(by_date).to_numpy()
+        placed = probe["moving_average"].to_numpy()
+        present = ~(pd.isna(expected) | pd.isna(placed))
+        wrong = int((present & (expected != placed)).sum())
+        print(f"    {label:<26}{probe['moving_average'].notna().sum():>6} of {len(probe)} arrived, "
+              f"{wrong} misplaced")
 
     left_frame = windowed.head(3)[["trade_date", "close"]]
     right_frame = windowed.head(3)[["ticker"]].reset_index(drop=True)
