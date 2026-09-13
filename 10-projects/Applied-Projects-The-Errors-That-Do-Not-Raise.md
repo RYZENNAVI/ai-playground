@@ -1536,7 +1536,7 @@ measurement is the deliverable, not any single run's tally.
 
 | Script | The quantity that settles it |
 | :--- | :--- |
-| 02 | rows per key; a second total computed from an independent column |
+| 02 | rows per key; a second total from the running-total column, consistent by construction here |
 | 03 | the recomputed ratio; the sum of the group sizes against the row count |
 | 04 | the model's number against a truth table; which groups each digest reaches |
 | 05 | distinct x values, not rows; filled cells against correctly-placed cells |
