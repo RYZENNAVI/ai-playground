@@ -778,9 +778,12 @@ def loosen(text):
 **This is the same shape as the index-column mistake and the enum drift in section 6:
 something did not match, and not matching produced silence rather than a signal.**
 
-Folding fixes this one spelling, not the silence. `parse_conditions` still leaves out any
-value it cannot find — a user id the table does not hold, or `log in` where the column says
-`Sign-in` — and `apply_conditions` then answers with whatever conditions remain. The direct
+Folding fixes this one spelling, not the silence. `parse_conditions` recognises a user id or
+an event type only as a value the table already holds, and still leaves out one it cannot
+find — a user id the table does not hold, or `log in` where the column says `Sign-in` — so
+`apply_conditions` answers with whatever conditions remain. The date is different: it is
+taken by pattern as written, so a date the table lacks stays in the filter and matches no
+row. The direct
 scan agrees with the filter here because it was written for this question's three
 conditions; it checks this answer, not the parser.
 

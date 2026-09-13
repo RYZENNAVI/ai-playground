@@ -122,8 +122,10 @@ def parse_conditions(question, rows):
     This is the step a table-backed knowledge base performs and similarity
     search on its own cannot: the question is turned into conditions over named
     columns, so the answer is whatever satisfies them rather than whatever is
-    nearby. A value the table does not hold is left out, not reported, so the
-    filter still answers - with the conditions it did recognise.
+    nearby. user_id and event_type are recognised only as values the table
+    already holds, so one that is not found is left out, not reported, and the
+    filter still answers with the conditions that remain. The date is taken by
+    pattern as written, so a date the table lacks stays in and matches no row.
     """
     conditions = {}
     user_ids = {row["user_id"] for row in rows}
