@@ -783,7 +783,9 @@ an event type only as a value the table already holds, and still leaves out one 
 find — a user id the table does not hold, or `log in` where the column says `Sign-in` — so
 `apply_conditions` answers with whatever conditions remain. The date is different: it is
 taken by pattern as written, so a date the table lacks stays in the filter and matches no
-row. The direct
+row. The failure also runs the other way: both event-type checks are substring tests with no
+word boundary, so a question about a user opening the *research* digest is read as event
+type `Search` and filters away the row it was asking about. The direct
 scan agrees with the filter here because it was written for this question's three
 conditions; it checks this answer, not the parser.
 

@@ -126,6 +126,8 @@ def parse_conditions(question, rows):
     already holds, so one that is not found is left out, not reported, and the
     filter still answers with the conditions that remain. The date is taken by
     pattern as written, so a date the table lacks stays in and matches no row.
+    Both event-type checks are substring tests with no word boundary, so a
+    question mentioning 'research' is read as the event type 'Search'.
     """
     conditions = {}
     user_ids = {row["user_id"] for row in rows}
