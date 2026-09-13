@@ -1100,7 +1100,7 @@ consequent, every rule must appear in both, and support, confidence and lift mus
 The same check between the per-customer rules and the deduplicated ones returns `False` —
 12 rules against 24 — so it is a check that can fail. **The unit was never the problem; discarding the multiplicity was.**
 
-### 11.4 Scored against the number the data was built with
+### 11.4 Scored against the lift measured directly on the generated baskets
 
 ```
     P(fund | wealth)      0.5733
