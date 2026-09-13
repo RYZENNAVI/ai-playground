@@ -54,7 +54,8 @@ rest of the module measurable:
 - The district table carries both a daily count and a running total, and the correct year
   total is printed next to the one that adding the wrong column gives.
 - The bed table's reported ratio is clamped at `REPORTED_RATIO_CAP = 99` on purpose, and the
-  number of rows that hit the clamp is printed.
+  number of rows that read exactly 99 is printed — which counts the clamped rows together
+  with the ones that merely round to 99 (section 2.6 separates them).
 
 The generator is seeded (`SEED = 20260828`) and idempotent: rerunning it reproduces every
 file exactly. Nothing in `data/` is source material — it is all output of script 01.
@@ -1576,7 +1577,7 @@ unreadable one.
 
 | # | Script | What it establishes | The quantity it prints |
 | :--- | :--- | :--- | :--- |
-| 01 | `build_project_datasets.py` | Five sources with every later claim's answer written down first | yearly moves, planted lift, three totals, clamped rows |
+| 01 | `build_project_datasets.py` | Five sources with every later claim's answer written down first | yearly moves, planted lift, three totals, rows reading 99 |
 | 02 | `join_grain_and_aggregation_audit.py` | Grain and aggregation semantics | rows per key, mean drift, 197x total, rank changes |
 | 03 | `dashboard_metrics_and_cache.py` | Reported columns, bands, and cache invalidation | clamped rows, band shortfall, cold vs warm scaling |
 | 04 | `tool_return_shapes.py` | A tool's return value sets the ceiling on the answer | error against the truth table, groups per digest |
