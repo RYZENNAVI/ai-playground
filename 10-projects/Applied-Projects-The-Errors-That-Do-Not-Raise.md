@@ -350,7 +350,7 @@ supposedly derived from:
     rows where the two ratios differ > 0.5       95
 
     Among the rows reading 99%, the recomputed ratio runs from 98.5% to 100.0%.
-    Only 95 of those 184 were actually clamped (recomputed above 99);
+    Only 95 of those 184 were actually clamped (recomputed ratio rounds above 99);
     the other 89 merely rounded up to it.
 ```
 
@@ -444,7 +444,9 @@ def source_fingerprint(paths: list) -> dict:
 
 Both the tiles and the fingerprint are written together. **A cache that stores results
 without recording what produced them can only answer "is there a cache", never "is it still
-valid".**
+valid".** Size and modification time are a cheap fingerprint, not a content check: an edit
+that kept the size and restored the timestamp would pass it, where a hash of the bytes would
+not.
 
 ### 5.2 The ratio on its own is a weak argument
 
@@ -464,8 +466,11 @@ matters is which side grows with the data, and the script measures that directly
          120,000 bed rows -> cold build     34.3 ms   warm read    0.1 ms
 ```
 
-The cold column tracks the row count; the warm column does not move, because reading a dict
-of finished numbers does not depend on the source.
+The cold column grows with the row count, though not in proportion to it: forty times the
+rows took about ten times the time in this run (3.4 ms to 34.3 ms), since part of the build is
+fixed overhead. The warm column is not three measurements. It is the single read timed a step
+earlier, printed on every line — the cache holds the same nine finished tiles whatever the
+source size, so there is nothing about that read for the row count to change.
 
 ### 5.3 Two rules that disagree the moment the source changes
 

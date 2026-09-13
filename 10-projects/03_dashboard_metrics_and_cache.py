@@ -70,7 +70,7 @@ def audit_reported_ratio(beds: pd.DataFrame) -> pd.DataFrame:
         print(f"\n    Among the rows reading {REPORTED_RATIO_CAP}%, the recomputed ratio runs from "
               f"{at_cap['recomputed_pct'].min():.1f}% to {at_cap['recomputed_pct'].max():.1f}%.")
         print(f"    Only {len(clamped):,} of those {len(at_cap):,} were actually clamped "
-              f"(recomputed above {REPORTED_RATIO_CAP});")
+              f"(recomputed ratio rounds above {REPORTED_RATIO_CAP});")
         print(f"    the other {len(at_cap) - len(clamped):,} merely rounded up to it. Reading "
               f"the cap value is not")
         print("    evidence of having been capped, and separating the two is the whole")
@@ -192,7 +192,11 @@ def build_tiles(beds: pd.DataFrame, customers: pd.DataFrame) -> dict:
 
 
 def source_fingerprint(paths: list) -> dict:
-    """Describe the sources by size and modification time, which is what a cache keys on."""
+    """Describe the sources by size and modification time, which is what this cache keys on.
+
+    It is cheap and catches an ordinary rewrite. It is not a content check: an edit
+    that kept the size and restored the timestamp would pass, which a hash would not.
+    """
     return {
         str(path.name): {"size": path.stat().st_size, "mtime": path.stat().st_mtime}
         for path in paths
@@ -261,15 +265,20 @@ def main() -> None:
 
     print("\n    At this size the cold build is already cheap, so the ratio above is a")
     print("    weak argument on its own. What matters is which side grows with the data:")
+    cold_ms = {}
     for factor in (1, 10, 40):
         bigger = pd.concat([beds] * factor, ignore_index=True)
         started = time.perf_counter()
         build_tiles(bigger, customers)
         grew = (time.perf_counter() - started) * 1000
+        cold_ms[factor] = grew
         print(f"        {len(bigger):>8,} bed rows -> cold build {grew:>8.1f} ms"
               f"   warm read {warm * 1000:>6.1f} ms")
-    print("    The cold column tracks the row count. The warm column does not move,")
-    print("    because reading a dict of finished numbers does not depend on the source.")
+    print(f"    The cold column grows with the row count: 40x the rows took "
+          f"{cold_ms[40] / cold_ms[1]:.0f}x the time here.")
+    print("    The warm figure is the single read timed in step 6, repeated on each line.")
+    print(f"    The cache holds the same {len(tiles)} finished tiles whatever the source size,")
+    print("    so reading it does not depend on how many rows built them.")
 
     print("\n--- 7. The source changes ---")
     print(f"    'a cache file exists' says fresh:        {CACHE_FILE.exists()}")
