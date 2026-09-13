@@ -7,7 +7,7 @@ Demonstrates that an association rule reports on the sample unit, not on the cus
     4. Mine the deduplicated table and read the supports that come back.
     5. Restore the counts as weights and confirm the first result comes back.
     6. Put the lift of every rule side by side under the three sample units.
-    7. Check the strongest rule against the relationship the data was built with.
+    7. Check the wealth-to-fund rule against the same lift computed directly from the baskets.
 
 Module 10: Applied Projects - Sample Units in Association Mining.
 """
@@ -187,12 +187,14 @@ def main() -> None:
           f"{int(weights_counted.sum()):,} customers in total")
     print(f"    largest group {int(weights_counted.max()):,} customers, "
           f"smallest {int(weights_counted.min()):,}")
-    matches = (
-        len(rules_counted) == len(rules_all)
-        and np.allclose(
-            rules_counted.sort_values(["antecedent", "consequent"])["lift"].to_numpy(),
-            rules_all.sort_values(["antecedent", "consequent"])["lift"].to_numpy(),
-        )
+    # Identical means the same rules, paired by antecedent and consequent, with the
+    # same support, confidence and lift - not merely the same list of lift values.
+    paired = rules_all.merge(rules_counted, on=["antecedent", "consequent"], how="outer",
+                             suffixes=("_all", "_counted"), indicator=True)
+    matches = bool(
+        (paired["_merge"] == "both").all()
+        and all(np.allclose(paired[f"{measure}_all"], paired[f"{measure}_counted"])
+                for measure in ("support", "confidence", "lift"))
     )
     print(f"    rules identical to the one-row-per-customer result: {matches}")
     print("    The fix is not to avoid deduplicating. It is to carry the count.")
@@ -240,9 +242,11 @@ def main() -> None:
     ]
     if not deduped.empty:
         print(f"    the deduplicated table reports {deduped['lift'].iloc[0]:.4f}")
-    print("\n    01_build_project_datasets.py prints this same relationship as the number")
-    print("    it drew the data with. Recovering it is what tells you the mining worked,")
-    print("    and failing to recover it is what the deduplicated run should have shown.")
+    print("\n    01_build_project_datasets.py prints this same lift, measured on the table it")
+    print("    generated; the generator itself was given a 2.6 multiplier on the fund")
+    print("    probability, not a lift. Both come from these baskets, so matching it checks")
+    print("    the mining arithmetic, and failing to match is what the deduplicated run")
+    print("    should have shown.")
 
 
 if __name__ == "__main__":

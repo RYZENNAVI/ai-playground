@@ -1049,6 +1049,7 @@ possible, and it is printed here so the reader sees it coming.
 ```
         rule                                     support   confidence     lift
         deposit + fund -> wealth                  0.1820       0.5687   1.6748
+        ...
         fund -> wealth                            0.1947       0.5683   1.6734
         wealth -> fund                            0.1947       0.5733   1.6734
 ```
@@ -1094,7 +1095,10 @@ present once each, every product is in half of them and every pair in a quarter,
 ```
 
 Group and keep the count as a weight, and the collapsed table reproduces the full result
-exactly. **The unit was never the problem; discarding the multiplicity was.**
+exactly. "Identical" is checked rule by rule: the two rule sets are paired on antecedent and
+consequent, every rule must appear in both, and support, confidence and lift must each agree.
+The same check between the per-customer rules and the deduplicated ones returns `False` —
+12 rules against 24 — so it is a check that can fail. **The unit was never the problem; discarding the multiplicity was.**
 
 ### 11.4 Scored against the number the data was built with
 
@@ -1106,8 +1110,12 @@ exactly. **The unit was never the problem; discarding the multiplicity was.**
     the deduplicated table reports 1.0000
 ```
 
-Script 01 prints `lift(wealth -> fund) 1.6734` as the number it drew the data with.
-Recovering it is what tells you the mining worked. **Failing to recover it is what the
+Script 01 prints `lift(wealth -> fund) 1.6734`, measured on the table it generated. The
+generator's own parameter is not a lift: it is `WEALTH_TO_FUND_MULTIPLIER = 2.6` on the fund
+probability, and 1.6734 is the lift that multiplier produced in this draw. Both scripts
+compute it from the same 10,000 baskets, so the match checks the mining code rather than
+the data. The rule checked is the planted pair, not the highest lift — that is
+`deposit + fund -> wealth` at 1.6748. Recovering it is what tells you the mining worked. **Failing to recover it is what the
 deduplicated run should have shown, and instead it reported a clean, plausible, entirely
 manufactured 1.0000.**
 
