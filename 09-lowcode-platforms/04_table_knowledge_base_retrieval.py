@@ -119,9 +119,11 @@ def index_selectivity(rows, column):
 def parse_conditions(question, rows):
     """Pull an exact filter out of a question, using the values the table holds.
 
-    This is the step a table-backed knowledge base performs and a vector store
-    cannot: the question is turned into conditions over named columns, so the
-    answer is whatever satisfies them rather than whatever is nearby.
+    This is the step a table-backed knowledge base performs and similarity
+    search on its own cannot: the question is turned into conditions over named
+    columns, so the answer is whatever satisfies them rather than whatever is
+    nearby. A value the table does not hold is left out, not reported, so the
+    filter still answers - with the conditions it did recognise.
     """
     conditions = {}
     user_ids = {row["user_id"] for row in rows}

@@ -15,14 +15,15 @@ The shapes are the ones mainstream platforms use — a typed node graph with por
 references, batch bodies, selector branches, sub-workflow calls, and an HTTP API with
 three endpoints and a server-sent event stream.
 
-**The module needs no download and no platform credential.** Script 02 calls a chat model
+**The module needs no platform credential.** Script 02 calls a chat model
 (DeepSeek, Gemini or OpenAI — whichever key is present). Script 04 embeds locally with
-`BAAI/bge-small-en-v1.5`, reusing a copy this repository already has on disk. Scripts 01,
+`BAAI/bge-small-en-v1.5`, reusing a copy this repository already has on disk and
+downloading it once through `modelscope` only when no module has it yet. Scripts 01,
 03 and 05 make no network call at all; 05 starts a `uvicorn` subprocess on a loopback port
 and stops it before exiting.
 
 **Requires**: `openai`, `python-dotenv`, `sentence-transformers`, `numpy`, `fastapi`,
-`uvicorn`.
+`uvicorn`, and `modelscope` if script 04 has to fetch its encoder.
 
 ---
 
@@ -742,8 +743,10 @@ def parse_conditions(question, rows):
     ...
 ```
 
-Turning the question into conditions over named columns gives an exact answer, and the
-count is checkable against a direct scan of the table:
+Turning the question into conditions over named columns gives an exact answer to the
+conditions it recognised, and the count is checkable against a direct scan of the table.
+A vector database that offers metadata filtering is doing this same step alongside
+similarity; the contrast in this script is with similarity on its own.
 
 ```
 1 row(s) satisfy the filter; scanning the table directly finds 1, so the filter and the
@@ -774,6 +777,12 @@ def loosen(text):
 
 **This is the same shape as the index-column mistake and the enum drift in section 6:
 something did not match, and not matching produced silence rather than a signal.**
+
+Folding fixes this one spelling, not the silence. `parse_conditions` still leaves out any
+value it cannot find — a user id the table does not hold, or `log in` where the column says
+`Sign-in` — and `apply_conditions` then answers with whatever conditions remain. The direct
+scan agrees with the filter here because it was written for this question's three
+conditions; it checks this answer, not the parser.
 
 ### 8.6 Where prose still wins, and what it costs
 
@@ -1048,7 +1057,7 @@ cd 09-lowcode-platforms
 python 01_workflow_engine_from_spec.py          # offline, no key
 python 02_llm_node_output_contract.py           # needs a chat model key
 python 03_plugin_io_contract.py                 # offline, no key
-python 04_table_knowledge_base_retrieval.py     # offline, local encoder
+python 04_table_knowledge_base_retrieval.py     # local encoder, fetched once if absent
 python 05_platform_api_protocol.py              # offline, starts a local server
 ```
 
