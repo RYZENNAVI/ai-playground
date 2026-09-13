@@ -241,6 +241,11 @@ def main() -> None:
     print(f"    accuracy of that one comparison        {rule['accuracy']:.4f}")
     print(f"    accuracy of always answering 'no'      {rule['majority_baseline']:.4f}")
     print(f"    AUC of the raw column, no model at all {rule['auc_single_feature']:.4f}")
+    lowest, highest = LABEL_THRESHOLD / GROWTH_HIGH, LABEL_THRESHOLD / GROWTH_LOW
+    column = frame[GENERATING_FEATURE]
+    undecided = float(((column > lowest) & (column < highest)).mean())
+    print(f"    rows the growth factor can still decide {undecided:.4f}   "
+          f"({GENERATING_FEATURE} between {lowest:,.0f} and {highest:,.0f})")
     print("\n    One column and one threshold already reproduce the label. Whatever a")
     print("    model scores from here is mostly a measurement of that fact.")
 
@@ -249,6 +254,8 @@ def main() -> None:
     print(f"    features {len(FEATURES)}, boosting rounds {BOOST_ROUNDS}")
     print(f"    held-out AUC       {full['auc']:.4f}")
     print(f"    held-out accuracy  {full['accuracy']:.4f}")
+    raw_held_out = float(roc_auc_score(full["y_test"], full["x_test"][GENERATING_FEATURE]))
+    print(f"    raw {GENERATING_FEATURE} AUC on the same held-out rows {raw_held_out:.4f}")
 
     print(f"\n--- 4. The same model without {GENERATING_FEATURE} ---")
     reduced_features = [name for name in FEATURES if name != GENERATING_FEATURE]

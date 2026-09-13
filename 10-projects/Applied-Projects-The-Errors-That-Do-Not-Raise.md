@@ -893,20 +893,24 @@ What makes it unusable is that the only column feeding it is already a feature.
     accuracy of that one comparison        0.9864
     accuracy of always answering 'no'      0.8536
     AUC of the raw column, no model at all 0.9990
+    rows the growth factor can still decide 0.0572   (total_aum between 833,333 and 1,052,632)
 ```
 
 The arithmetic is forced. Below `1,000,000 / 1.20` no row can reach the threshold; above
 `1,000,000 / 0.95` every row does. Only the band between them is decided by the random
-factor, and it is a small fraction of the table. **Whatever a model scores from here is
+factor, and the script counts it: 5.72% of the table. **Whatever a model scores from here is
 mostly a measurement of that fact.**
 
 ```
     features 12, boosting rounds 200
     held-out AUC       0.9987
     held-out accuracy  0.9840
+    raw total_aum AUC on the same held-out rows 0.9989
 ```
 
-The model scores slightly *below* the raw column.
+The model scores slightly *below* the raw column. The 0.9990 above is over all 10,000 rows,
+so the comparison that counts is the one on the same 2,500 held-out rows: 0.9987 for twelve
+features and two hundred boosting rounds, 0.9989 for one column and no model.
 
 ### 9.3 The result that is easiest to misread
 
