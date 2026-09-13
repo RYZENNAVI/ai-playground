@@ -363,7 +363,8 @@ def report_market_truth(market: pd.DataFrame) -> None:
     halted = market[market["ticker"] == HALT_TICKER]["trade_date"]
     print(f"\n{HALT_TICKER} is missing {HALT_DAYS} trading days starting {HALT_START.isoformat()}: "
           f"{len(halted)} rows against {len(market[market['ticker'] == 'ARB'])} for ARB.")
-    print("Weekends were never generated, so the number of Saturday and Sunday rows is 0.")
+    weekend_rows = int((pd.to_datetime(market["trade_date"]).dt.weekday >= 5).sum())
+    print(f"Weekends were never generated; Saturday and Sunday rows counted: {weekend_rows}.")
 
 
 def report_customer_truth(customers: pd.DataFrame) -> None:
@@ -415,8 +416,11 @@ def report_facility_truth(facilities: pd.DataFrame) -> None:
                    < facilities["total_beds"]).sum()
     print(f"    rows                                  {len(facilities):>8,}")
     print(f"    rows reading exactly {REPORTED_RATIO_CAP}%              {clamped:>8,}")
+    gap = facilities["total_beds"] - facilities["occupied_beds"] - facilities["free_beds"]
+    explained = bool((gap == facilities["out_of_service_beds"]).all())
     print(f"    rows where occupied + free < total    {parts_short:>8,}")
-    print("    The second number is out-of-service beds, counted in neither column.")
+    print(f"    In every row the shortfall equals out_of_service_beds: {explained}.")
+    print("    Those rows hold beds counted in neither column; the figure counts rows, not beds.")
 
 
 def main() -> None:

@@ -210,7 +210,9 @@ and beds that are in the total but available to nobody:
 
 Note the order of operations in that one line: it **rounds first and clamps second**, so the
 184 rows reading 99 are two different populations. Only **95** of them were clamped; the
-other **89** merely rounded up from somewhere in 98.5–99.4. Section 4.1 separates them.
+other **89** have a true ratio above 98.5 and below 99.5 and merely round to 99 (Python rounds
+an exact half to the even neighbour, so 98.5 itself reads 98 and 99.5 reads 100). Section 4.1
+separates them.
 
 ---
 
