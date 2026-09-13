@@ -273,7 +273,7 @@ See [Low-Code-Platforms-What-The-Canvas-Runs.md](09-lowcode-platforms/Low-Code-P
 | 03 | `03_dashboard_metrics_and_cache.py` | A clamped ratio column, a band that drops 1,276 customers, and two cache-freshness rules that disagree once the source changes |
 | 04 | `04_tool_return_shapes.py` | One question, five return shapes, scored against a computed answer — the shape that answers it is the smallest one |
 | 05 | `05_chart_criterion_and_index_alignment.py` | A chart rule reading rows where the axis needs distinct values, and a column that arrives mostly populated and entirely misdated |
-| 06 | `06_bollinger_and_spc_rules.py` | A rolling band reported with the numbers behind each flag, and eight run-based rules that catch different days rather than more |
+| 06 | `06_bollinger_and_spc_rules.py` | A rolling band reported with the numbers behind each flag, and eight control rules, seven of them run-based, that catch different days rather than more |
 | 07 | `07_label_leakage_and_importance_views.py` | A label one column and one threshold reproduce, and four importance measures that disagree on eleven features out of twelve |
 | 08 | `08_association_rules_sample_unit.py` | The same holdings mined under three sample units, one of which makes every lift exactly 1.0 by construction |
 | 09 | `09_cohort_is_not_a_time_series.py` | Neighbouring points sharing none of their population, a shuffle test, and two seasonal terms with no observations under them |

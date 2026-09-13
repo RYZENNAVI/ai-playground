@@ -7,7 +7,7 @@ Demonstrates why an outlier flag needs the numbers it was derived from printed b
     4. Standardise the series against its own band, so eight rules can share one scale.
     5. Apply the eight rules and count how many days each one flags on its own.
     6. Merge consecutive flags into events, since a run is one excursion, not many.
-    7. Check which rules caught the shock that was planted in the data on purpose.
+    7. Take the largest one-day and three-day moves, and check which rules caught them.
 
 Module 10: Applied Projects - Control Limits and Rule Sets.
 """
@@ -270,13 +270,14 @@ def main() -> None:
           f"{100 * any_rule.sum() / usable:>8.1f}%")
     print(f"\n    the band rule alone flagged {len(breaches)} days; the eight rules together "
           f"flag {int(any_rule.sum())}")
-    only_band = int((frame.index.isin(breaches.index) & ~flags.drop(columns=[1]).any(axis=1)).sum())
+    only_band = int((frame.index.isin(breaches.index) & ~any_rule).sum())
     only_rules = int((any_rule & ~frame.index.isin(breaches.index)).sum())
-    print(f"    days the band caught that no other rule did: {only_band}")
+    print(f"    days the band caught that none of the eight rules did: {only_band}")
     print(f"    days the other rules caught that the band did not: {only_rules}")
 
     above_centre = float((frame["sigmas"] > 0).sum()) / usable
-    print(f"\n    Rules 2, 6 and 8 count how long the series stays on one side of centre.")
+    print(f"\n    Rules 2 and 6 count how long the series stays on one side of centre, and")
+    print(f"    rule 8 how long it stays more than one sigma away from it on either side.")
     print(f"    They were written for a process held at a fixed target. Here the centre is")
     print(f"    a {WINDOW}-day mean that follows the series, and {100 * above_centre:.0f}% of days sit "
           f"above it,")
@@ -319,10 +320,13 @@ def main() -> None:
     print(f"\n    {'':<22}{'caught by the band':>20}{'caught by the 8 rules':>24}")
     print(f"    {'top 3 single-day moves':<22}{f'{band_one} of 3':>20}{f'{rules_one} of 3':>24}")
     print(f"    {'top 3 three-day moves':<22}{f'{band_three} of 3':>20}{f'{rules_three} of 3':>24}")
-    print(f"\n    The band catches {band_one + band_three} of these 6 days; the eight "
-          f"run-based rules catch none.")
-    print("    All eight count runs, so they need an excursion that lasts several days.")
-    print("    A move that is large on one day and gone the next leaves every counter")
+    distinct = len(set(one_day.nlargest(3).index) | set(three_day.nlargest(3).index))
+    print(f"\n    The band catches {band_one + band_three} of these 6 moves "
+          f"({distinct} distinct days); the eight rules catch none.")
+    print("    Seven of the eight count runs or windows, so they need an excursion that")
+    print("    lasts several days. Rule 1 looks at single points, but at 3 sigma it is")
+    print(f"    stricter than the band, and it fired on {int(flags[1].sum())} days of the whole series.")
+    print("    A move that is large on one day and gone the next leaves the run counters")
     print(f"    short, whether or not that day crossed the band at all: "
           f"{6 - band_one - band_three} of the six")
     print("    above never crossed it. A rule set is not a strictly larger net than the")

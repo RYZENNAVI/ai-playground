@@ -766,8 +766,11 @@ that trends: a price can be at a two-year high and still be ordinary relative to
     that is 10.7% of the days the band could judge
 ```
 
-Ten percent, not five. Two sigma covers 95% only under a normal distribution, and returns
-are not normal — the tails are heavier and the excursions cluster.
+Ten percent, not five — and not because of fat tails. The generator draws daily returns from
+a normal distribution, and they measure as one (excess kurtosis 0.004, lag-1 autocorrelation
+of absolute returns −0.056). The 95% figure assumes each point is an independent draw around
+a fixed mean. A close is neither: it is the next step of a random walk, compared with a
+trailing twenty-day mean and spread that the walk keeps drifting away from.
 
 ### 8.2 A flag reported without its numbers is unreadable
 
@@ -790,9 +793,10 @@ at different levels. The script therefore prints all four numbers per flag:
 
 ### 8.3 Eight rules on a standardised series
 
-The band implements half of one rule. Seven of the eight look at runs rather than single
-points, so the series is standardised against its own band and all eight are stated on that
-one column:
+The band is a single-point rule at two sigma. Of the eight rules below, rule 1 is also
+single-point but at three sigma; the other seven look at runs or windows rather than single
+points. The series is standardised against its own band so all eight are stated on that one
+column:
 
 ```
     rule  description                                  days    share
@@ -809,7 +813,8 @@ one column:
 
 ### 8.4 Reading the share per rule is what makes the baseline visible
 
-Rules 2, 6 and 8 count how long the series stays on one side of centre. They were written for
+Rules 2 and 6 count how long the series stays on one side of centre, and rule 8 how long it
+stays more than one sigma away from centre on either side. They were written for
 a process **held at a fixed target**. Here the centre is a 20-day mean that follows the
 series, and 61% of days sit above it, so a trend alone keeps those counters running.
 
@@ -819,7 +824,8 @@ series, and 61% of days sit above it, so a trend alone keeps those counters runn
 
 Rule 7 is the one worth remembering in general. Fifteen consecutive points inside one sigma
 looks like the best possible outcome, and it is improbable enough to be evidence of
-something: roughly `0.68^15`, under half a percent. **"Too good" is a signal too** — a
+something: roughly `0.68^15`, under half a percent, if the points were independent — which,
+for the reason in 8.1, they are not here. **"Too good" is a signal too** — a
 score that never moves, a test suite that is always green, a metric pinned at 100% all
 deserve suspicion of the measurement before celebration of the result.
 
@@ -842,10 +848,17 @@ rows; counting events answers the question a person asked.
 ```
 
 The band separates the two lists cleanly — sustained three-day displacement is caught, isolated
-one-day jumps mostly are not; it catches 4 of the 6 days, and **2 of them never crossed it at
-all**. The eight run-based rules touch neither list. All eight count runs, so they need an
-excursion that lasts several days; a move that is large on one day and gone the next leaves
-every counter short, whether or not that day crossed the band.
+one-day jumps mostly are not; it catches 4 of the 6 moves, and **2 of them never crossed it at
+all**. The six moves fall on five distinct days, because 2024-05-02 tops both lists. The eight
+rules touch neither list. Seven of them count runs or windows, so they need an excursion that
+lasts several days; a move that is large on one day and gone the next leaves those counters
+short, whether or not that day crossed the band. Rule 1 does look at single points, but at
+three sigma it is stricter than the band and fired on no day of the whole series.
+
+The script picks these moves by size, not from the generator's record of where the shock was
+planted. Checked against that record, the largest three-day move, 2024-02-15, is the last day
+of the shock script 01 planted in MRD (rows 291–293, 2024-02-13 to 2024-02-15): the band
+caught it, and no rule did.
 
 > **A rule set is not a strictly larger net than the rule it extends.** It catches different
 > days, and here it catches none of the six that the simpler rule was asked about.
