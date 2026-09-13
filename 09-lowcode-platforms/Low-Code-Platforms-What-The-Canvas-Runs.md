@@ -624,6 +624,12 @@ check now refuses an undeclared output the same way:
 the same page against a schema that forgets 'skipped': ['skipped is returned but not a declared output']
 ```
 
+The two checks also share one type test, `matches_type`, for a smaller reason with the same
+shape: `bool` is a subclass of `int` in Python, so `isinstance(True, int)` is `True`.
+`validate_args` had already refused a flag passed as an integer; the output side had not,
+and would have let a row through with `rating=True`. Both sides now go through the same
+function, so the contract cannot be strict in one direction and loose in the other.
+
 ### 7.5 What paging costs, and who can see the limit
 
 ```

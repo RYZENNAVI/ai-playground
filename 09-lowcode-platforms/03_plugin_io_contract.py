@@ -80,6 +80,16 @@ PLUGIN_SCHEMA = {
 PY_TYPES = {"string": str, "integer": int, "array": list}
 
 
+def matches_type(value, kind):
+    """Say whether a value has the declared type, with bool refused as an integer.
+
+    bool is a subclass of int in Python, so isinstance(True, int) is True. A
+    schema that says integer means a count or a score, not a flag, and both
+    directions of the contract have to hold that line or neither does.
+    """
+    return not isinstance(value, bool) and isinstance(value, PY_TYPES[kind])
+
+
 def write_feed_pages():
     """Write one Atom file per page, and report whether anything changed.
 
@@ -166,8 +176,7 @@ def validate_args(schema, args):
             if rule.get("required"):
                 problems.append(f"{name} is required and was not passed")
             continue
-        expected = PY_TYPES[rule["type"]]
-        if isinstance(args[name], bool) or not isinstance(args[name], expected):
+        if not matches_type(args[name], rule["type"]):
             problems.append(f"{name} should be {rule['type']}, got "
                             f"{type(args[name]).__name__}")
     for name in args:
@@ -183,7 +192,7 @@ def validate_output(schema, result):
         if name not in result:
             problems.append(f"{name} is missing from the return value")
             continue
-        if not isinstance(result[name], PY_TYPES[rule["type"]]):
+        if not matches_type(result[name], rule["type"]):
             problems.append(f"{name} should be {rule['type']}")
     for name, rule in schema["output"].items():
         if "of" not in rule:
@@ -192,7 +201,7 @@ def validate_output(schema, result):
             for field, kind in rule["of"].items():
                 if field not in row:
                     problems.append(f"{name}[{index}] has no {field}")
-                elif not isinstance(row[field], PY_TYPES[kind]):
+                elif not matches_type(row[field], kind):
                     problems.append(f"{name}[{index}].{field} should be {kind}, got "
                                     f"{type(row[field]).__name__}")
     # validate_args refuses an undeclared input; an undeclared output is the same
