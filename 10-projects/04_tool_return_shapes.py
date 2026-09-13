@@ -70,8 +70,10 @@ def truth_table(connection: sqlite3.Connection) -> pd.DataFrame:
     """Compute each instrument's first and last close of the year, and the change between them.
 
     This runs against the whole year rather than any digest of it, so it is the
-    reference every reply is scored against. It is deliberately computed in SQL
-    rather than from the frame the model sees, so the two cannot drift together.
+    reference every reply is scored against. It reads the database itself rather
+    than any rendered shape, so no digest can shape the reference. The endpoint
+    arithmetic is the same one shape_computed performs, which is why that shape
+    can score an error of exactly zero by copying its own table.
     """
     frame = pd.read_sql_query(QUERY, connection)
     rows = []
@@ -93,7 +95,7 @@ def truth_table(connection: sqlite3.Connection) -> pd.DataFrame:
 def shape_head(frame: pd.DataFrame) -> str:
     """Return the first ten rows, which is the shape a result preview usually takes.
 
-    Ten rows of a 2000-row result is a preview, and a preview of a table sorted by
+    Ten rows of a thousand-row result is a preview, and a preview of a table sorted by
     ticker is entirely the first ticker. Nothing in it is wrong; it is just the
     wrong ten rows for this question.
     """
@@ -106,8 +108,8 @@ def shape_head_and_tail(frame: pd.DataFrame) -> str:
     This looks like the strict improvement it is normally taken for: the digest now
     reaches both ends of the result. But the result is sorted by ticker first, so
     the head is one instrument's January and the tail is a different instrument's
-    December. The two halves describe different instruments, and nothing in the
-    output says so.
+    December. The ticker column does name both, but no instrument appears with
+    both its first and its last close, so no instrument's move can be read off it.
     """
     return pd.concat([frame.head(5), frame.tail(5)]).to_markdown(index=False)
 

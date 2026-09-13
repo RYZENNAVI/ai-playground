@@ -541,7 +541,7 @@ remove any ambiguity about what "moved the furthest" means:
     endpoints with change computed         SVN          yes    -40.64   -40.64     0.00
 ```
 
-The ladder is sharp and it is not about size:
+In that run the split is sharp, and it is not about size:
 
 ```
     shape                               characters  named right
@@ -566,13 +566,26 @@ now reaches both ends of the result. But the result is sorted by ticker first:
 ```
 
 Both are ten rows. The second reaches two instruments and neither of them completely — the
-head is one instrument's January and the tail is a different instrument's December, and
-nothing in the output says so.
+head is one instrument's January and the tail is a different instrument's December. The
+ticker column does name both; what the digest lacks is any instrument shown with both its
+first and its last close, so no instrument's move can be read off it.
 
-This is why the fix is worse than what it replaced. With `head(10)`, the reply talks about
-January dates and is **visibly** working from partial data. With `head(5) + tail(5)`, the
-reply spans the full year and reads as reasonable while being built from two different
-instruments.
+This is why the fix is worse than what it replaced. A later run printed each reply's stated
+basis:
+
+```
+    1. head(10)
+       says ARB       -3.80%   Only ARB data is provided, showing a decline from 137.45 to 132.23, ab
+    2. head(5) + tail(5)
+       says SVN       -0.63%   SVN's first close of 2024 (18.92) to last close (18.8) is a -0.63% mov
+    3. head(5) + tail(5) + describe()
+       says ARB      -86.30%   ARB fell from 137.45 to 18.8, a larger absolute move than any other in
+```
+
+With `head(10)` the reply says outright that it has only ARB. The two shapes that reach both
+ends do not: shape 2 takes a late-December SVN close as SVN's first close of the year, and
+shape 3 pairs ARB's first close with SVN's last one and reports the difference as ARB's move.
+Neither printed basis mentions that the data was partial.
 
 > **A repair that moves an error from visible to invisible is not an improvement.**
 > Judging a fix by whether the output looks right is what lets this through; judging it by
@@ -580,17 +593,29 @@ instruments.
 
 ### 6.5 Two notes on reading these numbers
 
-**The reply is non-deterministic at temperature 0.** Across runs, the first three shapes
-have produced errors between 12 and 96 percentage points, and the specific wrong number
-changes. What has been stable across every run is the ladder itself: shapes 1–3 name the
-wrong instrument, shapes 4–5 name the right one. Quote the ladder; do not quote a specific
-error from shape 3 as if it were a constant.
+**The reply is non-deterministic at temperature 0, and not only in its numbers.** The later
+run scored:
+
+```
+    shape                               ticker  named right   claimed    truth    error
+    head(10)                               ARB           no     -3.80    +9.57    13.37
+    head(5) + tail(5)                      SVN          yes     -0.63   -40.64    40.01
+    head(5) + tail(5) + describe()         ARB           no    -86.30    +9.57    95.87
+    first and last row per ticker          SVN          yes    -40.64   -40.64     0.00
+    endpoints with change computed         SVN          yes    -40.64   -40.64     0.00
+```
+
+Shape 2 named the right instrument this time, with a change forty points off. So which
+instrument shapes 1–3 name is not stable across runs. What held in both recorded runs is
+narrower: only shapes 4 and 5 were right about the instrument **and** within 0.04 points on
+its change. Quote that, not a specific error and not the `named right` column on its own.
 
 **The scoring separates two questions.** `named right` asks whether the reply picked the
 instrument that actually moved most; `error` is measured against the truth for whichever
-instrument the reply *named*. A reply can therefore be numerically precise about the wrong
-subject, which is what shape 4's `0.04` and shapes 1–3's double-digit errors are
-distinguishing.
+instrument the reply *named*. A reply can therefore be precise about the wrong subject, or
+name the right subject with the wrong number — shape 2's `yes` beside an error of 40.01 is
+the second case. Shape 5's `0.00` is copied rather than computed: its table carries the same
+endpoint arithmetic the truth table uses.
 
 ---
 
@@ -1544,9 +1569,11 @@ problem.
 
 ### 17.3 A repair can move an error out of sight
 
-Section 6.4 is the clearest instance: `head(5) + tail(5)` replaced a reply that visibly only
-had January data with a reply that spans the full year and is built from two different
-instruments. The second is more wrong and much harder to catch.
+Section 6.4 is the clearest instance: `head(10)` produced a reply that said outright it had
+only one instrument's data, and the shapes that reach both ends of the result produced
+replies that said nothing of the kind — one reading a late-December close as a first close,
+one pairing two different instruments' prices. The number is no more trustworthy, and the
+warning is gone.
 
 The same pattern appears in 3.4 (filtering after a join instead of before), and in 4.3 (once
 the empty bands are removed, the funnel looks clean and the missing 1,276 customers are still
