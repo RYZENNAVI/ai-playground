@@ -191,8 +191,9 @@ rows. Nothing in the column names says which:
     sum of cumulative_cases over all rows     90,522,763   (197.0x the truth)
 ```
 
-Two independently written columns agreeing is what makes either of them usable. The third
-figure agrees with nothing.
+The first two agree by construction — the running total is generated as the cumulative sum
+of the daily column — so their agreement here shows what a consistent pair looks like
+rather than testing one. The third figure agrees with neither.
 
 ### 2.6 A clamped ratio and parts that do not sum
 
@@ -222,8 +223,11 @@ separates them.
 
 ### 3.1 Grain is a count, not a column name
 
-A join is safe when at least one side holds exactly one row per key. Reading the column
-names does not tell you that; counting does:
+Joining onto a master table keeps its grain only when the other table holds at most one row
+per key. The master side being unique is not enough — here it is, and the join below still
+multiplies. A one-to-many join is the right operation when review-level rows are what the
+question wants; the mistake is wanting employee-level answers from it. Reading the column
+names does not tell you which grain you have; counting does:
 
 ```
     staff master              480 rows     480 distinct staff_id    1.0 rows per key
@@ -303,6 +307,11 @@ The reconciliation is the check that makes the first two trustworthy:
 ```
     districts where the daily column and the running total disagree: 0
 ```
+
+In this dataset that 0 is guaranteed, not earned: script 01 builds `cumulative_cases` as
+the running sum of `new_cases`. It shows what a consistent pair looks like, and it is the
+check to run on a real upstream feed, where the two columns can drift apart — but here it
+cannot fail, so it proves nothing about either column beyond the construction.
 
 ### 3.6 A wrong total that also reorders the answer
 

@@ -42,8 +42,9 @@ def load() -> tuple:
 def describe_grain(frame: pd.DataFrame, key: str, label: str) -> int:
     """Print how many rows share a single key value, which is what grain means.
 
-    A join is only safe when at least one side has exactly one row per key. Reading
-    the column names does not tell you that; counting does.
+    A left join keeps the left table's grain only when the right table holds at most
+    one row per key; the left side being unique is not enough, which is exactly the
+    case below. Reading the column names does not tell you that; counting does.
     """
     rows = len(frame)
     keys = frame[key].nunique()
@@ -159,9 +160,11 @@ def aggregation_totals(districts: pd.DataFrame) -> dict:
 def per_district_reconciliation(districts: pd.DataFrame) -> pd.DataFrame:
     """Check district by district that the daily column and the running total agree.
 
-    This is the external check. Two columns written by the same upstream system
-    should describe the same thing; where they do not, one of them is broken and
-    the total built on it is wrong before any chart is drawn.
+    This is a consistency check. Two columns that describe the same thing should
+    agree; where they do not, one of them is broken and the total built on it is
+    wrong before any chart is drawn. In this synthetic table the running total is
+    built from the daily column, so agreement is guaranteed here; against a real
+    upstream feed it is the check that can actually fail.
     """
     grouped = districts.groupby("district")
     table = pd.DataFrame({
@@ -205,7 +208,9 @@ def main() -> None:
     staff, reviews, districts = load()
 
     print("--- 1. Grain of each table ---")
-    print("    A join is safe when one side holds exactly one row per key.")
+    print("    Joining onto the master keeps one row per employee only if the other")
+    print("    table holds at most one row per key; otherwise rows multiply, which is")
+    print("    right only when review-level rows are what the question wants.")
     describe_grain(staff, "staff_id", "staff master")
     describe_grain(reviews, "staff_id", "quarterly reviews")
 
@@ -244,8 +249,9 @@ def main() -> None:
     table = per_district_reconciliation(districts)
     mismatches = int((table["daily_vs_running"] != 0).sum())
     print(f"\n    districts where the daily column and the running total disagree: {mismatches}")
-    print("    Agreement between two independently written columns is what makes")
-    print("    either of them usable. The third total agrees with nothing.")
+    print("    Here the running total was built from the daily column, so 0 is guaranteed;")
+    print("    on a real feed this is the check that can fail. The third total agrees")
+    print("    with neither.")
 
     print("\n--- 7. Does the wrong total still rank the same? ---")
     compare_rankings(table)
