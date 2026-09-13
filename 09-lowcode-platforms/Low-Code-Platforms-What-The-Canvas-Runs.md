@@ -901,8 +901,9 @@ right endpoint, empty inputs : HTTP 400  app_unavailable
 ```
 
 The endpoint is correct, the credential is accepted, and the one thing that does not travel
-is the user's words. Against a deployment whose start variable has a default, this does not
-even fail — it returns a fluent answer to a question nobody asked.
+is the user's words. This deployment declares no default, so it refuses. Against one whose
+start variable has a default — not a case this script runs — the same body would not fail
+at all, and would come back as a fluent answer to a question nobody asked.
 
 The second request has the opposite problem. Its body is exactly right for
 `/v1/chat-messages` — the user's words in a top-level `query` — and it is aimed at a
@@ -940,8 +941,10 @@ inputs=['question']   HTTP 200  accepted
 4 request(s) to arrive at a key the deployment names in its own configuration
 ```
 
-Four requests to discover something written down in the deployment's own settings. That is
-merely wasteful. The failure mode is the next step.
+Four requests to discover something written down in the deployment's own settings — and
+already written in the first refusal, whose body reads
+`"input variable 'question' is required"`. The probe reads the status and moves on, so it
+never sees that. That is merely wasteful. The failure mode is the next step.
 
 ### 9.6 The same probe with the server gone
 
@@ -981,7 +984,7 @@ Every failure in this module has the same shape. **Nothing raised.**
 | A plugin that skips bad entries quietly | Rows missing from the result | A shorter list |
 | An index column that is not selective | Retrieval cannot separate rows | Confident scores, all identical |
 | A condition that matched no column value | The filter silently loses a condition | Two rows instead of one |
-| `inputs: {}` on a completion call | The user's question never travels | A fluent answer |
+| `inputs: {}` on a completion call | The user's question never travels | An HTTP 400 here; a fluent answer wherever the variable has a default |
 | A probe that reads every error as "wrong shape" | The real cause is overwritten | A specific, wrong diagnosis |
 
 Ten failures, ten silences. The pattern is not a property of low-code tools specifically —
@@ -1011,7 +1014,8 @@ those pairs appears in this module, and every one of them fails quietly.
 The countermeasure is the same in all four cases: **derive one side from the other, or
 check them against each other at a point where a mismatch is an error.** `validate()` does
 it for ports. `validate_output` does it for rows. `normalise` does it for labels. Nothing
-does it for the key inside `inputs`, which is exactly why section 9.5 costs four requests.
+does it for the key inside `inputs` on the client side, which is why section 9.5 costs four
+requests even though the first refusal already named the key.
 
 ---
 
@@ -1033,7 +1037,7 @@ does it for the key inside `inputs`, which is exactly why section 9.5 costs four
 | **02** | `deepseek-chat`, `temperature=0`, six reviews per variant. Plain prompt: **0/6 parse as JSON, 0/6 match the vocabulary, 0/6 routed** — all six discarded without an error. An output example takes the vocabulary to **6/6** but leaves parsing at **0/6**, because the example is a brace-less fragment and the model copies it faithfully. The third variant adds a written JSON constraint **and** `response_format` together, and reaches **6/6** parsed — the run credits the pair, not either one alone. **What it does isolate is that the example buys the vocabulary and nothing else.** Folding case and punctuation recovers 4 of the 6 lost in the plain run; `frustrated` and `mixed` are words the model chose and stay outside the enum. Once folded, plain agrees with json mode on **4/6** — agreement between variants, not accuracy, since the script has no answer key. The stopword edit came back matching the code path word for word on this run |
 | **03** | Three malformed calls refused before a page is fetched. The page with a missing rating: the permissive mapper returns 2 rows and raises nothing, and the output schema then finds **2 type violations across both rows**; the strict mapper stops and names the field. `page_limit=20` against a 3-page source reads 3 pages in **4 requests** — the fourth only finds the end — yields 7 rows and reports 1 skipped entry. `skipped` is a declared output; the output check refuses a schema that omits it. `page_limit` is a caller-side loop argument, not a schema input |
 | **04** | Index on `family`: **0/9 rows uniquely identified**, worst case 3 rows share a value. Index on `plan`: 9/9. A three-condition question returns 4 rows by similarity of which **0 satisfy all three**, spread across 0.795–0.791; the correct row is not in the top four. The parsed filter returns 1 row, matching a direct scan. Matching the event type literally silently drops that condition and returns 2 rows; folding case and punctuation returns 1. Prose recall costs 186 / 354 / 621 tokens at `top_k` 2 / 4 / 8 |
-| **05** | Server starts on a free loopback port. Blocking returns one body; streaming returns **5 events in 0.17s**. Two requests come back HTTP 400 for unrelated reasons: an empty `inputs` object on the right endpoint gets `app_unavailable`, and a well-formed chat body on the wrong endpoint gets `not_chat_app`. The probing client needs **4 requests** to find the declared key name. With the server stopped, the same loop makes 5 failed attempts and reports *"check the application configuration and API key"* |
+| **05** | Server starts on a free loopback port. Blocking returns one body; streaming returns **5 events** — one started, one per node for three nodes, one finished — in under a fifth of a second, most of it the three 0.05s node sleeps (0.16–0.18s across runs). Two requests come back HTTP 400 for unrelated reasons: an empty `inputs` object on the right endpoint gets `app_unavailable`, and a well-formed chat body on the wrong endpoint gets `not_chat_app`. The probing client needs **4 requests** to find the declared key name. With the server stopped, the same loop makes 5 failed attempts and reports *"check the application configuration and API key"* |
 
 ### 11.2 Data
 
