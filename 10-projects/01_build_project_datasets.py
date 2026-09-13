@@ -409,13 +409,17 @@ def report_district_truth(districts: pd.DataFrame) -> None:
 
 
 def report_facility_truth(facilities: pd.DataFrame) -> None:
-    """Print how often the reported ratio is clamped and how often the parts fall short."""
+    """Print how often the reported ratio reads the cap value and how often the parts fall short.
+
+    Reading the cap is not the same as being clamped: a ratio that merely rounds to
+    the cap reads it too. Script 03 separates the two.
+    """
     print("\n--- 7. Ground truth: facility beds ---")
-    clamped = (facilities["reported_utilization_pct"] >= REPORTED_RATIO_CAP).sum()
+    rows_at_cap = (facilities["reported_utilization_pct"] >= REPORTED_RATIO_CAP).sum()
     parts_short = (facilities["occupied_beds"] + facilities["free_beds"]
                    < facilities["total_beds"]).sum()
     print(f"    rows                                  {len(facilities):>8,}")
-    print(f"    rows reading exactly {REPORTED_RATIO_CAP}%              {clamped:>8,}")
+    print(f"    rows reading exactly {REPORTED_RATIO_CAP}%              {rows_at_cap:>8,}")
     gap = facilities["total_beds"] - facilities["occupied_beds"] - facilities["free_beds"]
     explained = bool((gap == facilities["out_of_service_beds"]).all())
     print(f"    rows where occupied + free < total    {parts_short:>8,}")
