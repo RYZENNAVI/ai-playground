@@ -1165,12 +1165,15 @@ Against a genuine series:
 
 ```
     points 522, running 2023-01-02 to 2024-12-31
-    share of one point's subject that appears in the next point: 1.0000
+    every point is the same instrument, MRD, so the share of one point's
+    subject that appears in the next is 1 by construction of the query.
 ```
 
 A line drawn between two points asserts that something moved from one value to the other.
 That assertion needs the two points to be about the same thing. **Zero and one is the whole
-argument.**
+argument** — the zero measured across 71 pairs of cohorts, the one true by definition for a
+query on a single instrument. A zero here shows these monthly points are different customers;
+it does not show that every aggregate whose members change lacks temporal structure.
 
 ### 12.3 The shuffle test
 
@@ -1191,8 +1194,11 @@ SHUFFLE_TRIALS = 30
 If order carries information, destroying it should make the fit worse. On the daily series it
 does, by a factor of eleven, and not one of thirty shuffles matches the real ordering. On the
 cohort series the shuffled fits land in the same place and **sixteen of thirty do at least as
-well as the real one** — the model was never reading time out of it. It was describing the
-spread of seventy-two group means, and any permutation shares that spread.
+well as the real one** — this fixed-order model was never reading time out of it. It was
+describing the spread of seventy-two group means, and any permutation shares that spread.
+That is a statement about ARIMA(1,1,1) on this series, not a proof that no model could find
+structure in the order of cohort vintages; it is the question of whether consecutive points
+are one subject changing over time that the overlap in 12.2 answers.
 
 The order is fixed rather than searched deliberately: holding it constant is what makes this a
 comparison of the data rather than of two different models.
@@ -1230,21 +1236,24 @@ at all seven. Friday and the following Monday have to be joined up, and the curv
 them takes whatever value smoothness dictates. **−3.3041 is the shape of the curve, not a
 property of the data.**
 
-Nothing in the component plot marks the two positions no observation ever constrained. A
+The weekday fit shapes that curve, so the weekend values are not unconstrained — but no
+weekend observation constrains them directly, and nothing in the component plot marks them. A
 reader who takes the chart at face value concludes that weekends behave differently, which is
 true only in the sense that they do not exist.
 
 ### 13.2 One pass through the calendar cannot identify a yearly term
 
 ```
-    one year of data     rows   260   complete cycles covered 0.99   term ranges     7.92
-    two years of data    rows   522   complete cycles covered 2.00   term ranges    11.27
+    one year of data     rows   260   span 361 days (0.99 years)   term ranges     7.92
+    two years of data    rows   522   span 729 days (2.00 years)   term ranges    11.27
 
     correlation between the two yearly terms: +0.4937
 ```
 
 Both fits succeed. Both print a clean seasonal curve. **The two curves agree at 0.49** — if a
-real annual pattern were being recovered, the two estimates would be close.
+real annual pattern were being recovered, the two estimates would be close. There is none to
+recover: script 01 draws these prices from a random walk with no calendar effect, so both
+yearly terms are describing noise and trend.
 
 With one pass through the calendar, the split between "trend" and "season" is not identified:
 the same curve can be read as a falling trend with a flat season or a flat trend with a
@@ -1256,8 +1265,13 @@ Yearly seasonality is enabled with less than 730 days (approximately 2 years) of
 The model may be under-identified, and the trend/seasonality decomposition can be unstable...
 ```
 
-**The number that separates the two cases is not in the plot. It is the count of complete
-cycles the data covers, and it has to be printed on purpose.**
+The warning fires three times in the run: on the daily fit in 13.1 and on both fits here. The
+"two years" span is 729 days, one short of the 730 the library asks for, so by the library's
+own rule even the longer fit is not enough. What the comparison shows is that one pass is
+clearly too few; it does not show that two passes is enough to trust a yearly term.
+
+**The number that separates the two cases is not in the plot. It is how much of the calendar
+the data spans, and it has to be printed on purpose.**
 
 > These two, the misdated column in section 7.3, and the thinning in 7.2 are one shape:
 > **the output is complete-looking, and part of it has nothing underneath.**

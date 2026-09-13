@@ -4,7 +4,7 @@ Demonstrates that an x axis labelled with dates does not make a series temporal:
     1. Group customers by the month they joined and plot the result as a series.
     2. Count how many customers two neighbouring points have in common.
     3. Put a genuine daily series beside it and count the same overlap.
-    4. Fit an autoregressive model to both, then refit with the order shuffled.
+    4. Fit a fixed-order ARIMA model to both, then refit with the order shuffled.
     5. Compare each fit against its own shuffled twin, which is the test that separates them.
     6. Decompose the daily series and count the training samples behind its weekly term.
     7. Fit the yearly term on one year and on two, and compare what it claims.
@@ -84,7 +84,7 @@ def overlap_between_neighbours(members: list) -> list:
 
 
 def fit_arima(values: np.ndarray) -> float:
-    """Fit an autoregressive model and return its in-sample mean absolute error.
+    """Fit an ARIMA model of fixed order and return its in-sample mean absolute error.
 
     The order is fixed rather than searched. Order selection is a separate subject,
     and holding it constant is what makes the shuffled comparison below a comparison
@@ -160,9 +160,9 @@ def main() -> None:
     prices = price_series()
     print(f"    points {len(prices)}, running {prices['trade_date'].min().date()} to "
           f"{prices['trade_date'].max().date()}")
-    print("    share of one point's subject that appears in the next point: 1.0000")
-    print("    It is the same instrument every day, which is what makes the change")
-    print("    between two points a real quantity.")
+    print(f"    every point is the same instrument, {TICKER}, so the share of one point's")
+    print("    subject that appears in the next is 1 by construction of the query.")
+    print("    That is what makes the change between two points a real quantity.")
 
     print(f"\n--- 4-5. The shuffle test, ARIMA{ARIMA_ORDER}, {SHUFFLE_TRIALS} shuffles each ---")
     results = [
@@ -178,7 +178,7 @@ def main() -> None:
     print("\n    On the daily series, destroying the order makes the fit far worse, so the")
     print("    order was carrying something. On the cohort series the shuffled fits land")
     print("    in the same place, which means the model was never reading time out of it.")
-    print("    A forecast from that model extrapolates the spread of twelve group means.")
+    print(f"    A forecast from that model extrapolates the spread of {len(cohorts)} group means.")
 
     print("\n--- 6. The weekly term of the daily series ---")
     model, forecast = fit_prophet(prices, yearly=True, weekly=True)
@@ -195,8 +195,9 @@ def main() -> None:
           f"{weekend_term:.4f}")
     print("    The model still assigns Saturday and Sunday a value. It has to: the")
     print("    weekly term is a periodic function fitted to five of seven positions and")
-    print("    then evaluated at all seven. Nothing in the output marks the two")
-    print("    positions that no observation ever constrained.")
+    print("    then evaluated at all seven. The weekday fit shapes the curve, but no")
+    print("    weekend observation constrains those two positions directly, and nothing")
+    print("    in the output marks them.")
 
     print("\n--- 7. The yearly term on one year and on two ---")
     one_year = prices[prices["trade_date"] < "2024-01-01"]
@@ -205,15 +206,17 @@ def main() -> None:
         "two years of data": prices,
     }
     yearly_terms = {}
+    span_days = {}
     for label, frame in spans.items():
-        years = (frame["trade_date"].max() - frame["trade_date"].min()).days / 365.25
+        days = (frame["trade_date"].max() - frame["trade_date"].min()).days
+        span_days[label] = days
         _, fitted = fit_prophet(frame, yearly=True, weekly=False)
         by_month = (
             fitted.assign(month=fitted["ds"].dt.month).groupby("month")["yearly"].mean()
         )
         yearly_terms[label] = by_month
-        print(f"    {label:<20} rows {len(frame):>5}   complete cycles covered "
-              f"{years:>4.2f}   term ranges {by_month.max() - by_month.min():>8.2f}")
+        print(f"    {label:<20} rows {len(frame):>5}   span {days:>3} days "
+              f"({days / 365.25:.2f} years)   term ranges {by_month.max() - by_month.min():>8.2f}")
 
     left, right = yearly_terms["one year of data"], yearly_terms["two years of data"]
     correlation = float(np.corrcoef(left.to_numpy(), right.to_numpy())[0, 1])
@@ -225,7 +228,10 @@ def main() -> None:
     print("    One year of data contains one pass through the calendar, so a yearly")
     print("    term fitted on it cannot be separated from the trend it sits on. Both")
     print("    fits succeed and both print a clean seasonal curve; the number that")
-    print("    tells them apart is how many complete cycles the data covered.")
+    print("    tells them apart is how much of the calendar the data spans.")
+    print(f"    Prophet asks for 730 days before it trusts a yearly term. These spans are "
+          f"{span_days['one year of data']} and {span_days['two years of data']} days,")
+    print("    so its warning fires on both fits, the two-year one included.")
 
 
 if __name__ == "__main__":
