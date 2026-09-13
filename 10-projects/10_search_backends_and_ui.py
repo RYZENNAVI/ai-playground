@@ -241,7 +241,10 @@ def by_count(hits: list, limit: int) -> list:
 def by_token_budget(hits: list, budget: int) -> list:
     """Keep chunks until the estimated token count would exceed the budget.
 
-    The unit here is the one the model is actually limited by. A count of chunks only
+    The first chunk is always kept, even if it alone is over the budget, so the budget
+    is a limit on what gets added, not a guarantee that the context fits under it.
+    Tokens are estimated as characters divided by CHARS_PER_TOKEN, not counted by the
+    model's tokenizer. The unit here is the one the model is actually limited by. A count of chunks only
     stands in for it while every chunk is the same size, and stops standing in for it
     the moment the corpus holds documents of different lengths.
     """
@@ -290,6 +293,19 @@ def pick_client() -> OpenAI:
         return None
     return OpenAI(api_key=key,
                   base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+
+
+def locate(hits: list, expected: str) -> tuple:
+    """Return the rank and score of the expected document's best chunk, or (None, None).
+
+    The hits arrive best first, so the first chunk of the document is its best. None
+    means no chunk of the document is in the ranking at all: the failure is upstream
+    of scoring, and the diagnosis has to say so rather than fail on an empty list.
+    """
+    for rank, hit in enumerate(hits, start=1):
+        if hit["document"] == expected:
+            return rank, hit["score"]
+    return None, None
 
 
 def score_backends(backends: list) -> dict:
@@ -395,22 +411,28 @@ def main() -> None:
         print(f"    on {label:<12} questions: keyword {left} of {len(group)} "
               f"(mean rank {left_mean}), vector {right} of {len(group)} "
               f"(mean rank {right_mean})")
-    print("\n    Neither backend is the better one. They fail on different questions, and")
-    print("    the split above is the reason a system keeps both rather than choosing.")
+    print("\n    On these questions, chosen to pull in opposite directions, neither backend")
+    print("    dominates. They fail on different questions, and the split above is the")
+    print("    reason a system keeps both rather than choosing.")
 
     print(f"\n--- 4-5. Two ways to cut the context ---")
     print(f"    {'question':<40}{'fixed count':>22}{'token budget':>24}")
     print(f"    {'':<40}{'chunks':>10}{'tokens':>12}{'chunks':>12}{'tokens':>12}")
+    largest_counted, largest_budgeted = 0, 0
     for question, _, _ in QUESTIONS:
         hits = vector.search(question, 8)
         counted = by_count(hits, TOP_K)
         budgeted = by_token_budget(hits, TOKEN_BUDGET)
+        largest_counted = max(largest_counted, estimate_tokens(counted))
+        largest_budgeted = max(largest_budgeted, estimate_tokens(budgeted))
         print(f"    {question[:38]:<40}{len(counted):>10}{estimate_tokens(counted):>12}"
               f"{len(budgeted):>12}{estimate_tokens(budgeted):>12}")
-    print(f"\n    The budget is {TOKEN_BUDGET} tokens and the token column stays under it.")
-    print("    A fixed count does not track tokens at all; it happens to here because")
-    print("    every chunk in this corpus is nearly the same length. Add one long")
-    print("    document and the count stops standing in for the thing being limited.")
+    print(f"\n    Tokens are estimated as characters / {CHARS_PER_TOKEN}, not counted by a tokenizer.")
+    print(f"    Budget {TOKEN_BUDGET}: the largest budgeted context is {largest_budgeted}, "
+          f"the largest fixed-count one {largest_counted}.")
+    print(f"    Chunks here run {min(lengths)} to {max(lengths)} characters, so three chunks cost")
+    print("    whatever those three happen to hold. The count does not track the unit")
+    print("    being limited.")
 
     print("\n--- 6. Answers from each backend ---")
     for i, (question, expected, kind) in enumerate(QUESTIONS):
@@ -440,11 +462,16 @@ def main() -> None:
     print(f"    Layer 2, the retrieval   : expected {expected}, "
           f"got {scored[broken][failing]['returned']}")
     hits = backends[broken].search(question, len(chunks))
-    ranks = [i for i, hit in enumerate(hits, start=1) if hit["document"] == expected]
+    rank, best = locate(hits, expected)
+    if rank is None:
+        print(f"    Layer 3, the raw scoring : no chunk of {expected} is in the index at all")
+        print("\n    Scoring cannot be the problem when the document never reached the index.")
+        print("    The repair is upstream of retrieval: ingestion, chunking or parsing.")
+        return
     print(f"    Layer 3, the raw scoring : the expected document's best chunk sits at "
-          f"rank {min(ranks)} of {len(hits)}")
+          f"rank {rank} of {len(hits)}")
     print(f"                               top score {hits[0]['score']:.4f}, "
-          f"expected document's best {max(h['score'] for h in hits if h['document'] == expected):.4f}")
+          f"expected document's best {best:.4f}")
     print("\n    The answer was never the problem. The document was in the index the")
     print("    whole time and the scoring put it below the cutoff, which is a different")
     print("    repair from anything that could be done to the prompt.")
@@ -453,6 +480,7 @@ def main() -> None:
 if __name__ == "__main__":
     parsed = argparse.ArgumentParser(add_help=False)
     parsed.add_argument("--ui", action="store_true")
+    parsed.add_argument("--share", action="store_true")
     known, _ = parsed.parse_known_args()
     if known.ui:
         client = pick_client()
@@ -460,6 +488,6 @@ if __name__ == "__main__":
         ui_backends = {"keyword": KeywordBackend(chunks)}
         if client is not None:
             ui_backends["vector"] = VectorBackend(chunks, client)
-        build_ui(ui_backends, client).launch()
+        build_ui(ui_backends, client).launch(share=known.share)
     else:
         main()

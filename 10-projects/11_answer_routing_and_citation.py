@@ -31,9 +31,10 @@ load_dotenv(Path(__file__).parents[2] / ".env")
 MAX_ATTEMPTS = 4
 RETRY_BACKOFF = 6
 
-# Page numbers are deliberately sparse and non-contiguous. A model that invents a
-# citation reaches for a small round number, and a corpus numbered 1, 2, 3 would
-# hide that. These numbers make an invented page detectable on sight.
+# Page numbers are deliberately sparse and non-contiguous. In a corpus numbered 1,
+# 2, 3 a guessed page number would very likely exist and pass as read; here most
+# guesses land on a page that was never supplied, which the check below catches.
+# The check proves a cited page was given to the model, not that it supports the answer.
 REPORTS = {
     "Alderway Foods": {
         14: "Alderway Foods reported revenue of 812.4 million units for the year ended "
@@ -258,7 +259,12 @@ def is_not_available(value) -> bool:
 
 
 def conforms(result: dict, answer_type: str) -> bool:
-    """Check that the reply has all four keys and that the answer matches its type.
+    """Check that the reply has all four keys and that the answer has its type's basic shape.
+
+    number must be a bare number and boolean must be yes or no. For name, names and
+    string the check is only that the answer is non-empty: it does not verify a single
+    name, a comma-separated list or one sentence, so conformance here is conformance
+    to this checker, not to every clause in TYPE_RULES.
 
     The N/A reply is part of the schema rather than a violation of it. Scoring it as
     a schema failure would penalise the one behaviour the prompt asks for when the
@@ -323,7 +329,11 @@ def answer_comparison(client, model: str, item: dict) -> dict:
     )
     final = ask_json(client, model, system,
                      f"Figures:\n{summary}\n\nQuestion: {item['question']}")
-    return {"parts": parts, "final": final}
+    # The combined reply cites pages of its own. The only pages it can have read are
+    # the ones the sub-answers kept, so that is what its citations are checked against.
+    supplied = {page for part in parts for page in part["pages"]}
+    return {"parts": parts, "final": final,
+            "final_citations": validate_references(final, supplied)}
 
 
 def main() -> None:
@@ -362,8 +372,10 @@ def main() -> None:
     for row in routed:
         item = row["item"]
         # The answer is produced from whatever the router chose, not from the
-        # correct report, so a routing mistake shows up here as a wrong answer.
-        report = row["report"] if row["report"] in REPORTS else item["report"]
+        # correct report, so a routing mistake shows up here as a wrong answer. A
+        # reply naming no known report opens no pages rather than falling back to
+        # the expected report, which would feed the answer key into the system.
+        report = row["report"]
         answer_type = row["type"] if row["type"] in ANSWER_TYPES else "string"
         result = answer_question(client, model, item["question"], report, answer_type)
         _, supplied = build_context(report)
@@ -401,6 +413,9 @@ def main() -> None:
         comparison_right += 1 if right else 0
         print(f"       combined -> {given!r}   expected {item['answer']!r}   "
               f"{'ok' if right else 'WRONG'}")
+        final_cites = outcome["final_citations"]
+        print(f"       combined cites {final_cites['cited']}   valid {final_cites['kept']}"
+              f"   invented {final_cites['dropped']}")
     print("\n    Each sub-answer keeps its own citation, so the comparison inherits")
     print("    sources rather than producing a claim no page supports.")
 
@@ -416,7 +431,7 @@ def main() -> None:
     print(f"    answers correct       {correct} of {total}")
     print(f"    comparisons correct   {comparison_right} of {len(COMPARISONS)}")
     print(f"    page citations        {cited} made, {invented} of them invented")
-    print("\n    Those are five separate numbers because they fail separately. A wrong")
+    print("\n    Those are six separate numbers because they fail separately. A wrong")
     print("    answer traced to routing is repaired in the router; one traced to the")
     print("    schema is repaired in the prompt; an invented citation is caught without")
     print("    knowing whether the answer was right at all.")

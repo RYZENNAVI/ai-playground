@@ -1312,7 +1312,7 @@ matrix = np.asarray(vectors, dtype=float)
 return matrix / np.linalg.norm(matrix, axis=1, keepdims=True)
 ```
 
-### 14.2 Neither backend is the better one
+### 14.2 On these questions, neither backend dominates
 
 ```
     question                                            kind          keyword   vector
@@ -1333,7 +1333,9 @@ the top position the way an exact match is. On a question that shares no vocabul
 answer, term overlap has nothing to work with and one of the three is missed entirely.
 
 **They fail on different questions. That is the reason a system keeps both rather than
-choosing.**
+choosing.** The five questions were written to pull in opposite directions, so this shows the
+two are complementary here; it is not a benchmark, and it does not show that neither could
+come out ahead on some other query set.
 
 ### 14.3 Three chunks is not a limit on anything the model cares about
 
@@ -1341,21 +1343,29 @@ choosing.**
     question                                           fixed count            token budget
                                                 chunks      tokens      chunks      tokens
     What does Clause 7.3 cover?                      3         215           3         215
+    What is the aggregate limit under Clau           3         220           3         220
     Someone stole my suitcase at the airpo           3         186           3         186
     I got sick on holiday and had to be fl           3         243           2         209
     How long does the insurer have to deci           3         182           4         213
+
+    Tokens are estimated as characters / 4, not counted by a tokenizer.
+    Budget 220: the largest budgeted context is 220, the largest fixed-count one 243.
 ```
 
-The budget is 220 tokens and the budgeted column stays under it while varying between two and
-four chunks. The fixed count never tracks tokens at all — it happens to stay close here only
-because every chunk in this corpus is nearly the same length.
+These are estimated tokens — characters divided by four — not a count from the model's
+tokenizer. Against that estimate the budgeted column reaches the budget and never passes it,
+while varying between two and four chunks; the fixed count passes it at 243. Chunks here run
+from 101 to 437 characters, so three chunks cost whatever those three hold, and the count
+does not track the unit being limited.
 
-> **"Three results" and "220 tokens" are not the same kind of limit.** Three chunks can be
+> **"Three results" and "220 estimated tokens" are not the same kind of limit.** Three chunks can be
 > three fragments or three long sections. The constraint downstream is a context window,
 > measured in tokens, so that is the unit the cutoff belongs in.
 
 The budgeting loop is deliberately conservative — it stops *before* the first chunk that
-would exceed the budget, and always keeps at least one:
+would exceed the budget, and always keeps at least one. That second property means the budget
+limits what is added rather than guaranteeing a fit: a first chunk larger than the budget is
+kept whole. No chunk in this corpus is that large, so the run never shows it.
 
 ```python
 for hit in hits:
@@ -1402,6 +1412,11 @@ Three layers, three different repairs:
 | **The retrieval** | The right document exists but did not make the cutoff | scoring, k, budget, a second backend |
 | **The raw scoring** | The document is not in the index at all | ingestion, chunking, parsing |
 
+The script's third layer reports that last case rather than failing on it: when no chunk of
+the expected document appears anywhere in the full ranking, it says so and points upstream.
+An earlier version took the minimum of an empty rank list there and would have raised on
+exactly the failure the table says to look for.
+
 Here the answer was never the problem: the document was in the index the whole time and the
 scoring put it at rank 12 of 15. **No amount of prompt work reaches rank 12.** That is a
 different repair from anything that could be done to the model's instructions, and knowing
@@ -1417,6 +1432,19 @@ The model's reply on that query is itself the correct behaviour under the circum
 It declined rather than answering from unrelated clauses. A pipeline that refuses when the
 context does not contain the answer is doing the right thing with the wrong input — which is
 precisely why the score has to be attributed to retrieval and not to generation.
+
+A refusal on its own does not locate the failure, though, and a later run shows why. On the
+same question the vector backend retrieved the right clause first:
+
+```
+        vector    retrieved [baggage-loss, travel-delay]
+                  Not in the retrieved context.
+```
+
+The answer layer declined with the correct document in hand. The clause covers baggage stolen
+while in a carrier's custody, and the question does not say where the suitcase was, so the
+refusal may be defensible — but it is a decision made at the answer layer, and no change to
+retrieval reaches it. That is the first row of the table above, in the same run as the third.
 
 ---
 
@@ -1440,8 +1468,9 @@ REPORTS = {
     Any citation outside [9, 11, 14, 26, 29, 38, 44, 47, 52, 58, 63, 71] was invented rather than read.
 ```
 
-Sparse, non-contiguous numbering is the point. A model reaching for a plausible citation
-reaches for a small round number, and a corpus numbered 1, 2, 3 would hide that.
+Sparse, non-contiguous numbering is the point. In a corpus numbered 1, 2, 3 a guessed page
+number would very likely exist and pass as read; here most guesses land on a page that was
+never supplied.
 
 ### 16.2 Two routers, scored separately
 
@@ -1475,7 +1504,9 @@ instead of five. More rules in a single request means more chances to break one.
 Routing first also means a routing mistake cannot be recovered later: the correct pages are
 never put in front of the model that answers. The script therefore answers from **whatever
 the router chose**, not from the correct report, so a routing error surfaces as a wrong
-answer rather than being silently corrected.
+answer rather than being silently corrected. That includes a reply naming no known report: it
+opens no pages. An earlier version fell back to the expected report in that case, which fed
+the answer key into the system it was scoring.
 
 ### 16.3 The four fields, in order
 
@@ -1510,7 +1541,8 @@ A page number the model was never given cannot have been read, whatever the answ
 ```
 
 **This is the cheapest correctness check in the pipeline, and it needs no judgement about
-whether the answer itself is right.**
+whether the answer itself is right.** It checks provenance, not support: a cited page that
+was supplied can still fail to say what the answer claims, and this check would pass it.
 
 ### 16.5 The question with no answer in the corpus
 
@@ -1537,6 +1569,11 @@ if is_not_available(value):
 
 An `N/A` with citations attached is still a failure — if there is no answer there is no source.
 
+The checker is strict only where it is cheap to be: `number` must be a bare number and
+`boolean` must be yes or no. For `name`, `names` and `string` it checks that the answer is
+non-empty, not that it is a single name, a comma-separated list or one sentence. `schema
+conformance 6 of 6` is conformance to that checker.
+
 ### 16.6 Comparisons: split, answer, recombine
 
 A comparison spans every report, so the router has nothing to choose. Splitting restores the
@@ -1549,13 +1586,16 @@ pages, one citable source.
        Brightlane Logistics          1204.7   pages [11]
        Coldharbour Energy             640.1   pages [9]
        combined -> 'Brightlane Logistics'   expected 'Brightlane Logistics'   ok
+       combined cites [11]   valid [11]   invented []
 ```
 
 Each sub-answer keeps its own citation, so the comparison **inherits** sources rather than
-producing a claim no page supports. The final call is told explicitly to compare figures that
+producing a claim no page supports. The combined reply also returns references of its own,
+and those are checked too — against the pages the sub-answers kept, the only pages it could
+have seen. An earlier version validated the sub-answers but never the combined reply. The final call is told explicitly to compare figures that
 have already been extracted, not to reason about the companies.
 
-### 16.7 Five numbers, because they fail separately
+### 16.7 Six numbers, because they fail separately
 
 ```
     report routing        6 of 6
@@ -1666,7 +1706,7 @@ unreadable one.
 | 08 | `association_rules_sample_unit.py` | The sample unit decides the answer | rows before and after, support powers of two, lift |
 | 09 | `cohort_is_not_a_time_series.py` | Cohorts, and terms with no data under them | population overlap, shuffle ratio, weekend rows, cycles |
 | 10 | `search_backends_and_ui.py` | Two backends; a limit in the wrong unit; layer isolation | mean rank per question kind, tokens spent, rank of the miss |
-| 11 | `answer_routing_and_citation.py` | Routing, structured answers, citation validation | five separate scores, invented citations |
+| 11 | `answer_routing_and_citation.py` | Routing, structured answers, citation validation | six separate scores, invented citations |
 
 **Dependencies.** Script 01 writes everything the others read; run it first. Scripts 04, 10
 and 11 call a model API. The rest are offline.
