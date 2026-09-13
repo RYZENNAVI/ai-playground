@@ -195,9 +195,15 @@ def validate_output(schema, result):
         if not matches_type(result[name], rule["type"]):
             problems.append(f"{name} should be {rule['type']}")
     for name, rule in schema["output"].items():
-        if "of" not in rule:
+        # A value that is not a list was already reported above; walking it would
+        # crash the checker on exactly the return value it exists to describe.
+        if "of" not in rule or not matches_type(result.get(name), "array"):
             continue
-        for index, row in enumerate(result.get(name, [])):
+        for index, row in enumerate(result[name]):
+            if not isinstance(row, dict):
+                problems.append(f"{name}[{index}] should be a row, got "
+                                f"{type(row).__name__}")
+                continue
             for field, kind in rule["of"].items():
                 if field not in row:
                     problems.append(f"{name}[{index}] has no {field}")
