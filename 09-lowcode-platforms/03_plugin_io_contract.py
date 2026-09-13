@@ -7,7 +7,7 @@ Demonstrates that a plugin is a typed handler, not just a function that fetches:
     4. Call it with arguments that do not, and watch the schema refuse before any work.
     5. Check the rows that come back against the declared output schema.
     6. Read a page with a field missing, through a permissive mapper and a strict one.
-    7. Read what paging costs, and put the limit in the contract instead of the loop.
+    7. Read what paging costs, and where the page limit does and does not show.
 
 Module 09: Low-Code Platforms - Plugin Input/Output Contract.
 """
@@ -68,6 +68,12 @@ PLUGIN_SCHEMA = {
             "content": "string",
         }},
         "page": {"type": "integer"},
+        # The handler reports what it dropped, so the report is an output port too.
+        # Leave it out and the editor has nothing to wire it to.
+        "skipped": {"type": "array", "of": {
+            "title": "string",
+            "reason": "string",
+        }},
     },
 }
 
@@ -179,13 +185,21 @@ def validate_output(schema, result):
             continue
         if not isinstance(result[name], PY_TYPES[rule["type"]]):
             problems.append(f"{name} should be {rule['type']}")
-    for index, row in enumerate(result.get("items", [])):
-        for field, kind in schema["output"]["items"]["of"].items():
-            if field not in row:
-                problems.append(f"items[{index}] has no {field}")
-            elif not isinstance(row[field], PY_TYPES[kind]):
-                problems.append(f"items[{index}].{field} should be {kind}, got "
-                                f"{type(row[field]).__name__}")
+    for name, rule in schema["output"].items():
+        if "of" not in rule:
+            continue
+        for index, row in enumerate(result.get(name, [])):
+            for field, kind in rule["of"].items():
+                if field not in row:
+                    problems.append(f"{name}[{index}] has no {field}")
+                elif not isinstance(row[field], PY_TYPES[kind]):
+                    problems.append(f"{name}[{index}].{field} should be {kind}, got "
+                                    f"{type(row[field]).__name__}")
+    # validate_args refuses an undeclared input; an undeclared output is the same
+    # mistake from the other side - a port the handler fills that no wire can reach.
+    for name in result:
+        if name not in schema["output"]:
+            problems.append(f"{name} is returned but not a declared output")
     return problems
 
 
@@ -208,26 +222,30 @@ def handler(args, mapper=map_strictly, skip_invalid=False):
             if not skip_invalid:
                 raise
             title = entry.find("atom:title", NS)
-            skipped.append((title.text if title is not None else "?", str(error)))
+            skipped.append({"title": title.text if title is not None else "?",
+                            "reason": str(error)})
     return {"items": items, "page": args["page"], "skipped": skipped}
 
 
 def read_pages(app_id, page_limit):
-    """Read pages until the source runs out or the declared limit is reached.
+    """Call the one-page handler until the source runs out or page_limit is reached.
 
-    page_limit belongs to the caller, not to the body of a loop. A plugin that
-    hardcodes how far it will walk hides its own cost from whoever wires it up.
+    The limit is an argument to this loop, which sits outside the plugin. It is
+    not in PLUGIN_SCHEMA, so a canvas drawing the node from that schema never
+    shows it. Returns pages read and requests attempted separately: the request
+    that finds the end of the source is still a request.
     """
-    rows, skipped, fetched = [], [], 0
+    rows, skipped, pages_read, attempts = [], [], 0, 0
     for page in range(1, page_limit + 1):
+        attempts += 1
         try:
             result = handler({"app_id": app_id, "page": page}, skip_invalid=True)
         except FileNotFoundError:
             break
-        fetched += 1
+        pages_read += 1
         rows.extend(result["items"])
         skipped.extend(result["skipped"])
-    return rows, skipped, fetched
+    return rows, skipped, pages_read, attempts
 
 
 def main():
@@ -268,6 +286,10 @@ def main():
         problems = validate_output(PLUGIN_SCHEMA, result)
         print(f"  page {page}: {len(result['items'])} rows, "
               f"{len(problems)} schema violation(s)")
+    without_skipped = {**PLUGIN_SCHEMA, "output": {
+        k: v for k, v in PLUGIN_SCHEMA["output"].items() if k != "skipped"}}
+    print(f"  the same page against a schema that forgets 'skipped': "
+          f"{validate_output(without_skipped, result)}")
 
     print("\n--- 6. The page whose first entry has no rating ---")
     loose = handler({"app_id": "ABC-Trade", "page": 3}, mapper=map_permissively)
@@ -284,15 +306,18 @@ def main():
 
     print("\n--- 7. What paging costs the caller ---")
     for limit in (1, 3, 20):
-        rows, skipped, fetched = read_pages("ABC-Trade", limit)
-        print(f"  page_limit={limit:<3} fetched {fetched} page(s), {len(rows)} rows, "
-              f"{len(skipped)} entry(s) skipped")
-    for title, reason in skipped:
-        print(f"    skipped {title!r}: {reason}")
-    print(f"  the source holds {len(PAGES)} pages, so a limit of 20 costs {fetched} "
-          f"fetches here and")
-    print("  20 against a source that keeps answering; the number belongs in the")
-    print("  contract, where whoever wires the node can see it")
+        rows, skipped, pages_read, attempts = read_pages("ABC-Trade", limit)
+        print(f"  page_limit={limit:<3} {pages_read} page(s) read in {attempts} request(s), "
+              f"{len(rows)} rows, {len(skipped)} entry(s) skipped")
+    for entry in skipped:
+        print(f"    skipped {entry['title']!r}: {entry['reason']}")
+    print(f"  the source holds {len(PAGES)} pages, so a limit of 20 reads {pages_read} and "
+          f"sends {attempts}")
+    print("  requests here - the last one only finds the end - and would send all 20")
+    print("  against a source that keeps answering")
+    print("  page_limit is an argument to the calling loop, not an input in PLUGIN_SCHEMA,")
+    print("  so nobody wiring this node on a canvas sees it. Making it visible would mean")
+    print("  declaring it as an input and moving the paging into the plugin itself")
 
 
 if __name__ == "__main__":

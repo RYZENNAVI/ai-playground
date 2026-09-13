@@ -541,6 +541,7 @@ PLUGIN_SCHEMA = {
             "updated": "string", "content": "string",
         }},
         "page": {"type": "integer"},
+        "skipped": {"type": "array", "of": {"title": "string", "reason": "string"}},
     },
 }
 ```
@@ -604,26 +605,47 @@ def handler(args, mapper=map_strictly, skip_invalid=False):
             if not skip_invalid:
                 raise
             title = entry.find("atom:title", NS)
-            skipped.append((title.text if title is not None else "?", str(error)))
+            skipped.append({"title": title.text if title is not None else "?",
+                            "reason": str(error)})
     return {"items": items, "page": args["page"], "skipped": skipped}
 ```
 
 **Dropping an entry keeps the page readable, but only if the count of what was dropped
 comes back with it.** A plugin that skips silently is the permissive mapper one level up.
 
-### 7.5 The page limit belongs to the caller
+Coming back with it is not enough on its own, though: the report has to be a **declared**
+output, or the editor has no port to wire it to and the next node cannot read it. An
+earlier version of this script returned `skipped` without declaring it, and nothing
+noticed, because `validate_output` checked the declared fields and ignored everything else.
+That was asymmetric — `validate_args` already refused an undeclared *input* — so the output
+check now refuses an undeclared output the same way:
 
 ```
-page_limit=1   fetched 1 page(s), 3 rows, 0 entry(s) skipped
-page_limit=3   fetched 3 page(s), 7 rows, 1 entry(s) skipped
-page_limit=20  fetched 3 page(s), 7 rows, 1 entry(s) skipped
+the same page against a schema that forgets 'skipped': ['skipped is returned but not a declared output']
+```
+
+### 7.5 What paging costs, and who can see the limit
+
+```
+page_limit=1   1 page(s) read in 1 request(s), 3 rows, 0 entry(s) skipped
+page_limit=3   3 page(s) read in 3 request(s), 7 rows, 1 entry(s) skipped
+page_limit=20  3 page(s) read in 4 request(s), 7 rows, 1 entry(s) skipped
   skipped 'Alerts arrive late': entry is missing ['rating']
 ```
 
-The source holds three pages, so a limit of 20 costs three fetches here — and twenty
-against a source that keeps answering. **A plugin that hardcodes how far it will walk hides
-its own cost from whoever wires it up.** Twenty pages of three rows each is sixty requests
-behind one box on a canvas.
+Pages read and requests sent are counted separately, because they part company at the last
+row. With a limit of 3 the loop stops on its own count and never asks for page 4. With a
+limit of 20 it does ask, and that fourth request is the one that finds the end of the
+source. Locally that costs a file-existence check; over HTTP it is a full round trip that
+returns nothing. Against a source that keeps answering, a limit of 20 is twenty requests —
+sixty rows at three per page — behind one box on a canvas.
+
+Where the limit lives matters as much as its value. **In this script `page_limit` is an
+argument to `read_pages`, the loop that calls the one-page handler — it is not an input in
+`PLUGIN_SCHEMA`.** So a canvas that draws the node from that schema shows `app_id` and
+`page`, and nothing about how far anyone will walk. Putting the cost where whoever wires the
+node can see it would take two changes this script does not make: declare `page_limit` as
+an input, and move the paging loop inside the plugin.
 
 ---
 
@@ -994,7 +1016,7 @@ does it for the key inside `inputs`, which is exactly why section 9.5 costs four
 | :--- | :--- |
 | **01** | 23 nodes across three definitions execute end to end. One edited reference is caught statically: `123474.values wants 136482.summary, but 136482 emits ['digest', 'branch']`. One added back-edge leaves **1 node able to start and 7 waiting forever**. `[^Scene]` truncates three scenes to `'A r'`, `'Th'`, `'Ev'` — 7 characters of 174 — while still returning three parts. Across all 24 orderings of the four articles the marks form **1 distinct multiset** while the running totals take **4 distinct values**. The selector marks 1 of 4 elements `drop`; the cleanup node removes it |
 | **02** | `deepseek-chat`, `temperature=0`, six reviews per variant. Plain prompt: **0/6 parse as JSON, 0/6 match the vocabulary, 0/6 routed** — all six discarded without an error. An output example takes the vocabulary to **6/6** but leaves parsing at **0/6**, because the example is a brace-less fragment and the model copies it faithfully. The third variant adds a written JSON constraint **and** `response_format` together, and reaches **6/6** parsed — the run credits the pair, not either one alone. **What it does isolate is that the example buys the vocabulary and nothing else.** Folding case and punctuation recovers 4 of the 6 lost in the plain run; `frustrated` and `mixed` are words the model chose and stay outside the enum. Once folded, plain agrees with json mode on **4/6** — agreement between variants, not accuracy, since the script has no answer key. The stopword edit came back matching the code path word for word on this run |
-| **03** | Three malformed calls refused before a page is fetched. The page with a missing rating: the permissive mapper returns 2 rows and raises nothing, and the output schema then finds **2 type violations across both rows**; the strict mapper stops and names the field. `page_limit=20` against a 3-page source costs 3 fetches, yields 7 rows and reports 1 skipped entry |
+| **03** | Three malformed calls refused before a page is fetched. The page with a missing rating: the permissive mapper returns 2 rows and raises nothing, and the output schema then finds **2 type violations across both rows**; the strict mapper stops and names the field. `page_limit=20` against a 3-page source reads 3 pages in **4 requests** — the fourth only finds the end — yields 7 rows and reports 1 skipped entry. `skipped` is a declared output; the output check refuses a schema that omits it. `page_limit` is a caller-side loop argument, not a schema input |
 | **04** | Index on `family`: **0/9 rows uniquely identified**, worst case 3 rows share a value. Index on `plan`: 9/9. A three-condition question returns 4 rows by similarity of which **0 satisfy all three**, spread across 0.795–0.791; the correct row is not in the top four. The parsed filter returns 1 row, matching a direct scan. Matching the event type literally silently drops that condition and returns 2 rows; folding case and punctuation returns 1. Prose recall costs 186 / 354 / 621 tokens at `top_k` 2 / 4 / 8 |
 | **05** | Server starts on a free loopback port. Blocking returns one body; streaming returns **5 events in 0.17s**. Two requests come back HTTP 400 for unrelated reasons: an empty `inputs` object on the right endpoint gets `app_unavailable`, and a well-formed chat body on the wrong endpoint gets `not_chat_app`. The probing client needs **4 requests** to find the declared key name. With the server stopped, the same loop makes 5 failed attempts and reports *"check the application configuration and API key"* |
 
