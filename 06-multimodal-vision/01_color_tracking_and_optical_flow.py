@@ -610,17 +610,35 @@ def main():
     print("  kind of lighting change this measures: a change that scales all three channels")
     print("  equally. A light that changes colour moves the ratios, and hue with them.")
 
+    def panel(image, label):
+        """A mask or frame as a labelled BGR tile."""
+        tile = cv2.cvtColor(image.astype(np.uint8) * 255, cv2.COLOR_GRAY2BGR) if image.ndim == 2 else image.copy()
+        cv2.putText(tile, label, (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
+        return tile
+
+    cv2.imwrite(str(OUT_DIR / "colour_thresholds.png"), np.vstack([
+        np.hstack([panel(frames[t], f"frame {t}"), panel(bgr_box_mask(frames[t]), "BGR box"),
+                   panel(hsv_mask(frames[t]), "HSV"), panel(masks[t], "true mask")])
+        for t in (0, DIM_FROM)]))
+    print(f"  colour_thresholds.png: frame 0 and the first dimmed frame {DIM_FROM}, each as")
+    print("  frame, BGR box mask, HSV mask and true mask")
+
     # 3. Morphology
     print("\n--- 3. Erosion and dilation on the HSV mask ---")
     print(f"  {'frame':>5} {'stage':<16}{'components':>11}{'pixels':>8}{'IoU':>8}")
+    stage_rows = []
     for t in (0, FRAMES - 1):
         raw = hsv_mask(frames[t])
         eroded, opened, closed = clean(raw)
-        for name, stage in (("raw", raw), ("eroded", eroded), ("opened", opened),
-                            ("opened+closed", closed)):
+        stages = (("raw", raw), ("eroded", eroded), ("opened", opened), ("opened+closed", closed))
+        for name, stage in stages:
             print(f"  {t:>5} {name:<16}{component_count(stage):>11}{stage.sum():>8}"
                   f"{iou(stage, masks[t]):>8.3f}")
         print(f"  {t:>5} {'true mask':<16}{1:>11}{masks[t].sum():>8}{1.0:>8.3f}")
+        stage_rows.append(np.hstack([panel(stage, f"{name}, frame {t}") for name, stage in stages]
+                                    + [panel(masks[t], "true mask")]))
+    cv2.imwrite(str(OUT_DIR / "morphology_stages.png"), np.vstack(stage_rows))
+    print("  morphology_stages.png: the same stages and the true mask, one row per frame")
 
     # 4. Connected components
     print("\n--- 4. Connected components, labelled by hand ---")

@@ -78,11 +78,18 @@ is written against.)
 **The scope is exactly that one kind of change**: a light that dims scales all three
 channels together. A light that changes colour does not, and hue moves with it.
 
+`colour_thresholds.png` shows it directly: frame 0 and the first dimmed frame, each as
+the frame, the BGR box mask, the HSV mask and the true mask. On the dimmed row the BGR
+mask is empty and the HSV mask still holds the ellipse.
+
 ### Morphology and connected components
 
 The raw mask of the first frame holds **41 components** — the ellipse plus scattered
 specks. Erosion drops everything thinner than the 3x3 element, dilation restores the
 rim, and a closing fills the pinholes: **1 component, IoU 1.000 against the truth.**
+`morphology_stages.png` lays the four stages beside the true mask, one row for the
+first frame and one for the last, so the specks disappearing and the holes closing
+can be seen stage by stage.
 
 Two labelling algorithms are written out and reconciled with OpenCV:
 
