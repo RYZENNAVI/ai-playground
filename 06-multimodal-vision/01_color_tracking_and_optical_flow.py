@@ -569,6 +569,21 @@ def main():
     print(f"  frame {FRAMES - 1}: centre ({last_state[0]:.1f}, {last_state[1]:.1f}), semi-axes "
           f"{last_state[2]:.1f} x {last_state[3]:.1f}, angle {last_state[4]:.0f} deg, "
           f"{masks[-1].sum()} pixels")
+    # The whole clip as one video, plus the frames either side of the light change,
+    # rather than ninety separate images.
+    video = cv2.VideoWriter(str(OUT_DIR / "synthetic_tracking.mp4"), cv2.VideoWriter_fourcc(*"mp4v"),
+                            15, (WIDTH, HEIGHT))
+    if video.isOpened():
+        for frame in frames:
+            video.write(frame)
+        video.release()
+        print(f"  clip written to synthetic_tracking.mp4 at 15 fps")
+    else:
+        print("  this OpenCV build cannot write mp4, so only the key frames are saved")
+    key_frames = (0, DIM_FROM - 1, DIM_FROM, FRAMES - 1)
+    for t in key_frames:
+        cv2.imwrite(str(OUT_DIR / f"frame_{t:03d}.png"), frames[t])
+    print(f"  key frames {list(key_frames)} saved: first, last bright, first dimmed, last")
     sample_bgr = frames[0][masks[0]].mean(axis=0)
     sample_dim = frames[DIM_FROM][masks[DIM_FROM]].mean(axis=0)
     hsv_bright = cv2.cvtColor(np.uint8([[sample_bgr]]), cv2.COLOR_BGR2HSV)[0, 0]

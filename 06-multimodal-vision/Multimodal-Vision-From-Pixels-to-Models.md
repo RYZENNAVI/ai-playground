@@ -56,7 +56,10 @@ asked to point.
 
 A clip is rendered frame by frame — a coloured ellipse on a known path that grows,
 turns, and loses more than half its light halfway through — so every stage of the
-classical tracking pipeline can be scored against the mask that drew it.
+classical tracking pipeline can be scored against the mask that drew it. The run saves
+the clip as `synthetic_tracking.mp4` and four key frames — the first, the last bright
+one, the first dimmed one and the last — so the motion and the light change can be
+watched rather than taken on trust.
 
 ### Colour: which space survives the light
 
