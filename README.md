@@ -19,11 +19,9 @@ so switching vendors is a matter of changing `base_url`.
 | [05-fine-tuning](05-fine-tuning/) | Low-rank adaptation · supervised fine-tuning · reward-driven training · vision adapters |
 | [06-multimodal-vision](06-multimodal-vision/) | Vision-language auditing · grounding · keyframe sampling · convolution · detection metrics |
 | [07-ml-dl-foundation](07-ml-dl-foundation/) | Classical ML · gradient boosting · leakage & split discipline · ensembling · networks from scratch |
-| [08-time-series](08-time-series/) *(draft)* | Seasonal decomposition · stationarity · ARIMA / Prophet · periodic factors · rolling-origin backtesting |
-| [09-lowcode-platforms](09-lowcode-platforms/) *(draft)* | Workflow engines from a declarative graph · node & plugin contracts · table knowledge bases · platform API protocol |
-| [10-projects](10-projects/) *(draft)* | Join grain & aggregation · reported columns and bands · tool return shapes · label leakage · sample units · retrieval backends · citation checks |
-
-Modules marked *(draft)* are still being revised.
+| [08-time-series](08-time-series/) | Seasonal decomposition · stationarity · ARIMA / Prophet · periodic factors · rolling-origin backtesting |
+| [09-lowcode-platforms](09-lowcode-platforms/) | Workflow engines from a declarative graph · node & plugin contracts · table knowledge bases · platform API protocol |
+| [10-projects](10-projects/) | Join grain & aggregation · reported columns and bands · tool return shapes · label leakage · sample units · retrieval backends · citation checks |
 
 ---
 
