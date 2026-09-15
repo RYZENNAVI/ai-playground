@@ -58,7 +58,7 @@ def train_logistic(seeds, epochs=XOR_EPOCHS, learning_rate=XOR_LEARNING_RATE):
         w -= learning_rate * np.einsum("nd,snk->sdk", XOR_X, delta)
         b -= learning_rate * delta.sum(axis=1, keepdims=True)
     out = sigmoid(np.einsum("nd,sdk->snk", XOR_X, w) + b)
-    return ((out > 0.5) == XOR_Y).mean(axis=(1, 2))
+    return ((out > 0.5) == XOR_Y).mean(axis=(1, 2)), w, b
 
 
 def init_xor(seeds, hidden, scale, rng):
@@ -203,6 +203,7 @@ def train_mlp(x_train, y_train, x_test, y_test, rng):
          "w2": rng.normal(0, np.sqrt(2 / MLP_HIDDEN), (MLP_HIDDEN, 10)).astype(np.float32),
          "b2": np.zeros(10, np.float32)}
     eye = np.eye(10, dtype=np.float32)
+    history = []
     print(f"  {'epoch':>5}{'train loss':>12}{'train acc':>11}{'test acc':>10}{'time':>8}")
     for epoch in range(1, MLP_EPOCHS + 1):
         started = time.perf_counter()
@@ -217,10 +218,11 @@ def train_mlp(x_train, y_train, x_test, y_test, rng):
                 p[name] -= MLP_LEARNING_RATE * grad
         train_logits = mlp_forward(p, x_train)[2]
         test_logits = mlp_forward(p, x_test)[2]
-        print(f"  {epoch:>5}{cross_entropy(train_logits, eye[y_train]):>12.4f}"
-              f"{(train_logits.argmax(1) == y_train).mean():>11.2%}{(test_logits.argmax(1) == y_test).mean():>10.2%}"
+        history.append((cross_entropy(train_logits, eye[y_train]), (train_logits.argmax(1) == y_train).mean(),
+                        (test_logits.argmax(1) == y_test).mean()))
+        print(f"  {epoch:>5}{history[-1][0]:>12.4f}{history[-1][1]:>11.2%}{history[-1][2]:>10.2%}"
               f"{time.perf_counter() - started:>7.1f}s")
-    return p
+    return p, history
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +309,7 @@ def main():
 
     # 1. XOR is not linearly separable
     print("--- 1. XOR, a straight line, and a network at random weights ---")
-    linear_accuracy = train_logistic(XOR_SEEDS)
+    linear_accuracy, logistic_w, logistic_b = train_logistic(XOR_SEEDS)
     print(f"  one sigmoid unit, {XOR_SEEDS} seeds, {XOR_EPOCHS} epochs: best accuracy {linear_accuracy.max():.0%}, "
           f"worst {linear_accuracy.min():.0%}")
     print("  A single unit outputs sigmoid(w1 x1 + w2 x2 + b), which is above 0.5 on one side")
@@ -329,7 +331,7 @@ def main():
     curves = {}
     for hidden in (2, 4, 8):
         for scale in (0.1, 1.0):
-            solved_at, history, _ = train_xor(XOR_SEEDS, hidden, scale)
+            solved_at, history, trained = train_xor(XOR_SEEDS, hidden, scale)
             done = solved_at[solved_at >= 0]
             median = f"{int(np.median(done))}" if len(done) else "-"
             print(f"  {hidden:>6}{scale:>9.1f}{len(done) / XOR_SEEDS:>9.0%}{median:>24}")
@@ -337,6 +339,7 @@ def main():
                 curves = {"solved": history[:, np.flatnonzero(solved_at >= 0)[:3]],
                           "unsolved": history[:, np.flatnonzero(solved_at < 0)[:3]]}
                 stuck = history[-1, solved_at < 0]
+                two_unit = (solved_at, trained)
     print("  Two hidden units are the fewest that can represent XOR, and some starting points")
     print("  lead gradient descent to a flat region where both units compute nearly the same")
     print(f"  thing; those runs end with a loss of about {np.median(stuck):.3f}. Extra units give")
@@ -356,6 +359,40 @@ def main():
     plt.tight_layout()
     plt.savefig(OUT_DIR / "xor_loss.png", dpi=120)
     plt.close()
+
+    grid_x, grid_y = np.meshgrid(np.linspace(-0.5, 1.5, 201), np.linspace(-0.5, 1.5, 201))
+    grid = np.stack([grid_x.ravel(), grid_y.ravel()], 1)
+    unit_output = lambda w, b: sigmoid(grid @ w + b).reshape(grid_x.shape)
+
+    def network_output(params, seed):
+        """The two-layer network's output over the plane, for one seed."""
+        a1 = sigmoid(grid @ params["w1"][seed] + params["b1"][seed])
+        return sigmoid(a1 @ params["w2"][seed] + params["b2"][seed]).reshape(grid_x.shape)
+
+    solved_at, trained = two_unit
+    xor_accuracy = ((xor_forward(trained)[1] > 0.5) == XOR_Y).mean(axis=(1, 2))
+    good, bad = int(np.flatnonzero(solved_at >= 0)[0]), int(np.flatnonzero(solved_at < 0)[0])
+    best_linear = int(np.argmax(linear_accuracy))
+    panels = [(f"one unit, best of {XOR_SEEDS} seeds: {linear_accuracy[best_linear]:.0%}",
+               unit_output(logistic_w[best_linear], logistic_b[best_linear])),
+              (f"random weights: output {network_output(p, 0).min():.2f}-{network_output(p, 0).max():.2f} everywhere",
+               network_output(p, 0)),
+              (f"two hidden units, trained: {xor_accuracy[good]:.0%}", network_output(trained, good)),
+              (f"two hidden units, stuck: {xor_accuracy[bad]:.0%}", network_output(trained, bad))]
+    fig, axes = plt.subplots(1, 4, figsize=(15, 4))
+    for ax, (title, surface) in zip(axes, panels):
+        ax.contourf(grid_x, grid_y, surface, levels=np.linspace(0, 1, 11), cmap="RdBu_r")
+        ax.contour(grid_x, grid_y, surface, levels=[0.5], colors="k", linewidths=1.5)
+        ax.scatter(XOR_X[:, 0], XOR_X[:, 1], c=["tab:blue" if t == 0 else "tab:red" for t in XOR_Y[:, 0]],
+                   s=120, edgecolors="k", zorder=3)
+        ax.set_title(title, fontsize=10)
+        ax.set_aspect("equal")
+    fig.suptitle("output over the input plane (red high, blue low), black line at 0.5; red points want 1, blue 0")
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "xor_boundaries.png", dpi=110)
+    plt.close(fig)
+    print("  xor_boundaries.png: the best single unit, the network at random weights, a trained seed")
+    print("  that solves XOR and one that gets stuck; xor_loss.png: loss curves of three of each")
 
     # 3. Softmax and cross-entropy
     print("\n--- 3. Softmax cross-entropy: the gradient and the overflow ---")
@@ -379,6 +416,26 @@ def main():
           f"after subtracting the maximum {np.round(softmax(big)[0], 4).tolist()}")
     print("  exp(1000) overflows a double. Subtracting any constant from every logit leaves the")
     print("  ratios unchanged, and subtracting the largest keeps every exponent at or below zero.")
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    classes = np.arange(10)
+    axes[0].bar(classes - 0.2, analytic[0], 0.4, label="(softmax - one-hot) / N")
+    axes[0].bar(classes + 0.2, numeric[0], 0.4, label="central difference")
+    axes[0].axhline(0, color="k", linewidth=0.8)
+    axes[0].set_xticks(classes)
+    axes[0].set_xlabel(f"class (true class {int(y[0].argmax())})")
+    axes[0].set_title(f"gradient for the first sample; largest gap over all {z.size} entries "
+                      f"{np.abs(analytic - numeric).max():.1e}", fontsize=10)
+    axes[0].legend(fontsize=9)
+    axes[1].bar(["1000", "1001", "1002"], softmax(big)[0], color="tab:green")
+    for i, value in enumerate(softmax(big)[0]):
+        axes[1].text(i, value + 0.01, f"{value:.4f}", ha="center")
+    axes[1].set_title("logits 1000, 1001, 1002: as written every probability is nan;\n"
+                      "after subtracting the largest logit", fontsize=10)
+    axes[1].set_ylim(0, 0.8)
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "softmax_gradient.png", dpi=110)
+    plt.close(fig)
+    print("  softmax_gradient.png: the two gradients side by side, and the stable softmax of large logits")
 
     # 4. Numpy MLP on digits
     print("\n--- 4. A 784-256-10 network in numpy ---")
@@ -390,14 +447,22 @@ def main():
         test_images, test_labels = synthetic_digits(SYNTHETIC_TEST, rng)
         source = (f"rendered digits: {len(train_images)} training and {len(test_images)} test images "
                   f"(pass --mnist-root to use MNIST)")
-    cv2.imwrite(str(OUT_DIR / "digits.png"), np.hstack(list(train_images[:20])))
+    fig, axes = plt.subplots(2, 10, figsize=(12, 3.8))
+    for ax, image, label in zip(axes.ravel(), train_images[:20], train_labels[:20]):
+        ax.imshow(image, cmap="gray", vmin=0, vmax=255)
+        ax.set_title(f"label {int(label)}", fontsize=9)
+        ax.axis("off")
+    fig.suptitle("the first 20 training images: " + ("MNIST" if args.mnist_root else "rendered digits"))
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "digits.png", dpi=110)
+    plt.close(fig)
     mean, std = train_images.mean() / 255, train_images.std() / 255
     x_train = ((train_images.reshape(len(train_images), -1) / 255 - mean) / std).astype(np.float32)
     x_test = ((test_images.reshape(len(test_images), -1) / 255 - mean) / std).astype(np.float32)
     y_train, y_test = train_labels.astype(np.int64), test_labels.astype(np.int64)
     print(f"  {source}; pixels standardised with the training mean {mean:.4f} and sd {std:.4f}")
     print(f"  He initialisation, batch {MLP_BATCH}, learning rate {MLP_LEARNING_RATE}")
-    mlp = train_mlp(x_train, y_train, x_test, y_test, rng)
+    mlp, mlp_history = train_mlp(x_train, y_train, x_test, y_test, rng)
     parameters = 784 * MLP_HIDDEN + MLP_HIDDEN + MLP_HIDDEN * 10 + 10
     test_error = 1 - (mlp_forward(mlp, x_test)[2].argmax(1) == y_test).mean()
     print(f"  {parameters} parameters, all updated from the gradient written out above; "
@@ -445,6 +510,7 @@ def main():
     generator = torch.Generator(device="cpu").manual_seed(SEED)
     print(f"  Adam, learning rate {CNN_LEARNING_RATE}, batch {CNN_BATCH}, dropout {DROPOUT}, on {device}")
     print(f"  {'epoch':>5}{'running loss':>14}{'running acc':>13}{'test acc':>10}{'time':>8}")
+    cnn_history = []
     for epoch in range(1, CNN_EPOCHS + 1):
         started = time.perf_counter()
         model.train()
@@ -460,13 +526,69 @@ def main():
             total_loss += loss.item() * len(idx)
             correct += (logits.argmax(1) == yt[idx]).sum().item()
         model.eval()
-        print(f"  {epoch:>5}{total_loss / len(xt):>14.4f}{correct / len(xt):>13.2%}"
-              f"{evaluate(model, xv, yv):>10.2%}{time.perf_counter() - started:>7.1f}s")
+        cnn_history.append((total_loss / len(xt), correct / len(xt), evaluate(model, xv, yv)))
+        print(f"  {epoch:>5}{cnn_history[-1][0]:>14.4f}{cnn_history[-1][1]:>13.2%}"
+              f"{cnn_history[-1][2]:>10.2%}{time.perf_counter() - started:>7.1f}s")
     print("  The running figures are averaged over the epoch while the weights are still moving,")
     print("  in training mode; the test figure is measured once, at the end, in evaluation mode.")
     print("  Test accuracy is printed every epoch in both networks only to show the curve: no")
     print("  epoch, setting or stopping point is chosen from it. A project that tunes anything")
     print("  would watch a validation split carved from the training data and test once.")
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+    for history, name, colour in ((mlp_history, "numpy MLP", "tab:orange"), (cnn_history, "CNN", "tab:blue")):
+        epochs = np.arange(1, len(history) + 1)
+        axes[0].plot(epochs, [h[0] for h in history], "o-", color=colour, label=name)
+        axes[1].plot(epochs, [100 * h[2] for h in history], "o-", color=colour, label=name)
+    axes[0].set_title("training loss (MLP: whole set after the epoch; CNN: running mean)", fontsize=10)
+    axes[1].set_title("test accuracy after each epoch, %", fontsize=10)
+    for ax in axes:
+        ax.set_xlabel("epoch")
+        ax.set_xticks(np.arange(1, max(MLP_EPOCHS, CNN_EPOCHS) + 1))
+        ax.legend()
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "training_curves.png", dpi=110)
+    plt.close(fig)
+
+    mlp_predicted = mlp_forward(mlp, x_test)[2].argmax(1)
+    cnn_predicted = predictions(model, xv).cpu().numpy()
+    fig, axes = plt.subplots(2, 10, figsize=(12, 3.2))
+    for row, (name, predicted) in enumerate((("MLP", mlp_predicted), ("CNN", cnn_predicted))):
+        wrong = np.flatnonzero(predicted != y_test)
+        for column, ax in enumerate(axes[row]):
+            ax.axis("off")
+            if column < len(wrong):
+                i = wrong[column]
+                ax.imshow(test_images[i], cmap="gray", vmin=0, vmax=255)
+                ax.set_title(f"{name}: {y_test[i]} as {predicted[i]}", fontsize=8)
+    fig.suptitle(f"first wrong test images, true class as predicted class "
+                 f"(MLP {int((mlp_predicted != y_test).sum())} wrong, CNN {int((cnn_predicted != y_test).sum())} "
+                 f"wrong of {len(y_test)})")
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "misclassified.png", dpi=110)
+    plt.close(fig)
+
+    sample_image = xv[:1]
+    stages = [("input", sample_image)]
+    with torch.no_grad():
+        for name, end in (("after block 1", 4), ("after block 2", 8), ("after block 3", 11)):
+            stages.append((name, model.features[:end](sample_image)))
+    fig, axes = plt.subplots(len(stages), 8, figsize=(12, 6.5))
+    for row, (name, maps) in enumerate(stages):
+        maps = maps[0].cpu().numpy()
+        for column, ax in enumerate(axes[row]):
+            ax.axis("off")
+            if column < len(maps):
+                ax.imshow(maps[column], cmap="gray" if row == 0 else "viridis")
+                if column == 0:
+                    ax.set_title(f"{name} {tuple(maps.shape)}", fontsize=9, loc="left")
+    fig.suptitle(f"one test image (label {int(y_test[0])}) and the first 8 channels after each convolution block")
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "cnn_feature_maps.png", dpi=110)
+    plt.close(fig)
+    print("  training_curves.png: loss and test accuracy per epoch for both networks;")
+    print("  misclassified.png: the first wrong test images of each; cnn_feature_maps.png: one image")
+    print("  through the three convolution blocks, 28 -> 14 -> 7 -> 4 pixels per side")
 
     # 7. Modes
     print("\n--- 7. Training mode against evaluation mode, on the trained network ---")
@@ -530,9 +652,38 @@ def main():
 
     print("  one image at a time, first 1000 test images, each layer type set separately:")
     print(f"  {'BatchNorm':<11}{'Dropout':<11}{'accuracy':>9}")
+    single_results = []
     for bn_mode, dropout_mode in ((True, True), (True, False), (False, True), (False, False)):
+        single_results.append((bn_mode, dropout_mode, one_at_a_time(bn_mode, dropout_mode)))
         print(f"  {'training' if bn_mode else 'evaluation':<11}{'training' if dropout_mode else 'evaluation':<11}"
-              f"{one_at_a_time(bn_mode, dropout_mode):>9.2%}")
+              f"{single_results[-1][2]:>9.2%}")
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
+    image = axes[0].imshow(dropped[:400].reshape(20, 20).cpu().numpy(), cmap="magma", vmin=0)
+    fig.colorbar(image, ax=axes[0], fraction=0.046)
+    axes[0].set_title(f"dropout p={DROPOUT} on 400 ones: {(dropped[:400] == 0).float().mean().item():.0%} zero,\n"
+                      f"the rest {1 / (1 - DROPOUT):.3f}", fontsize=10)
+    axes[0].axis("off")
+    axes[1].scatter(bn.running_mean.cpu().numpy(), mu.cpu().numpy(), color="tab:purple")
+    low, high = float(min(bn.running_mean.min(), mu.min())), float(max(bn.running_mean.max(), mu.max()))
+    axes[1].plot([low, high], [low, high], "k--", linewidth=1)
+    axes[1].set_xlabel("running mean (used in evaluation mode)")
+    axes[1].set_ylabel("mean of one training batch")
+    axes[1].set_title("first BatchNorm, one point per channel", fontsize=10)
+    names = [f"BN {'train' if b else 'eval'}\nDropout {'train' if d else 'eval'}" for b, d, _ in single_results]
+    values = [100 * acc for _, _, acc in single_results]
+    axes[2].bar(names, values, color=["tab:red", "tab:orange", "tab:olive", "tab:green"])
+    for i, value in enumerate(values):
+        axes[2].text(i, value + 0.3, f"{value:.1f}%", ha="center")
+    axes[2].set_ylim(min(values) - 5, 100)
+    axes[2].set_title("test images fed one at a time, first 1000", fontsize=10)
+    fig.suptitle(f"same weights in both modes: {(eval_pred != train_pred).sum().item()} of {len(xv)} test "
+                 f"predictions change")
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "mode_effects.png", dpi=110)
+    plt.close(fig)
+    print("  mode_effects.png: a dropout mask, batch against running means, and the four single-image")
+    print("  mode combinations")
     print("  With one image, BatchNorm normalises each channel by that image's own spatial mean")
     print("  and variance, erasing how bright a feature map is overall, which is part of the")
     print("  evidence; running statistics collected over training carry that information instead.")

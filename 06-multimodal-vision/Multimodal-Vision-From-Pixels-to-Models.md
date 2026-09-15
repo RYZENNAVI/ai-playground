@@ -463,6 +463,19 @@ evidence; the running statistics carry it instead.
 network still drops activations and still updates BatchNorm's running statistics,
 which is why the probes run on copies of the trained model.
 
+### What the images show
+
+| Image | Panels |
+| :--- | :--- |
+| `xor_boundaries.png` | output over the input plane with the 0.5 line: the best single unit, the two-unit network at random weights, a trained seed that solves XOR, a trained seed that gets stuck |
+| `xor_loss.png` | loss curves of three solved and three stuck two-unit seeds |
+| `softmax_gradient.png` | the analytic and numerical gradient side by side, and the stable softmax of logits 1000, 1001, 1002 |
+| `digits.png` | the first 20 training images with their labels |
+| `training_curves.png` | loss and test accuracy per epoch for the numpy MLP and the CNN |
+| `misclassified.png` | the first wrong test images of each network, true class against prediction |
+| `cnn_feature_maps.png` | one test image and eight channels after each of the three convolution blocks |
+| `mode_effects.png` | a dropout mask on a vector of ones, batch against running means of the first BatchNorm, and the four single-image mode combinations |
+
 ---
 
 ## 5. Grid detection and pose assembly
