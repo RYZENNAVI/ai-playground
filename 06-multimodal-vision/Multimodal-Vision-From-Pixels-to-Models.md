@@ -62,14 +62,18 @@ classical tracking pipeline can be scored against the mask that drew it.
 
 | Rule | IoU, bright frames | IoU, dimmed frames |
 | :--- | ---: | ---: |
-| Box in the RGB cube | 0.972 | **0.000** |
+| Box in the BGR cube | 0.972 | **0.000** |
 | Hue and saturation in HSV | 0.972 | **0.984** |
 
 Dimming multiplies B, G and R by one factor. Hue and saturation are functions of the
-ratios between the channels, which that factor leaves alone; the RGB box tests
-absolute levels, so the object walks out of it. The object's mean colour goes from
+ratios between the channels, which that factor leaves alone; the box tests absolute
+levels, so the object walks out of it. The object's mean colour goes from
 `BGR [165 91 26] HSV [106 216 165]` to `BGR [74 41 11] HSV [106 217 73]`: **only V
-moved.**
+moved.** (OpenCV holds the channels as B, G, R in that order, which is what the box
+is written against.)
+
+**The scope is exactly that one kind of change**: a light that dims scales all three
+channels together. A light that changes colour does not, and hue moves with it.
 
 ### Morphology and connected components
 
@@ -110,6 +114,13 @@ The object grows from 1297 to 4037 pixels. A window fixed at the first frame's s
 still finds the densest part, but sees less of it every frame; CAMSHIFT reads the
 size and orientation out of the second moments and follows. The hand-written mean
 shift picks **the same window as `cv2.meanShift` in 90 of 90 frames.**
+
+Two things bound what this table says. **Both trackers start from a box taken off the
+first frame's true mask**, so these are the errors of keeping hold of an object, not
+of finding one — the step above does the finding, from scratch, every frame. And the
+comparison is between a window that cannot resize and one that can, on a clip where
+the object doubles in size: with an object of fixed size and orientation, the fixed
+window is the simpler rule and there is nothing to gain.
 
 ### Corners and motion
 
