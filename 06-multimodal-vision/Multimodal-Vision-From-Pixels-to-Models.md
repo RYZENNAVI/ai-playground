@@ -502,7 +502,7 @@ are reported below.
 
 ### Three networks
 
-| Model | Parameters | Receptive field, approx. | Time | Pixel accuracy | Mean IoU |
+| Model | Parameters | Approx. receptive field (convolutions only) | Time | Pixel accuracy | Mean IoU |
 | :--- | ---: | ---: | ---: | ---: | ---: |
 | UNet with skips | 1 085 837 | 89 px | 22 s | **99.71%** | **0.964** |
 | UNet without skips | 1 525 235 | 89 px | 27 s | 98.02% | 0.769 |
@@ -591,8 +591,9 @@ photographs is short of what either tokeniser needs.
 
 ### One linear layer on every frozen representation
 
-Four encoders are trained on the same 12 000 images, three of them without ever
-seeing a label, and each is then frozen and probed with a single linear layer. The
+Five encoder configurations are trained on the same 12 000 images, four of them
+without ever seeing a label, and each is then frozen and probed with a single linear
+layer. The
 probe itself is trained on the labels; "labels used" refers to the encoder:
 
 | Representation | Labels used | Training | Probe accuracy |
@@ -617,7 +618,9 @@ same image. The run does not test that explanation directly.
 
 **The projection head is discarded after training, and in this setup it substantially
 improves the features underneath it.** This is the best-controlled comparison here: the
-two contrastive runs share the body and differ only in the head. The loss pulls the
+two contrastive runs share the body architecture and every training setting, and the
+head is their one design difference. Each still starts from its own random weights,
+augmentations and batch order, so it is not a strict single-variable ablation. The loss pulls the
 head's output onto a sphere and throws away whatever it does not need there; the body
 is one layer removed from that pressure, and probing it is worth 21 points — from one
 seed, one head design, one temperature and one training budget.
@@ -639,7 +642,7 @@ these are comparisons between the methods, not CIFAR-10 test-set accuracies:
 
 Photographs are harder than rendered shapes and the gap to the supervised reference
 widens (a reference for this run, not an upper bound any label-free method must stay
-under), but **the ordering of the three objectives does not change**, and neither does
+under), but **the ordering of the three label-free configurations does not change**, and neither does
 the cost of dropping the projection head.
 
 ---
