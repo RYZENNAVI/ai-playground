@@ -203,13 +203,13 @@ See [Fine-Tuning-Low-Rank-Adaptation.md](05-fine-tuning/Fine-Tuning-Low-Rank-Ada
 
 | # | Script | Feature |
 |---|--------|---------|
-| 01 | `01_vlm_field_extraction_audit.py` | Forms rendered with five traps, scored field by field on a clean page and a photograph of it |
-| 02 | `02_vlm_grounding_and_failure_modes.py` | A returned box scored under every coordinate convention, plus repetition and image-in-history checks |
-| 03 | `03_video_keyframe_understanding.py` | A synthesised clip read by keyframe sampling, with the localisation error the stride buys |
-| 04 | `04_document_layout_audit.py` | A PDF built from a known structure, parsed back, and its headings reconciled |
-| 05 | `05_conv_kernels_and_feature_maps.py` | One kernel checked against nn.Conv2d by hand, then convolution, activation and pooling |
-| 06 | `06_cnn_input_resolution_mismatch.py` | A 224-shaped stem on a 32x32 input — what the mismatch costs, and what it does not |
-| 07 | `07_yolo_split_audit_and_submission.py` | A detection split audited before training, and two submission edits that move no box |
+| 08 | `08_vlm_field_extraction_audit.py` | Forms rendered with five traps, scored field by field on a clean page and a photograph of it |
+| 09 | `09_vlm_grounding_and_failure_modes.py` | A returned box scored under every coordinate convention, plus repetition and image-in-history checks |
+| 10 | `10_video_keyframe_understanding.py` | A synthesised clip read by keyframe sampling, with the localisation error the stride buys |
+| 11 | `11_document_layout_audit.py` | A PDF built from a known structure, parsed back, and its headings reconciled |
+| 12 | `12_conv_kernels_and_feature_maps.py` | One kernel checked against nn.Conv2d by hand, then convolution, activation and pooling |
+| 13 | `13_cnn_input_resolution_mismatch.py` | A 224-shaped stem on a 32x32 input — what the mismatch costs, and what it does not |
+| 14 | `14_yolo_split_audit_and_submission.py` | A detection split audited before training, and two submission edits that move no box |
 
 See [Multimodal-Vision-Calling-Models-and-Training-Them.md](06-multimodal-vision/Multimodal-Vision-Calling-Models-and-Training-Them.md) for the concepts behind these scripts.
 

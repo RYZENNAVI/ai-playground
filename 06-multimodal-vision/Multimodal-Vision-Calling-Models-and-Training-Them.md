@@ -37,15 +37,15 @@ inside it.
 | Anything that must return coordinates | A detector, or a model that emits boxes | A chat endpoint often describes instead of pointing |
 
 Two of these are load-bearing for the scripts below and are demonstrated rather than
-asserted: the third row of the failure taxonomy in script 01 is a character-level
-misread, which is the OCR boundary; and script 02 measures what a model returns when
+asserted: the third row of the failure taxonomy in script 08 is a character-level
+misread, which is the OCR boundary; and script 09 measures what a model returns when
 asked to point.
 
 ---
 
-## 1. Field-level extraction audit
+## 8. Field-level extraction audit
 
-`01_vlm_field_extraction_audit.py`
+`08_vlm_field_extraction_audit.py`
 
 A model that returns valid JSON with every requested key has demonstrated nothing.
 This script renders claim forms whose every value it chose itself, asks for those
@@ -165,9 +165,9 @@ the other direction — a rule that says when *not* to use it.
 
 ---
 
-## 2. Grounding and failure modes
+## 9. Grounding and failure modes
 
-`02_vlm_grounding_and_failure_modes.py`
+`09_vlm_grounding_and_failure_modes.py`
 
 Three known weaknesses, each put on a scale instead of described.
 
@@ -257,9 +257,9 @@ next answer comes back in the same confident shape as the ones that could see:
 
 ---
 
-## 3. Video by keyframe sampling
+## 10. Video by keyframe sampling
 
-`03_video_keyframe_understanding.py`
+`10_video_keyframe_understanding.py`
 
 An image model can stand in for a video model by sampling frames and stitching the
 answers together. This script builds that stand-in and measures exactly what the
@@ -340,9 +340,9 @@ nothing about order or duration.**
 
 ---
 
-## 4. Document layout audit
+## 11. Document layout audit
 
-`04_document_layout_audit.py`
+`11_document_layout_audit.py`
 
 Parsing a PDF into blocks is easy. Knowing whether the *structure* survived is the
 part that needs checking, and the check needs a document whose structure was known
@@ -425,9 +425,9 @@ count cannot see. **That one needs its own check.**
 
 ---
 
-## 5. Convolution from first principles
+## 12. Convolution from first principles
 
-`05_conv_kernels_and_feature_maps.py`
+`12_conv_kernels_and_feature_maps.py`
 
 No API, no training. What a convolution kernel computes, one window at a time,
 verified against the framework.
@@ -540,9 +540,9 @@ quietly picking the row that agrees.
 
 ---
 
-## 6. Input resolution and network design
+## 13. Input resolution and network design
 
-`06_cnn_input_resolution_mismatch.py`
+`13_cnn_input_resolution_mismatch.py`
 
 A network designed for 224×224 inputs, handed a 32×32 one. **This script exists to
 settle a common claim by measurement, and the measurement does not support it.**
@@ -624,9 +624,9 @@ out the other end.**
 
 ---
 
-## 7. Detection: auditing a split, and pricing a submission
+## 14. Detection: auditing a split, and pricing a submission
 
-`07_yolo_split_audit_and_submission.py`
+`14_yolo_split_audit_and_submission.py`
 
 Where a detection number comes from, and how little of it is the model.
 
@@ -730,12 +730,12 @@ column with a constant that looked harmless.
 
 ## What the seven runs settle
 
-1. **A reply that parses is not a result.** Script 01 scored 83% on clean renders and
+1. **A reply that parses is not a result.** Script 08 scored 83% on clean renders and
    83% on photographs of the same pages — the same JSON shape in both, the same
    headline number, and a different field failing in each.
 2. **Name the kind of mistake, not just the count.** Each of the four kinds in script
-   01 has a different fix; a single accuracy number points at none of them.
-3. **Coordinates come with an unstated convention.** Script 02 read the same four
+   08 has a different fix; a single accuracy number points at none of them.
+3. **Coordinates come with an unstated convention.** Script 09 read the same four
    numbers six ways, scoring 0.304 under one and 0.000 under the rest.
 4. **The unit a check counts must be the unit the failure repeats.** A word-level
    repetition test called a correct answer degenerate because four airline names
@@ -745,13 +745,13 @@ column with a constant that looked harmless.
 6. **Sampling buys a bound, not an estimate.** An event shorter than the stride is not
    hard to see; it is not sampled.
 7. **Count the structure you recovered against the structure you know is there.**
-   Script 04 recovered 3 of 6 headings while reporting 19 heading lines.
-8. **A kernel scores contrast, not alignment.** Script 05's strongest response was on
+   Script 11 recovered 3 of 6 headings while reporting 19 heading lines.
+8. **A kernel scores contrast, not alignment.** Script 12's strongest response was on
    a brighter diagonal, not on the axis-aligned edge it was built for.
-9. **Measure the cost, not the intuition.** Script 06 set out to show a resolution
+9. **Measure the cost, not the intuition.** Script 13 set out to show a resolution
    mismatch hiding fine detail and found it did not — the cost is 858× the parameters
    and a 1×1 output, not accuracy.
-10. **A metric is computed over a list.** Script 07 moved a submission from 0.836 to
+10. **A metric is computed over a list.** Script 14 moved a submission from 0.836 to
     0.117 by rewriting one column and no coordinates.
 
 The thread through all ten: **every one of these was found by comparing an output
@@ -764,16 +764,16 @@ output and finding it plausible.
 
 ```bash
 pip install -r ../requirements.txt
-python 05_conv_kernels_and_feature_maps.py      # no key, no network
-python 04_document_layout_audit.py              # no key, no network
-python 06_cnn_input_resolution_mismatch.py      # no key, GPU optional
-python 07_yolo_split_audit_and_submission.py    # no key, GPU optional
-python 01_vlm_field_extraction_audit.py         # needs a vision model key
-python 02_vlm_grounding_and_failure_modes.py    # needs a vision model key
-python 03_video_keyframe_understanding.py       # needs a vision model key
+python 12_conv_kernels_and_feature_maps.py      # no key, no network
+python 11_document_layout_audit.py              # no key, no network
+python 13_cnn_input_resolution_mismatch.py      # no key, GPU optional
+python 14_yolo_split_audit_and_submission.py    # no key, GPU optional
+python 08_vlm_field_extraction_audit.py         # needs a vision model key
+python 09_vlm_grounding_and_failure_modes.py    # needs a vision model key
+python 10_video_keyframe_understanding.py       # needs a vision model key
 ```
 
-Scripts 01–03 read `GEMINI_API_KEY` or `OPENAI_API_KEY` from `.env` and default to a
+Scripts 08–10 read `GEMINI_API_KEY` or `OPENAI_API_KEY` from `.env` and default to a
 small vision model, overridable with `VISION_MODEL`. They send batches of images, so
 each one paces itself and retries on a rate limit rather than failing part way
 through.
