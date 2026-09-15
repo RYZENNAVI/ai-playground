@@ -187,18 +187,43 @@ def receptive_field(halvings, blocks_per_level=2, kernel=3):
 # 4-6. Training and scoring
 # ---------------------------------------------------------------------------
 
+def score_model(model, x_test, y_test, classes, device, ignore=None, with_boundary=True):
+    """Confusion matrices over the test set, overall and within the boundary band."""
+    import torch
+
+    model.eval()
+    matrix = np.zeros((classes, classes), np.int64)
+    boundary = np.zeros((classes, classes), np.int64)
+    with torch.no_grad():
+        for start in range(0, len(x_test), 100):
+            predicted = model(x_test[start:start + 100].to(device)).argmax(1).cpu().numpy()
+            truth = y_test[start:start + 100].numpy()
+            matrix += confusion(predicted, truth, classes, ignore)
+            if with_boundary:
+                band = np.stack([boundary_band(t.astype(np.uint8)) for t in truth])
+                near = np.where(band, truth, ignore if ignore is not None else -1)
+                boundary += confusion(predicted, near, classes, ignore if ignore is not None else -1)
+    return matrix, boundary
+
+
 def train_model(model, data, classes, epochs, device, ignore=None):
-    """Train one model with Adam and cross-entropy, returning its confusion matrices."""
+    """Train one model with Adam and cross-entropy, returning its confusion matrices and history.
+
+    After every epoch the model is scored on the test set for the training curve.
+    Scoring changes no weights and draws no random numbers, and its time is kept out
+    of the reported training time.
+    """
     import torch
     import torch.nn.functional as F
 
     x_train, y_train, x_test, y_test = data
     optimiser = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
     generator = torch.Generator().manual_seed(SEED)
-    started = time.perf_counter()
+    started, scoring, history = time.perf_counter(), 0.0, []
     for _ in range(epochs):
         model.train()
         order = torch.randperm(len(x_train), generator=generator)
+        total, seen = 0.0, 0
         for start in range(0, len(order), BATCH):
             idx = order[start:start + BATCH]
             images, labels = x_train[idx].to(device), y_train[idx].to(device)
@@ -210,18 +235,14 @@ def train_model(model, data, classes, epochs, device, ignore=None):
             optimiser.zero_grad()
             loss.backward()
             optimiser.step()
-    model.eval()
-    matrix = np.zeros((classes, classes), np.int64)
-    boundary = np.zeros((classes, classes), np.int64)
-    with torch.no_grad():
-        for start in range(0, len(x_test), 100):
-            predicted = model(x_test[start:start + 100].to(device)).argmax(1).cpu().numpy()
-            truth = y_test[start:start + 100].numpy()
-            matrix += confusion(predicted, truth, classes, ignore)
-            band = np.stack([boundary_band(t.astype(np.uint8)) for t in truth])
-            near = np.where(band, truth, ignore if ignore is not None else -1)
-            boundary += confusion(predicted, near, classes, ignore if ignore is not None else -1)
-    return matrix, boundary, time.perf_counter() - started
+            total, seen = total + loss.item() * len(idx), seen + len(idx)
+        scoring_started = time.perf_counter()
+        epoch_matrix, _ = score_model(model, x_test, y_test, classes, device, ignore, with_boundary=False)
+        history.append((total / seen, metrics(epoch_matrix)[1]))
+        scoring += time.perf_counter() - scoring_started
+    elapsed = time.perf_counter() - started - scoring
+    matrix, boundary = score_model(model, x_test, y_test, classes, device, ignore)
+    return matrix, boundary, elapsed, history
 
 
 def report(name, matrix, elapsed, parameters):
@@ -264,6 +285,32 @@ def palette_image(labels, classes):
     return out
 
 
+def labelled(image, text):
+    """A BGR uint8 image with its label on a black strip in the top-left corner."""
+    image = image.copy()
+    (text_w, text_h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+    cv2.rectangle(image, (2, 2), (10 + text_w, 10 + text_h), (0, 0, 0), -1)
+    cv2.putText(image, text, (6, 6 + text_h), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1, cv2.LINE_AA)
+    return image
+
+
+def enlarge(image, scale):
+    """Nearest-neighbour enlargement, so label maps keep hard edges."""
+    return cv2.resize(image, (image.shape[1] * scale, image.shape[0] * scale), interpolation=cv2.INTER_NEAREST)
+
+
+def tile_rows(rows):
+    """Rows of equal-sized tiles, with grey dividers between tiles and between rows."""
+    stacked = []
+    for row in rows:
+        cells = []
+        for cell in row:
+            cells += [cell, np.full((cell.shape[0], 4, 3), 128, np.uint8)]
+        line = np.hstack(cells[:-1])
+        stacked += [line, np.full((4, line.shape[1], 3), 128, np.uint8)]
+    return np.vstack(stacked[:-1])
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -276,6 +323,9 @@ def main():
     rng = np.random.default_rng(SEED)
 
     import torch
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
 
     torch.manual_seed(SEED)
     # cuDNN chooses a convolution algorithm per shape and some of them accumulate in a
@@ -296,9 +346,12 @@ def main():
     print("  " + "  ".join(f"{name} {share:.1%}" for name, share in zip(SHAPE_CLASSES, shares)))
     band = np.stack([boundary_band(label) for label in test_labels])
     print(f"  pixels within {BOUNDARY_BAND} of a class boundary: {band.mean():.1%} of the test set")
-    cv2.imwrite(str(OUT_DIR / "shapes_dataset.png"), np.vstack([
-        np.hstack([img for img, _ in train[:8]]),
-        np.hstack([palette_image(label, len(SHAPE_CLASSES)) for _, label in train[:8]])]))
+    legend = ", ".join(SHAPE_CLASSES[1:])
+    cv2.imwrite(str(OUT_DIR / "shapes_dataset.png"), tile_rows([
+        [labelled(enlarge(img, 3), "image") if i == 0 else enlarge(img, 3) for i, (img, _) in enumerate(train[:8])],
+        [labelled(enlarge(palette_image(label, len(SHAPE_CLASSES)), 3), f"labels: {legend}") if i == 0
+         else enlarge(palette_image(label, len(SHAPE_CLASSES)), 3) for i, (_, label) in enumerate(train[:8])]]))
+    print("  shapes_dataset.png: eight training images above their label maps")
 
     # 2. Baseline
     print("\n--- 2. The constant prediction, and what each metric counts ---")
@@ -325,6 +378,22 @@ def main():
     print("  Every 3x3 convolution adds two pixels to that field; halving the resolution first")
     print("  doubles what each of those pixels covers, which is how a stack of small kernels")
     print("  comes to see a large area without becoming a stack of large ones.")
+    # The UNet's field is wider than the 64 px image, so the image sits on a black margin
+    # large enough for the whole square to be drawn around it.
+    zoom = 4
+    margin = (receptive_field(3) - SIZE) // 2 * zoom + 20
+    field_canvas = cv2.copyMakeBorder(enlarge(test[0][0], zoom), margin + 24, margin, margin, margin,
+                                      cv2.BORDER_CONSTANT, value=(0, 0, 0))
+    centre_x, centre_y = margin + SIZE // 2 * zoom, margin + 24 + SIZE // 2 * zoom
+    for field, colour, name in ((receptive_field(3), (0, 255, 255), "UNet"),
+                                (receptive_field(0, blocks_per_level=6), (255, 255, 0), "flat")):
+        half = field * zoom // 2
+        cv2.rectangle(field_canvas, (centre_x - half, centre_y - half), (centre_x + half, centre_y + half), colour, 3)
+    cv2.circle(field_canvas, (centre_x, centre_y), 5, (0, 0, 255), -1)
+    field_canvas = labelled(field_canvas, f"red pixel sees: UNet ~{receptive_field(3)} px (yellow), "
+                                          f"flat ~{receptive_field(0, blocks_per_level=6)} px (cyan)")
+    cv2.imwrite(str(OUT_DIR / "receptive_field.png"), field_canvas)
+    print("  receptive_field.png: the approximate field of one output pixel for each design, on a test image")
 
     # 4. Training
     print("\n--- 4. Training all three ---")
@@ -334,15 +403,61 @@ def main():
     print(f"  Adam {LEARNING_RATE}, batch {BATCH}, {EPOCHS} epochs on {device}")
     print(f"  {'model':<22}{'parameters':>11}{'time':>9}{'pixel accuracy':>15}{'mean IoU':>11}")
     results = {}
+    histories = {}
     for name, model in models.items():
         model = model.to(device)
-        matrix, boundary, elapsed = train_model(model, data, len(SHAPE_CLASSES), EPOCHS, device)
+        matrix, boundary, elapsed, histories[name] = train_model(model, data, len(SHAPE_CLASSES), EPOCHS, device)
         results[name] = (matrix, boundary, model)
         report(name, matrix, elapsed, sum(p.numel() for p in model.parameters()))
     print(f"  {'background everywhere':<22}{0:>11}{0:>8}s{accuracy:>16.2%}{miou:>11.3f}")
     print(f"  {'class':<22}" + "".join(f"{name.split(',')[0][:11]:>13}" for name in results))
     for index, name in enumerate(SHAPE_CLASSES):
         print(f"  IoU {name:<18}" + "".join(f"{metrics(m)[2][index]:>13.3f}" for m, _, _ in results.values()))
+
+    def plot_curves(history_by_model, title, path):
+        """Training loss and test mean IoU after every epoch, one line per model."""
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+        for name, history in history_by_model.items():
+            epochs = np.arange(1, len(history) + 1)
+            axes[0].plot(epochs, [h[0] for h in history], "o-", label=name)
+            axes[1].plot(epochs, [h[1] for h in history], "o-", label=name)
+        axes[0].set_title(f"{title}: training loss, mean over the epoch", fontsize=10)
+        axes[1].set_title(f"{title}: test mean IoU after each epoch", fontsize=10)
+        for ax in axes:
+            ax.set_xlabel("epoch")
+            ax.legend()
+        fig.tight_layout()
+        fig.savefig(path, dpi=110)
+        plt.close(fig)
+
+    plot_curves(histories, "rendered shapes", OUT_DIR / "training_curves.png")
+    names = ["background everywhere"] + list(results)
+    scores = [(accuracy, miou, iou)] + [metrics(m)[:3] for m, _, _ in results.values()]
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4.5))
+    positions = np.arange(len(names))
+    axes[0].bar(positions - 0.2, [100 * s[0] for s in scores], 0.4, label="pixel accuracy, %")
+    axes[0].bar(positions + 0.2, [100 * s[1] for s in scores], 0.4, label="mean IoU x 100")
+    for i, (acc, mean_iou, _) in enumerate(scores):
+        axes[0].text(i - 0.2, 100 * acc + 1, f"{100 * acc:.1f}", ha="center", fontsize=8)
+        axes[0].text(i + 0.2, 100 * mean_iou + 1, f"{mean_iou:.3f}", ha="center", fontsize=8)
+    axes[0].set_xticks(positions)
+    axes[0].set_xticklabels(names, fontsize=9)
+    axes[0].set_ylim(0, 110)
+    axes[0].set_title("the constant prediction scores high on one metric and low on the other", fontsize=10)
+    axes[0].legend(loc="lower right")
+    width = 0.8 / len(names)
+    for j, (name, (_, _, per_class)) in enumerate(zip(names, scores)):
+        axes[1].bar(np.arange(len(SHAPE_CLASSES)) + (j - (len(names) - 1) / 2) * width, per_class, width, label=name)
+    axes[1].set_xticks(np.arange(len(SHAPE_CLASSES)))
+    axes[1].set_xticklabels(SHAPE_CLASSES)
+    axes[1].set_title("IoU per class", fontsize=10)
+    axes[1].legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.08), ncol=len(names))   # below, clear of the bars
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "metrics_compare.png", dpi=110)
+    plt.close(fig)
+    print("  training_curves.png: loss and test mean IoU per epoch for the three models;")
+    print("  metrics_compare.png: pixel accuracy against mean IoU, and IoU per class, for every model")
+    print("  and the constant prediction")
 
     # 5. Boundaries
     print(f"\n--- 5. The same models within {BOUNDARY_BAND} pixels of a class boundary ---")
@@ -355,13 +470,42 @@ def main():
     print("  decided by colour alone. The skips carry the encoder's full-resolution maps across to")
     print("  the decoder, and that is the information a boundary needs.")
     sample = x_test[:6].to(device)
-    strips = [np.hstack(list(np.stack([img for img, _ in test[:6]]))),
-              np.hstack([palette_image(label, len(SHAPE_CLASSES)) for label in test_labels[:6]])]
     with torch.no_grad():
-        for _, _, model in results.values():
-            predicted = model(sample).argmax(1).cpu().numpy().astype(np.uint8)
-            strips.append(np.hstack([palette_image(p, len(SHAPE_CLASSES)) for p in predicted]))
-    cv2.imwrite(str(OUT_DIR / "shapes_predictions.png"), np.vstack(strips))
+        model_predictions = {name: model(sample).argmax(1).cpu().numpy().astype(np.uint8)
+                             for name, (_, _, model) in results.items()}
+    row_of = lambda images, name: [labelled(enlarge(image, 3), name) if i == 0 else enlarge(image, 3)
+                                   for i, image in enumerate(images)]
+    prediction_rows = [row_of([img for img, _ in test[:6]], "image"),
+                       row_of([palette_image(label, len(SHAPE_CLASSES)) for label in test_labels[:6]], "truth")]
+    for name, predicted in model_predictions.items():
+        prediction_rows.append(row_of([palette_image(p, len(SHAPE_CLASSES)) for p in predicted], name))
+    cv2.imwrite(str(OUT_DIR / "shapes_predictions.png"), tile_rows(prediction_rows))
+
+    error_rows, scale = [], 4
+    for i in range(4):
+        band = boundary_band(test_labels[i])
+        band_view = test[i][0].copy()
+        band_view[band] = (0.4 * band_view[band] + 0.6 * np.array([255, 255, 255])).astype(np.uint8)
+        row = [labelled(enlarge(test[i][0], scale), "image") if i == 0 else enlarge(test[i][0], scale),
+               labelled(enlarge(palette_image(test_labels[i], len(SHAPE_CLASSES)), scale), "truth") if i == 0
+               else enlarge(palette_image(test_labels[i], len(SHAPE_CLASSES)), scale),
+               labelled(enlarge(band_view, scale), f"{BOUNDARY_BAND} px band") if i == 0 else enlarge(band_view, scale)]
+        for name, predicted in model_predictions.items():
+            wrong = predicted[i] != test_labels[i]
+            view = np.full((SIZE, SIZE, 3), 40, np.uint8)
+            view[band] = (90, 90, 90)
+            view[wrong & band] = (0, 0, 255)
+            view[wrong & ~band] = (0, 255, 255)
+            short = name.replace("UNet ", "").replace(", no resampling", "")
+            row.append(labelled(enlarge(view, scale), f"{short}: {int(wrong.sum())} wrong"))
+        error_rows.append(row)
+    cv2.imwrite(str(OUT_DIR / "boundary_errors.png"), np.vstack([
+        tile_rows(error_rows),
+        cv2.putText(np.zeros((24, tile_rows(error_rows).shape[1], 3), np.uint8),
+                    "error panels: grey = boundary band, red = wrong inside the band, yellow = wrong elsewhere",
+                    (6, 17), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)]))
+    print("  shapes_predictions.png: six test images, their truth and each model's prediction;")
+    print("  boundary_errors.png: four test images with the boundary band and where each model is wrong")
 
     # 6. Pascal VOC
     print("\n--- 6. Pascal VOC 2012 ---")
@@ -388,19 +532,24 @@ def main():
     base_matrix = confusion(constant, voc_val_y, len(VOC_CLASSES), VOC_IGNORE)
     base_accuracy, base_miou, _, _ = metrics(base_matrix)
     print(f"  {'model':<22}{'parameters':>11}{'time':>9}{'pixel accuracy':>15}{'mean IoU':>11}")
-    voc_results = {}
+    voc_results, voc_histories, voc_rows = {}, {}, []
+    voc_row = lambda images, name: [labelled(enlarge(image, 2), name) if i == 0 else enlarge(image, 2)
+                                    for i, image in enumerate(images)]
+    voc_rows += [voc_row(list(voc_val_x[:6]), "image"),
+                 voc_row([palette_image(label, len(VOC_CLASSES)) for label in voc_val_y[:6]], "truth, grey = ignore")]
     for name, model in list(make_models(len(VOC_CLASSES)).items())[:2]:
         model = model.to(device)
-        matrix, boundary, elapsed = train_model(model, voc_data, len(VOC_CLASSES), VOC_EPOCHS, device, VOC_IGNORE)
+        matrix, boundary, elapsed, voc_histories[name] = train_model(model, voc_data, len(VOC_CLASSES), VOC_EPOCHS,
+                                                                     device, VOC_IGNORE)
         voc_results[name] = (matrix, boundary)
         report(name, matrix, elapsed, sum(p.numel() for p in model.parameters()))
-        if name == "UNet with skips":
-            with torch.no_grad():
-                predicted = model(voc_data[2][:6].to(device)).argmax(1).cpu().numpy().astype(np.uint8)
-            cv2.imwrite(str(OUT_DIR / "voc_predictions.png"), np.vstack([
-                np.hstack(list(voc_val_x[:6])),
-                np.hstack([palette_image(label, len(VOC_CLASSES)) for label in voc_val_y[:6]]),
-                np.hstack([palette_image(p, len(VOC_CLASSES)) for p in predicted])]))
+        with torch.no_grad():
+            predicted = model(voc_data[2][:6].to(device)).argmax(1).cpu().numpy().astype(np.uint8)
+        voc_rows.append(voc_row([palette_image(p, len(VOC_CLASSES)) for p in predicted], name))
+    cv2.imwrite(str(OUT_DIR / "voc_predictions.png"), tile_rows(voc_rows))
+    plot_curves(voc_histories, "VOC 2012", OUT_DIR / "voc_training_curves.png")
+    print("  voc_predictions.png: six validation images, their truth and both UNets' predictions;")
+    print("  voc_training_curves.png: loss and validation mean IoU per epoch")
     print(f"  {'background everywhere':<22}{0:>11}{0:>8}s{base_accuracy:>16.2%}{base_miou:>11.3f}")
     print(f"  {'model':<22}{'boundary accuracy':>19}{'interior accuracy':>19}{'classes ever predicted':>24}")
     for name, (matrix, boundary) in voc_results.items():

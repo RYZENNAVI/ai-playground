@@ -656,6 +656,19 @@ object class costs background pixels, and only one of the two numbers pays for i
 From-scratch numbers on this little data are far below what a pretrained encoder
 reaches; what is comparable here is the architectures against each other.
 
+### What the images show
+
+| Image | Panels |
+| :--- | :--- |
+| `shapes_dataset.png` | eight training images above their label maps |
+| `receptive_field.png` | one output pixel on a test image with the approximate field of the UNet and of the flat network |
+| `training_curves.png` | training loss and test mean IoU after every epoch for the three models |
+| `metrics_compare.png` | pixel accuracy against mean IoU for the constant prediction and the three models, and IoU per class |
+| `shapes_predictions.png` | six test images, their truth, and each model's prediction |
+| `boundary_errors.png` | four test images with the boundary band and, for each model, the wrong pixels inside and outside it |
+| `voc_predictions.png` | six VOC validation images, their truth with the ignore label in grey, and both UNets' predictions |
+| `voc_training_curves.png` | training loss and validation mean IoU per epoch on VOC |
+
 ---
 
 ## 7. Attention and self-supervised representations
@@ -746,6 +759,20 @@ Photographs are harder than rendered shapes and the gap to the supervised refere
 widens (a reference for this run, not an upper bound any label-free method must stay
 under), but **the ordering of the three label-free training families does not change**, and neither does
 the cost of dropping the projection head.
+
+### What the images show
+
+| Image | Panels |
+| :--- | :--- |
+| `attention_weights.png` | the 4x4 attention weights of every head for the first sequence, each row summing to 1 |
+| `encoder_block.png` | input and block output value distributions, and the zeroed block against the identity line |
+| `dataset.png` | the first 16 training images with their classes |
+| `tokenisers.png` | the input window of two neighbouring tokens: 4x4 and disjoint for patches, 9x9 and overlapping for the convolutional stem |
+| `autoencoder.png` | eight test images above their reconstructions |
+| `masked_autoencoder.png` | eight test images, the half of the patches the encoder is shown, and the hidden half as the decoder predicts it |
+| `augmentations.png` | eight test images and two random views of each |
+| `training_losses.png` | every training loss per epoch, grouped into supervised, reconstruction and contrastive |
+| `probe_accuracy.png` | linear probe accuracy of every representation against guessing |
 
 ---
 
