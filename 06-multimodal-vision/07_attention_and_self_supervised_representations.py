@@ -663,7 +663,7 @@ def main():
         print(f"  {name:<26}{used:>12}{elapsed:>14.0f}s{accuracy:>16.2%}")
     print(f"  {'guessing':<26}{'-':>12}{'-':>15}{chance:>16.2%}")
     print("  'labels used' refers to training the encoder; every probe is trained on the labels.")
-    print("  The three label-free encoders differ in architecture, feature size and epochs as well")
+    print("  The three label-free training families differ in architecture, feature size and epochs as well")
     print("  as in objective, so the ordering is of these configurations, not of the objectives alone.")
     print("  It is consistent with reconstruction rewarding whatever fills the most pixels, while")
     print("  the other two ask for something harder: predicting patches the encoder never saw, and")

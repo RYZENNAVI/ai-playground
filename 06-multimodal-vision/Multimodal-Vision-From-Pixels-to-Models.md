@@ -645,7 +645,7 @@ these are comparisons between the methods, not CIFAR-10 test-set accuracies:
 
 Photographs are harder than rendered shapes and the gap to the supervised reference
 widens (a reference for this run, not an upper bound any label-free method must stay
-under), but **the ordering of the three label-free configurations does not change**, and neither does
+under), but **the ordering of the three label-free training families does not change**, and neither does
 the cost of dropping the projection head.
 
 ---
