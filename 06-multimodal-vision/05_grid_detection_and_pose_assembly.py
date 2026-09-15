@@ -278,7 +278,13 @@ def detections(model, images, anchors_t, score_threshold, device):
 
 
 def mean_average_precision(results, truth, iou_threshold=0.5):
-    """Per-class average precision with 101-point interpolation, and their mean."""
+    """Per-class average precision with 101-point interpolation, and their mean.
+
+    Detections are taken in descending score, and each is matched to the highest-IoU
+    ground-truth box of its class that no earlier detection has claimed, as COCO's
+    evaluation does. (The VOC devkit instead takes the highest-IoU box outright and
+    counts a false positive if it is already claimed.)
+    """
     per_class = {}
     for cls, name in enumerate(CLASSES):
         total = sum(int((labels == cls).sum()) for _, labels in truth)
@@ -291,8 +297,9 @@ def mean_average_precision(results, truth, iou_threshold=0.5):
             candidates = np.flatnonzero(gt_labels == cls)
             if len(candidates):
                 overlap = box_iou(b[None], gt_boxes[candidates])[0]
+                overlap[[c in used[i] for c in candidates]] = -1.0   # claimed boxes are out of the running
                 best = int(np.argmax(overlap))
-                if overlap[best] >= iou_threshold and candidates[best] not in used[i]:
+                if overlap[best] >= iou_threshold:
                     used[i].add(candidates[best])
                     tp[k] = 1
         recall = np.cumsum(tp) / max(total, 1)
