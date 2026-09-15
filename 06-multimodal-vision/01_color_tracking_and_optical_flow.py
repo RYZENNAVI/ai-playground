@@ -724,6 +724,14 @@ def main():
         print(f"  {t:>5}{for_frame[0]:>26.3f}{for_frame[1]:>24.3f}")
     print("  A grey pixel has almost equal B, G and R, so its hue is set by noise and lands")
     print("  in every bin, including the object's. Requiring some saturation removes them.")
+    back_tiles = [panel(frames[-1], f"frame {FRAMES - 1}")]
+    for gated in (False, True):
+        prob = back_project(frames[-1], hist, gated)
+        share = prob[masks[-1]].sum() / max(prob.sum(), 1)
+        back_tiles.append(panel(cv2.cvtColor(prob, cv2.COLOR_GRAY2BGR),
+                                f"{'with' if gated else 'no'} saturation gate: {share:.3f} on object"))
+    cv2.imwrite(str(OUT_DIR / "backprojection.png"), np.hstack(back_tiles))
+    print("  backprojection.png: the last frame, its back-projection without the gate, and with it")
 
     whole = (0, 0, WIDTH, HEIGHT)
     print(f"\n  {'bins':>5}{'object bins in ROI':>20}{'mass on object':>16}"
@@ -746,9 +754,10 @@ def main():
     window = roi
     cv_window = roi
     criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, 1)
-    ms_error, ms_cover, ms_track, agree = [], [], [], 0
+    ms_error, ms_cover, ms_track, ms_windows, agree = [], [], [], [], 0
     for prob, mask in zip(probs, masks):
         window = mean_shift(prob, window)
+        ms_windows.append(tuple(int(v) for v in window))
         _, cv_window = cv2.meanShift(prob, cv_window, criteria)
         agree += tuple(window) == tuple(cv_window)
         centre = (window[0] + window[2] / 2, window[1] + window[3] / 2)
@@ -828,8 +837,23 @@ def main():
         cv2.putText(trajectory, name, (42, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
     cv2.imwrite(str(OUT_DIR / "trajectory.png"), trajectory)
     print("  trajectory.png: the four centre paths over the last frame, widest underneath")
-    cv2.imwrite(str(OUT_DIR / "backprojection.png"),
-                np.hstack([frames[-1], cv2.cvtColor(probs[-1], cv2.COLOR_GRAY2BGR)]))
+    window_tiles = []
+    for t in (0, 30, 60, FRAMES - 1):
+        # No outline of the true mask: the CAMSHIFT ellipse lies on it and would hide it, and
+        # the object itself is visible in the frame.
+        tile = frames[t].copy()
+        x, y, w, h = ms_windows[t]
+        cv2.rectangle(tile, (x, y), (x + w - 1, y + h - 1), (0, 255, 255), 1)
+        if not np.isnan(cs_track[t, 0]):
+            cx, cy, a, b, angle = cs_track[t]
+            cv2.ellipse(tile, ((cx, cy), (2 * a, 2 * b), angle), (255, 0, 255), 2, cv2.LINE_AA)
+        window_tiles.append(panel(tile, f"frame {t}: mean shift {ms_cover[t]:.0%} covered"))
+    key = np.zeros((22, 4 * WIDTH, 3), np.uint8)
+    cv2.putText(key, "yellow: mean shift window (fixed size)   magenta: CAMSHIFT ellipse",
+                (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.imwrite(str(OUT_DIR / "tracker_windows.png"), np.vstack([np.hstack(window_tiles), key]))
+    print("  tracker_windows.png: frames 0, 30, 60 and 89 with the true outline, the fixed mean")
+    print("  shift window and the CAMSHIFT ellipse")
 
     # 9. Harris
     print("\n--- 9. Corners from the structure tensor ---")
@@ -851,10 +875,23 @@ def main():
     print("  The eigenvalues are how strongly brightness changes along the two principal")
     print("  directions of the window. Flat: both near zero. Edge: one large, one near zero,")
     print("  and R turns negative. Corner: both large, which is the only case R rewards.")
+    scaled = np.clip(response / np.abs(response).max() * 4, -1, 1)   # stretched so edges show too
+    response_map = cv2.applyColorMap(np.rint(127.5 * (scaled + 1)).astype(np.uint8), cv2.COLORMAP_JET)
+    # Labels placed so the corner and edge names, 30 px apart, do not run into each other.
+    for name, (px, py), (tx, ty) in (("flat", (70, 70), (76, 82)), ("edge", (70, 40), (76, 58)),
+                                     ("corner", (40, 40), (8, 118))):
+        cv2.circle(response_map, (px, py), 3, (255, 255, 255), -1)
+        cv2.line(response_map, (px, py), (tx + 2, ty - 10), (255, 255, 255), 1)
+        cv2.putText(response_map, name, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(response_map, name, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1,
+                    cv2.LINE_AA)
     marked = cv2.cvtColor(scene, cv2.COLOR_GRAY2BGR)
     for x, y in found:
         cv2.circle(marked, (int(x), int(y)), 4, (0, 0, 255), 1)
-    cv2.imwrite(str(OUT_DIR / "harris_corners.png"), marked)
+    cv2.imwrite(str(OUT_DIR / "harris_corners.png"), np.hstack([
+        panel(response_map, "R: red corner, blue edge, green flat"),
+        panel(marked, f"{len(found)} detections, {match_points(true_corners, found)} true corners")]))
+    print("  harris_corners.png: the response R with the three sample points, and the detections")
 
     # 10. Block matching
     print("\n--- 10. Block matching against a known displacement ---")
@@ -871,25 +908,26 @@ def main():
     print("  motion_pair.png: the texture before, after the small shift and after the large one,")
     print("  with a red cross at the same pixel in each; steps 10 and 11 both use these frames")
     print(f"  {BLOCK}x{BLOCK} blocks, sum of squared differences, search radius {SEARCH_RADIUS} px")
-    def flow_panel(points, vectors, shift, label, scale=3):
-        """Texture with the true shift in green and the recovered vectors in yellow, both scaled."""
-        tile = panel(cv2.cvtColor(texture.astype(np.uint8), cv2.COLOR_GRAY2BGR), label)
+    def flow_panel(points, vectors, shift, label, scale=3, base=None):
+        """An image with the true shift in green and the recovered vectors in yellow, both scaled."""
+        base = texture if base is None else base
+        tile = panel(cv2.cvtColor(np.clip(base, 0, 255).astype(np.uint8), cv2.COLOR_GRAY2BGR), label)
         for (x, y), (u, v) in zip(points, vectors):
             start = (int(round(x)), int(round(y)))
             cv2.arrowedLine(tile, start, (int(round(x + scale * shift[0])), int(round(y + scale * shift[1]))),
-                            (0, 200, 0), 2, tipLength=0.3)
+                            (0, 200, 0), 4, tipLength=0.3)   # wider, so it shows around a matching yellow
             cv2.arrowedLine(tile, start, (int(round(x + scale * u)), int(round(y + scale * v))),
-                            (0, 255, 255), 1, tipLength=0.3)
+                            (0, 255, 255), 2, tipLength=0.3)
         return tile
 
-    def save_panels(name, tiles):
+    def save_panels(name, tiles, scale=3):
         """Tiles side by side with a grey divider, plus a key along the bottom."""
         divided = []
         for tile in tiles:
             divided += [tile, np.full((HEIGHT, 4, 3), 128, np.uint8)]
         row = np.hstack(divided[:-1])
         key = np.zeros((22, row.shape[1], 3), np.uint8)
-        cv2.putText(key, "green: true shift   yellow: recovered vector   both drawn 3x longer",
+        cv2.putText(key, f"green: true shift   yellow: recovered vector   both drawn {scale}x longer",
                     (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
         cv2.imwrite(str(OUT_DIR / name), np.vstack([row, key]))
 
@@ -952,6 +990,14 @@ def main():
     for name, pts in (("rectangle corners", corner_points), ("middles of sides", edge_points)):
         flow, eigen = lucas_kanade(scene_f, moved, pts, levels=1)
         print(f"  {name:<24}{np.median(eigen):>26.1f}{np.median(flow_error(flow, edge_shift)):>14.3f}")
+    aperture_tiles = []
+    for name, pts in (("corners", corner_points), ("middles of sides", edge_points)):
+        flow, _ = lucas_kanade(scene_f, moved, pts, levels=1)
+        aperture_tiles.append(flow_panel(pts, flow, edge_shift, f"{name}: median error "
+                                         f"{np.median(flow_error(flow, edge_shift)):.3f} px", scale=10,
+                                         base=scene_f * 0.45))   # darkened so yellow reads on the shapes
+    save_panels("aperture_problem.png", aperture_tiles, scale=10)
+    print("  aperture_problem.png: corners on the left, middles of sides on the right")
     horizontal = lucas_kanade(scene_f, moved, edge_points[:3], levels=1)[0]
     listed = ", ".join(f"({u:.2f}, {v:.2f})" for u, v in horizontal)
     print(f"  on the three top sides the recovered vectors are {listed}")

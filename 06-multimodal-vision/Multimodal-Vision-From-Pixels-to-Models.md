@@ -135,6 +135,13 @@ as a narrower magenta line on it, the mean shift window centre in yellow, and th
 largest component's centroid as a thin red line on top. Red and magenta run almost
 together along the green band; yellow is the one that leaves it.
 
+`backprojection.png` puts the last frame beside its back-projection without and with
+the saturation gate, so the grey background lighting up without the gate can be seen.
+`tracker_windows.png` shows frames 0, 30, 60 and 89 with the fixed mean shift window in
+yellow and the CAMSHIFT ellipse in magenta, which lies on the object's own outline: the yellow box
+stays the first frame's size while the object outgrows it, and the ellipse grows and
+turns with it.
+
 Two things bound what this table says. **Both trackers start from a box taken off the
 first frame's true mask**, so these are the errors of keeping hold of an object, not
 of finding one — the step above does the finding, from scratch, every frame. And the
@@ -153,6 +160,9 @@ The structure tensor, the same matrix Harris scores and Lucas-Kanade inverts:
 | Corner | 0.9739 | 0.3369 | **+0.24218** |
 
 All **16 true corners** are found, with no detection on the disk that has none.
+`harris_corners.png` shows the response R as a colour map — red at corners, blue along
+edges where R is negative, flat regions in between — with the three sample points of
+the table marked, beside the detections.
 
 Both motion methods run on one blurred-noise texture and two copies of it shifted by a
 known amount. `motion_pair.png` shows the three frames side by side — before, after
@@ -182,6 +192,9 @@ The last row of the aperture problem, on the rectangle scene shifted by (2.6, 1.
 
 On the three horizontal edges the recovered vectors are `(0.00, 1.70)` three times:
 **the component across the edge is exact and the component along it is unobservable.**
+`aperture_problem.png` draws both cases with the true shift in green and the recovered
+vector in yellow, ten times longer: at the corners the two arrows coincide, and at the
+middles of the sides the yellow arrow keeps only the part across the edge.
 
 ---
 
