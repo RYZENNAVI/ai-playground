@@ -36,9 +36,10 @@ OBJECT_BGR = (200, 110, 30)   # a saturated blue, hue 106 on OpenCV's 0-179 scal
 SPECKS = 40            # isolated object-coloured pixels scattered over the background
 HOLES = 12             # background-coloured pixels punched into the object each frame
 
-# Colour rules. The RGB box is fitted to the object as it looks at full light; the
+# Colour rules. OpenCV holds a colour image as B, G, R in that order, so the box below
+# is a box in the BGR cube; it is fitted to the object as it looks at full light. The
 # HSV rule constrains hue and saturation, and asks only that the pixel is not black.
-RGB_BOX = {"b": (140, 255), "g": (60, 150), "r": (0, 90)}
+BGR_BOX = {"b": (140, 255), "g": (60, 150), "r": (0, 90)}
 HUE_RANGE = (96, 116)
 MIN_SATURATION = 120
 MIN_VALUE = 40
@@ -138,12 +139,17 @@ def iou(a, b):
 # 2-3. Colour thresholds and morphology
 # ---------------------------------------------------------------------------
 
-def rgb_box_mask(frame):
-    """Keep pixels whose B, G and R each fall inside a fixed box in the RGB cube."""
+def bgr_box_mask(frame):
+    """Keep pixels whose B, G and R each fall inside a fixed box in the colour cube.
+
+    frame[..., 0] is blue, frame[..., 1] green and frame[..., 2] red: OpenCV's order.
+    Which corner of the cube the axes are named after does not change the rule, but
+    reading the channels in the wrong order does.
+    """
     b, g, r = (frame[..., i].astype(int) for i in range(3))
-    return ((RGB_BOX["b"][0] <= b) & (b <= RGB_BOX["b"][1])
-            & (RGB_BOX["g"][0] <= g) & (g <= RGB_BOX["g"][1])
-            & (RGB_BOX["r"][0] <= r) & (r <= RGB_BOX["r"][1]))
+    return ((BGR_BOX["b"][0] <= b) & (b <= BGR_BOX["b"][1])
+            & (BGR_BOX["g"][0] <= g) & (g <= BGR_BOX["g"][1])
+            & (BGR_BOX["r"][0] <= r) & (r <= BGR_BOX["r"][1]))
 
 
 def hsv_mask(frame):
@@ -310,7 +316,8 @@ def hue_histogram(frame, roi, bins=HIST_BINS, gated=True):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)[y:y + h, x:x + w]
     hues = hsv[..., 0][saturation_gate(hsv)] if gated else hsv[..., 0].ravel()
     hist = np.bincount(hues.astype(int) * bins // 180, minlength=bins).astype(np.float32)
-    return hist * (255.0 / hist.max())
+    peak = hist.max()
+    return hist if peak == 0 else hist * (255.0 / peak)   # an ROI can gate everything away
 
 
 def back_project(frame, hist, gated=True):
@@ -477,7 +484,7 @@ def block_matching(first, second, block=BLOCK, radius=SEARCH_RADIUS):
     the best integer displacement inside a (2 * radius + 1) square and nothing else:
     a motion longer than radius is not in the set being searched.
     """
-    margin = radius + 16
+    margin = radius + block
     vectors, centres = [], []
     for y in range(margin, HEIGHT - margin - block + 1, block):
         for x in range(margin, WIDTH - margin - block + 1, block):
@@ -576,15 +583,17 @@ def main():
 
     # 2. Colour thresholds
     print("\n--- 2. The same object thresholded in two colour spaces ---")
-    rgb_iou = [iou(rgb_box_mask(f), m) for f, m in zip(frames, masks)]
+    bgr_iou = [iou(bgr_box_mask(f), m) for f, m in zip(frames, masks)]
     hsv_iou = [iou(hsv_mask(f), m) for f, m in zip(frames, masks)]
     print(f"  {'rule':<10}{'IoU, bright frames':>20}{'IoU, dimmed frames':>20}")
-    for name, scores in (("RGB box", rgb_iou), ("HSV", hsv_iou)):
+    for name, scores in (("BGR box", bgr_iou), ("HSV", hsv_iou)):
         print(f"  {name:<10}{np.mean([scores[t] for t in bright]):>20.3f}"
               f"{np.mean([scores[t] for t in dim]):>20.3f}")
-    print("  Dimming multiplies B, G and R by one factor. The RGB box tests absolute")
+    print("  Dimming multiplies B, G and R by one factor. The BGR box tests absolute")
     print("  levels, so the object walks out of it; hue and saturation depend on the")
-    print("  ratios between channels, which the factor does not change.")
+    print("  ratios between channels, which the factor does not change. That is the one")
+    print("  kind of lighting change this measures: a change that scales all three channels")
+    print("  equally. A light that changes colour moves the ratios, and hue with them.")
 
     # 3. Morphology
     print("\n--- 3. Erosion and dilation on the HSV mask ---")
@@ -626,21 +635,32 @@ def main():
 
     # 5. Centroid tracking
     print("\n--- 5. Tracking the centroid of the largest component ---")
-    centroid_track, errors = [], []
+    centroid_track, errors, empty = [], [], 0
     for frame, mask in zip(frames, masks):
         cleaned = clean(hsv_mask(frame))[2].astype(np.uint8)
         _, _, stats, centroids = cv2.connectedComponentsWithStats(cleaned, connectivity=8)
+        if len(stats) < 2:                       # the colour rule kept nothing in this frame
+            empty += 1
+            centroid_track.append(centroid_track[-1] if centroid_track else mask_centroid(mask))
+            continue
         biggest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
         centroid_track.append(centroids[biggest])
         errors.append(np.hypot(*(centroids[biggest] - np.array(mask_centroid(mask)))))
     errors = np.array(errors)
+    print(f"  frames with no component at all: {empty} of {FRAMES}")
     print(f"  centroid error against the true mask: bright mean {errors[:DIM_FROM].mean():.2f} px, "
           f"dimmed mean {errors[DIM_FROM:].mean():.2f} px, worst {errors.max():.2f} px")
     print("  Each frame is segmented from scratch, so the track never drifts; its error is")
     print("  the handful of pinholes and rim pixels the cleaned mask still disagrees on.")
+    print("  Detection and tracking are separate jobs, and this step does the first one every")
+    print("  frame. The two trackers below are given a starting box instead and have to keep")
+    print("  hold of it, which is a different question and is scored separately.")
 
     # 6. Histogram back-projection
     print("\n--- 6. A hue histogram of the object, back-projected ---")
+    # The starting box is read straight off the first frame's true mask. Steps 7 and 8
+    # therefore measure what a tracker does with a perfect initialisation, not whether
+    # it can find the object in the first place.
     ys, xs = np.nonzero(masks[0])
     roi = (int(xs.min()), int(ys.min()), int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1))
     hist = hue_histogram(frames[0], roi)
@@ -707,9 +727,12 @@ def main():
     # 8. CAMSHIFT
     print("\n--- 8. CAMSHIFT: size and orientation from the moments ---")
     window, cv_window = roi, roi
-    cs_rows, cv_error, estimates = [], [], []
+    cs_rows, cv_error, estimates, lost = [], [], [], 0
     for prob, mask, state in zip(probs, masks, states):
         estimate, window = cam_shift(prob, window)
+        if estimate is None:                     # no probability mass left inside the window
+            lost += 1
+            continue
         estimates.append(estimate)
         rotated, cv_window = cv2.CamShift(prob, cv_window, criteria)
         truth_centre = mask_centroid(mask)
@@ -718,6 +741,8 @@ def main():
                         angle_gap(estimate[4], state[4]), coverage(mask, window)))
         cv_error.append(np.hypot(rotated[0][0] - truth_centre[0], rotated[0][1] - truth_centre[1]))
     cs_rows = np.array(cs_rows)
+    print(f"  window resized and turned every frame from the second moments; "
+          f"frames where the window held no probability at all: {lost} of {FRAMES}")
     print(f"  {'':<22}{'first third':>12}{'last third':>12}")
     for column, name, unit in ((0, "centre error", "px"), (1, "long semi-axis error", "px"),
                                (2, "short semi-axis error", "px"), (3, "angle error", "deg")):
@@ -728,6 +753,9 @@ def main():
     last = estimates[-1]
     print(f"  last frame estimate: semi-axes {last[2]:.1f} x {last[3]:.1f}, angle {last[4]:.1f} deg; "
           f"truth {last_state[2]:.1f} x {last_state[3]:.1f}, {last_state[4]:.1f} deg")
+    print("  Both trackers start from the box step 6 took off the first frame's true mask, so")
+    print("  these errors are what each rule does with a perfect start, not what it does from")
+    print("  nothing.")
 
     trajectory = frames[-1].copy()
     truth_path = np.array([mask_centroid(m) for m in masks], np.float32)
