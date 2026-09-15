@@ -285,7 +285,7 @@ def mean_average_precision(results, truth, iou_threshold=0.5):
     evaluation does. (The VOC devkit instead takes the highest-IoU box outright and
     counts a false positive if it is already claimed.)
     """
-    per_class = {}
+    per_class, curves = {}, {}
     for cls, name in enumerate(CLASSES):
         total = sum(int((labels == cls).sum()) for _, labels in truth)
         ranked = sorted(((s, i, b) for i, (boxes, scores, classes) in enumerate(results)
@@ -306,7 +306,8 @@ def mean_average_precision(results, truth, iou_threshold=0.5):
         precision = np.cumsum(tp) / np.arange(1, len(tp) + 1)
         per_class[name] = float(np.mean([precision[recall >= level].max() if (recall >= level).any() else 0.0
                                          for level in np.linspace(0, 1, 101)]))
-    return per_class
+        curves[name] = (recall, precision)
+    return per_class, curves
 
 
 # ---------------------------------------------------------------------------
@@ -504,6 +505,37 @@ def maps_overlay(image, pcm, paf):
     return np.hstack([image, blend(confidence), blend(field)])
 
 
+CLASS_COLOURS = ((255, 128, 0), (0, 128, 255), (255, 0, 255))   # box, disk, triangle
+
+
+def labelled(image, text):
+    """A BGR uint8 image with its label on a black strip in the top-left corner."""
+    image = image.copy()
+    (text_w, text_h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+    cv2.rectangle(image, (2, 2), (10 + text_w, 10 + text_h), (0, 0, 0), -1)
+    cv2.putText(image, text, (6, 6 + text_h), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1, cv2.LINE_AA)
+    return image
+
+
+def with_header(image, text):
+    """An image under a black strip that carries a line of explanation."""
+    strip = np.zeros((24, image.shape[1], 3), np.uint8)
+    cv2.putText(strip, text, (6, 17), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+    return np.vstack([strip, image])
+
+
+def tile_rows(rows):
+    """Rows of equal-sized tiles, with grey dividers between tiles and between rows."""
+    stacked = []
+    for row in rows:
+        cells = []
+        for cell in row:
+            cells += [cell, np.full((cell.shape[0], 4, 3), 128, np.uint8)]
+        line = np.hstack(cells[:-1])
+        stacked += [line, np.full((4, line.shape[1], 3), 128, np.uint8)]
+    return np.vstack(stacked[:-1])
+
+
 def keypoint_extent(person):
     """Bounding box of a person's labelled keypoints, as (x1, y1, x2, y2)."""
     seen = person[person[:, 2] > 0]
@@ -541,6 +573,10 @@ def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(SEED)
 
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
     # 1. Dataset and anchors
     print("--- 1. A detection dataset and anchors fitted to it ---")
     train = [render_detection(rng) for _ in range(TRAIN_IMAGES)]
@@ -550,11 +586,28 @@ def main():
     print(f"  {TRAIN_IMAGES} training and {TEST_IMAGES} test images of {IMG}x{IMG}, {len(all_boxes)} training boxes, "
           f"widths {wh[:, 0].min():.0f}-{wh[:, 0].max():.0f} px, heights {wh[:, 1].min():.0f}-{wh[:, 1].max():.0f} px")
     print(f"  {'k':>3}  {'anchors (w, h)':<44}{'mean best IoU':>14}")
+    anchor_fits = {}
     for k in (1, 3, 5):
         centres, fit = kmeans_anchors(wh, k, np.random.default_rng(SEED))
+        anchor_fits[k] = (centres, fit)
         print(f"  {k:>3}  {', '.join(f'({w:.0f}, {h:.0f})' for w, h in centres):<44}{fit:>14.3f}")
     anchors, _ = kmeans_anchors(wh, ANCHORS, np.random.default_rng(SEED))
     print(f"  using k = {ANCHORS}; each anchor becomes one predictor in every cell")
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4.5), sharex=True, sharey=True)
+    shown = wh[np.random.default_rng(SEED).choice(len(wh), min(3000, len(wh)), replace=False)]
+    for ax, (k, (centres, fit)) in zip(axes, anchor_fits.items()):
+        inter = np.minimum(shown[:, None, 0], centres[None, :, 0]) * np.minimum(shown[:, None, 1], centres[None, :, 1])
+        assign = (inter / (shown.prod(1)[:, None] + centres.prod(1)[None, :] - inter)).argmax(1)
+        ax.scatter(shown[:, 0], shown[:, 1], c=assign, cmap="tab10", vmin=0, vmax=9, s=6, alpha=0.5)
+        ax.scatter(centres[:, 0], centres[:, 1], marker="*", s=300, c="k", edgecolors="w")
+        ax.set_title(f"k = {k}: mean best IoU {fit:.3f}", fontsize=11)
+        ax.set_xlabel("box width, px")
+    axes[0].set_ylabel("box height, px")
+    fig.suptitle("training box shapes, coloured by the anchor that covers them best; anchors as stars")
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "anchors.png", dpi=110)
+    plt.close(fig)
+    print("  anchors.png: box shapes and the anchors clustered from them, for k = 1, 3 and 5")
 
     # 2. Encoding
     print("\n--- 2. Encoding boxes onto the grid and back ---")
@@ -576,6 +629,33 @@ def main():
     a, row, col = (int(v[0]) for v in np.nonzero(t[..., 4]))
     print(f"  example: box ({x1:.0f}, {y1:.0f}, {x2:.0f}, {y2:.0f}) -> anchor {a}, row {row}, column {col}, "
           f"stored {np.round(t[a, row, col, :4], 3).tolist()}")
+    zoom = 3
+    example_img, example_boxes, example_labels = next(item for item in train if len(item[1]) >= 3)
+    canvas = cv2.resize(example_img, (IMG * zoom, IMG * zoom), interpolation=cv2.INTER_NEAREST)
+    for k in range(GRID + 1):
+        cv2.line(canvas, (k * STRIDE * zoom, 0), (k * STRIDE * zoom, IMG * zoom), (200, 200, 200), 1)
+        cv2.line(canvas, (0, k * STRIDE * zoom), (IMG * zoom, k * STRIDE * zoom), (200, 200, 200), 1)
+    for box, label in zip(example_boxes, example_labels):
+        slot, _ = encode(box[None], label[None], anchors)
+        a, row, col = (int(v[0]) for v in np.nonzero(slot[..., 4]))
+        cx, cy = (box[0] + box[2]) / 2 * zoom, (box[1] + box[3]) / 2 * zoom
+        cv2.rectangle(canvas, (col * STRIDE * zoom, row * STRIDE * zoom),
+                      ((col + 1) * STRIDE * zoom, (row + 1) * STRIDE * zoom), (0, 255, 255), 3)
+        cv2.rectangle(canvas, (int(box[0] * zoom), int(box[1] * zoom)), (int(box[2] * zoom), int(box[3] * zoom)),
+                      (0, 255, 0), 2)
+        aw, ah = anchors[a] * zoom / 2
+        cv2.rectangle(canvas, (int(cx - aw), int(cy - ah)), (int(cx + aw), int(cy + ah)), (255, 0, 255), 1)
+        cv2.circle(canvas, (int(cx), int(cy)), 4, (0, 0, 255), -1)
+        text = f"{CLASSES[label]}: anchor {a}, row {row}, col {col}"
+        (text_w, text_h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+        tx = int(min(box[0] * zoom, IMG * zoom - text_w - 6))
+        ty = int(min(box[3] * zoom + 4, IMG * zoom - text_h - 8))
+        cv2.rectangle(canvas, (tx, ty), (tx + text_w + 6, ty + text_h + 8), (0, 0, 0), -1)
+        cv2.putText(canvas, text, (tx + 3, ty + text_h + 3), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1, cv2.LINE_AA)
+    cv2.imwrite(str(OUT_DIR / "grid_encoding.png"), with_header(
+        canvas, "green box, red centre, yellow responsible cell, magenta chosen anchor"))
+    print("  grid_encoding.png: one training image on its 10x10 grid, each box with its centre, the")
+    print("  cell and anchor responsible for it, and the slot it is written to")
 
     # 3. Model and loss
     import torch
@@ -607,6 +687,7 @@ def main():
     print(f"  Adam {LEARNING_RATE}, batch {BATCH}, {EPOCHS} epochs on {device}")
     print(f"  {'epoch':>5}" + "".join(f"{name:>9}" for name in ("xy", "wh", "obj", "noobj", "class", "total")) + f"{'time':>8}")
     started = time.perf_counter()
+    epoch_rows = []
     for epoch in range(1, EPOCHS + 1):
         model.train()
         sums = defaultdict(float)
@@ -622,11 +703,26 @@ def main():
             optimiser.step()
             for name, value in terms.items():
                 sums[name] += value.item() * len(idx)
+        row = [sums[name] / len(train) for name in ("xy", "wh", "obj", "noobj", "class")]
+        epoch_rows.append(row)
         if epoch in (1, 2, 5, 10, 20, EPOCHS):
-            row = [sums[name] / len(train) for name in ("xy", "wh", "obj", "noobj", "class")]
             print(f"  {epoch:>5}" + "".join(f"{v:>9.3f}" for v in row) + f"{sum(row):>9.3f}"
                   f"{time.perf_counter() - started:>7.0f}s")
     model.eval()
+    epoch_rows = np.array(epoch_rows)
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    for column, name in enumerate(("xy", "wh", "obj", "noobj", "class")):
+        ax.plot(np.arange(1, EPOCHS + 1), epoch_rows[:, column], label=name)
+    ax.plot(np.arange(1, EPOCHS + 1), epoch_rows.sum(1), "k--", label="total")
+    ax.set_yscale("log")
+    ax.set_xlabel("epoch")
+    ax.set_ylabel("weighted loss per image")
+    ax.set_title("each loss term over training (xy, wh and noobj already carry their weights)")
+    ax.legend(ncol=6, fontsize=9)
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "loss_terms.png", dpi=110)
+    plt.close(fig)
+    print("  loss_terms.png: every loss term and the total for all epochs, on a log scale")
 
     # 5. Decoding and NMS
     print("\n--- 5. Decoding and per-class non-maximum suppression ---")
@@ -638,13 +734,50 @@ def main():
           f"at IoU {NMS_IOU}")
     print(f"  hand-written NMS keeps the same boxes as torchvision.ops.batched_nms in "
           f"{agreements} of {len(test)} images; {kept} boxes kept in total")
+    with torch.no_grad():
+        batch = torch.from_numpy(test_images[:3]).permute(0, 3, 1, 2).float().div(255).to(device)
+        raw_boxes, objectness, class_prob = decode_head(reshape_head(model(batch)), anchors_t)
+        raw_score, raw_class = (objectness[..., None] * class_prob).max(-1)
+    before_row, after_row = [], []
+    for i in range(3):
+        keep = raw_score[i] > SCORE_FOR_DRAWING
+        b, s, c = raw_boxes[i][keep].cpu().numpy(), raw_score[i][keep].cpu().numpy(), raw_class[i][keep].cpu().numpy()
+        survivors = nms_by_hand(b, s, c)
+        before = cv2.resize(test_images[i], (IMG * 2, IMG * 2), interpolation=cv2.INTER_NEAREST)
+        after = before.copy()
+        for box in b:
+            cv2.rectangle(before, tuple(int(v * 2) for v in box[:2]), tuple(int(v * 2) for v in box[2:]), (0, 0, 255), 1)
+        for j in survivors:
+            cv2.rectangle(after, tuple(int(v * 2) for v in b[j][:2]), tuple(int(v * 2) for v in b[j][2:]),
+                          CLASS_COLOURS[c[j]], 2)
+        before_row.append(labelled(before, f"before: {len(b)} boxes above {SCORE_FOR_DRAWING}"))
+        after_row.append(labelled(after, f"after: {len(survivors)} boxes"))
+    cv2.imwrite(str(OUT_DIR / "nms_before_after.png"), with_header(
+        tile_rows([before_row, after_row]), "top: every box above the score threshold; bottom: after per-class "
+                                            "suppression, blue box, orange disk, magenta triangle"))
+    print(f"  nms_before_after.png: three test images with every box above {SCORE_FOR_DRAWING} (top) and what")
+    print("  suppression keeps (bottom)")
 
     # 6. mAP and drawings
     print("\n--- 6. Mean average precision on unseen images ---")
-    ap = mean_average_precision(results, truth)
+    ap, pr = mean_average_precision(results, truth)
     for name, value in ap.items():
         print(f"  AP@0.5 {name:<10}{value:.3f}")
     print(f"  mAP@0.5 {np.mean(list(ap.values())):.3f} over {sum(len(b) for b, _ in truth)} test boxes")
+    fig, ax = plt.subplots(figsize=(6.5, 5))
+    for name, (recall, precision) in pr.items():
+        ax.plot(recall, precision, label=f"{name}: AP {ap[name]:.3f}")
+    ax.set_xlabel("recall")
+    ax.set_ylabel("precision")
+    ax.set_xlim(0, 1.02)
+    ax.set_ylim(0, 1.02)
+    ax.set_title(f"precision against recall at IoU 0.5, detections by falling score; mAP {np.mean(list(ap.values())):.3f}",
+                 fontsize=9)
+    ax.legend(loc="lower left")
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "pr_curves.png", dpi=110)
+    plt.close(fig)
+    print("  pr_curves.png: the precision-recall curve behind each class's AP")
     drawn = []
     shown, _ = detections(model, test_images[:4], anchors_t, SCORE_FOR_DRAWING, device)
     for (img, gt_boxes, _), (boxes, scores, classes) in zip(test[:4], shown):
@@ -656,7 +789,8 @@ def main():
             cv2.putText(canvas, f"{CLASSES[cls]} {score:.2f}", (int(box[0] * 2), max(int(box[1] * 2) - 3, 10)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
         drawn.append(canvas)
-    cv2.imwrite(str(OUT_DIR / "detections.png"), np.hstack(drawn))
+    cv2.imwrite(str(OUT_DIR / "detections.png"), with_header(
+        np.hstack(drawn), f"green: true boxes   red: detections above {SCORE_FOR_DRAWING}, with class and score"))
     print(f"  four unseen images drawn with true boxes in green and detections above {SCORE_FOR_DRAWING} in red")
 
     # 7. COCO targets
@@ -694,6 +828,29 @@ def main():
         print(f"  one scale, 13x13 grid, 3 anchors: {one_scale} boxes find their slot taken "
               f"({one_scale / len(coco_wh):.1%}); round-trip error of the rest {roundtrip:.2e} px")
         print(f"  three scales, 52/26/13 grids, 3 anchors each: {three_scales} ({three_scales / len(coco_wh):.1%})")
+        fig, axes = plt.subplots(1, 2, figsize=(13, 4.8), gridspec_kw={"width_ratios": [1.6, 1]})
+        sample = coco_wh[np.random.default_rng(SEED).choice(len(coco_wh), 5000, replace=False)]
+        axes[0].scatter(sample[:, 0], sample[:, 1], s=4, alpha=0.3, color="grey", label="COCO boxes (5000 shown)")
+        axes[0].scatter(three[:, 0], three[:, 1], marker="*", s=260, color="tab:red", label=f"k=3, IoU {fit3:.3f}")
+        axes[0].scatter(nine[:, 0], nine[:, 1], marker="P", s=120, color="tab:blue", label=f"k=9, IoU {fit9:.3f}")
+        axes[0].set_xscale("log")
+        axes[0].set_yscale("log")
+        axes[0].set_xlabel("width after letterboxing, px")
+        axes[0].set_ylabel("height, px")
+        axes[0].legend(fontsize=9)
+        axes[0].set_title("box shapes and the anchors clustered from them", fontsize=10)
+        shares = [100 * one_scale / len(coco_wh), 100 * three_scales / len(coco_wh)]
+        axes[1].bar(["one scale\n13x13, 3 anchors", "three scales\n52/26/13, 9 anchors"], shares,
+                    color=["tab:red", "tab:blue"])
+        for i, share in enumerate(shares):
+            axes[1].text(i, share + 0.2, f"{share:.1f}%", ha="center")
+        axes[1].set_ylabel("boxes whose slot is already taken, %")
+        axes[1].set_title(f"collisions among {len(coco_wh)} boxes", fontsize=10)
+        fig.tight_layout()
+        fig.savefig(OUT_DIR / "coco_slots.png", dpi=110)
+        plt.close(fig)
+        print("  coco_slots.png: COCO box shapes with both anchor sets, and the share of boxes that")
+        print("  lose their slot at one scale and at three")
         print("  Small objects crowd together: a stride-32 cell covers 32x32 input pixels, and every")
         print("  person in a crowd within it competes for the same few slots. A stride-8 level gives")
         print("  small anchors sixteen times as many cells.")
@@ -712,7 +869,8 @@ def main():
                 cv2.rectangle(picture, (int(x), int(y)), (int(x + w), int(y + h)), (0, 0, 255), 2)
                 cv2.putText(picture, names[category], (int(x), max(int(y) - 4, 12)), cv2.FONT_HERSHEY_SIMPLEX,
                             0.5, (0, 0, 255), 1)
-            cv2.imwrite(str(OUT_DIR / "coco_boxes.png"), picture)
+            cv2.imwrite(str(OUT_DIR / "coco_boxes.png"), with_header(
+                picture, f"{images[first]['file_name']}: every non-crowd box with its category"))
     else:
         print("  pass --coco-root to encode the COCO val2017 boxes and compare one scale with three")
 
@@ -748,7 +906,30 @@ def main():
         for a, b in SKELETON:
             cv2.line(canvas, tuple(np.rint(joints[a - 1] * MAP_STRIDE).astype(int)),
                      tuple(np.rint(joints[b - 1] * MAP_STRIDE).astype(int)), (200, 200, 200), 3)
-    cv2.imwrite(str(OUT_DIR / "pose_maps_synthetic.png"), maps_overlay(canvas, pcm, paf))
+    cv2.imwrite(str(OUT_DIR / "pose_maps_synthetic.png"), with_header(
+        maps_overlay(canvas, pcm, paf), "skeletons drawn from the keypoints | strongest confidence map | "
+                                        "affinity field magnitude"))
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    axes[0].imshow(pcm[:-1].max(0), cmap="magma")
+    for joint_peaks in peaks:
+        if len(joint_peaks):
+            axes[0].scatter(joint_peaks[:, 0], joint_peaks[:, 1], s=18, c="cyan", edgecolors="k", linewidths=0.4)
+    axes[0].set_title(f"strongest confidence over 17 keypoint maps, {sum(len(p) for p in peaks)} peaks in cyan",
+                      fontsize=10)
+    field_x, field_y = paf[0::2].sum(0), paf[1::2].sum(0)
+    ys, xs = np.nonzero(np.hypot(field_x, field_y) > 0)
+    axes[1].imshow(np.zeros(shape), cmap="gray")
+    axes[1].quiver(xs, ys, field_x[ys, xs], field_y[ys, xs], np.hypot(field_x[ys, xs], field_y[ys, xs]),
+                   cmap="viridis", angles="xy", scale_units="xy", scale=1.2, width=0.003)
+    axes[1].set_title("affinity fields of all 19 limbs: each arrow points along its limb", fontsize=10)
+    for ax in axes:
+        ax.set_xlim(0, shape[1])
+        ax.set_ylim(shape[0], 0)
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "paf_vectors.png", dpi=110)
+    plt.close(fig)
+    print("  pose_maps_synthetic.png: the drawn skeletons and both maps; paf_vectors.png: the peaks")
+    print("  found in the confidence maps and the field as arrows")
 
     # 9. Assembly
     print("\n--- 9. Pairing keypoints into limbs from the maps ---")
@@ -758,9 +939,16 @@ def main():
     print(f"  {POSE_SCENES} synthetic scenes, two people each, the second 0.2-0.55 body heights to the right:")
     print_assembly(evaluate_scenes(scenes))
     peaks = find_peaks(pcm)
-    by_field = draw_assembly(canvas.copy(), peaks, connect(peaks, paf, shape[0], True), MAP_STRIDE)
-    by_distance = draw_assembly(canvas.copy(), peaks, connect(peaks, paf, shape[0], False), MAP_STRIDE)
-    cv2.imwrite(str(OUT_DIR / "pose_assembly.png"), np.hstack([by_field, by_distance]))
+    field_links, distance_links = connect(peaks, paf, shape[0], True), connect(peaks, paf, shape[0], False)
+    field_correct, field_made, _ = assembly_scores(people, visible, peaks, field_links)
+    distance_correct, distance_made, _ = assembly_scores(people, visible, peaks, distance_links)
+    blank = np.zeros_like(canvas)
+    by_field = labelled(draw_assembly(blank.copy(), peaks, field_links, MAP_STRIDE),
+                        f"affinity field: {field_correct} of {field_made} correct")
+    by_distance = labelled(draw_assembly(blank.copy(), peaks, distance_links, MAP_STRIDE),
+                           f"shortest distance: {distance_correct} of {distance_made} correct")
+    cv2.imwrite(str(OUT_DIR / "pose_assembly.png"), tile_rows([[labelled(canvas, "true skeletons"), by_field,
+                                                                 by_distance]]))
     print("  Distance alone joins each wrist to whichever elbow is closest, which is often the other")
     print("  person's once two people stand within an arm's length; it never rejects a pairing, so it")
     print("  reaches a higher recall while one connection in six joins two different people.")
@@ -811,7 +999,9 @@ def main():
             peaks = find_peaks(pcm)
             overlay = maps_overlay(picture, pcm, paf)
             assembled = draw_assembly(picture.copy(), peaks, connect(peaks, paf, shape[0], True), MAP_STRIDE)
-            cv2.imwrite(str(OUT_DIR / "pose_maps_coco.png"), np.hstack([overlay, assembled]))
+            cv2.imwrite(str(OUT_DIR / "pose_maps_coco.png"), with_header(
+                np.hstack([overlay, assembled]), "image | strongest confidence map | affinity field magnitude | "
+                                                 "limbs paired by the field"))
     else:
         print("  pass --coco-root to repeat the assembly on COCO val2017 keypoint labels")
     print(f"\n  images written to {OUT_DIR}")

@@ -561,6 +561,23 @@ it rejects a pairing whose band carries no direction, and distance never rejects
 anything, which is why its recall is the higher of the two and its precision the
 lower.
 
+### What the images show
+
+| Image | Panels |
+| :--- | :--- |
+| `anchors.png` | training box shapes coloured by their best anchor, for k = 1, 3 and 5, anchors as stars |
+| `grid_encoding.png` | one training image on its grid: each box, its centre, the responsible cell, the chosen anchor and the slot |
+| `loss_terms.png` | every loss term and the total over all 30 epochs |
+| `nms_before_after.png` | three test images with every box above the drawing threshold, and what per-class suppression keeps |
+| `detections.png` | four unseen images, true boxes in green and detections in red with class and score |
+| `pr_curves.png` | the precision-recall curve behind each class's AP |
+| `coco_boxes.png` | one COCO image with its non-crowd boxes |
+| `coco_slots.png` | COCO box shapes with the 3 and 9 anchors, and the share of boxes that lose their slot at one scale and at three |
+| `pose_maps_synthetic.png` | a two-person scene, its strongest confidence map and its affinity field magnitude |
+| `paf_vectors.png` | the peaks found in the confidence maps, and the affinity fields as arrows along each limb |
+| `pose_assembly.png` | the true skeletons, the limbs paired by the field and the limbs paired by distance, with how many are correct |
+| `pose_maps_coco.png` | a COCO image with overlapping people, both maps, and the limbs paired by the field |
+
 ---
 
 ## 6. Segmentation and skip connections
