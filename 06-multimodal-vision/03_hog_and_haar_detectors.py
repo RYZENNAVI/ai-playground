@@ -1,6 +1,8 @@
 """Describe a window by its gradients or by rectangle contrasts, and detect with each description.
 
-Demonstrates the two hand-built detectors that preceded learned features:
+Demonstrates the two hand-built descriptions that preceded learned features: HOG, built
+and compared by distance here without a trained classifier, and Haar rectangle features,
+turned into a trained classifier by AdaBoost:
     1. Render person windows, clutter windows, a star, and small face and non-face windows.
     2. Take Sobel gradients and draw direction with opacity set by magnitude.
     3. Vote gradients into 8x8 cell histograms three ways and measure what a 5-degree turn changes.
@@ -311,6 +313,9 @@ def best_stumps(values, order, sorted_values, weights, labels, chunk=2000):
     or below it a face costs the weight of the non-faces at or below it plus the
     faces above it; the opposite polarity costs the complement. Both are read off
     for every i at once, and the order of values never changes between rounds.
+    A threshold equal to a value applies to every copy of that value, so a position
+    inside a run of equal values is not a real threshold and is excluded; only the
+    last position of each run is scored.
     """
     positive = np.where(labels == 1, weights, 0).astype(np.float64)
     negative = np.where(labels == 0, weights, 0).astype(np.float64)
@@ -322,6 +327,10 @@ def best_stumps(values, order, sorted_values, weights, labels, chunk=2000):
         below_neg = np.cumsum(negative[idx], axis=0)
         error_low = below_neg + (total_pos - below_pos)
         error_high = below_pos + (total_neg - below_neg)
+        inside_run = np.zeros(idx.shape, bool)
+        inside_run[:-1] = sorted_values[:-1, start:start + chunk] == sorted_values[1:, start:start + chunk]
+        error_low[inside_run] = np.inf
+        error_high[inside_run] = np.inf
         for error, polarity in ((error_low, 1), (error_high, -1)):
             flat = int(np.argmin(error))
             row, col = np.unravel_index(flat, error.shape)
@@ -398,7 +407,11 @@ def run_adaboost(name, train_windows, train_labels, test_windows, test_labels, f
 
 
 def load_tinyface(root, count, rng):
-    """Greyscale 16x16 crops from the TinyFace training images."""
+    """Greyscale 16x16 faces from the TinyFace recognition training set.
+
+    That set ships each face already cropped (about 32x32 pixels), so the images are
+    only resized here; no bounding box is read and no scene image is scanned.
+    """
     paths = sorted(Path(root).glob("Training_Set/**/*.jpg"))
     picked = rng.choice(len(paths), size=min(count, len(paths)), replace=False)
     windows = [cv2.resize(cv2.imread(str(paths[i]), cv2.IMREAD_GRAYSCALE), (FACE, FACE),
@@ -495,7 +508,9 @@ def main():
     print("  A 5-degree turn moves a direction a quarter of a bin. With the whole vote in one")
     print("  bin, every direction that crosses a boundary moves all of its weight; split")
     print("  between the two nearest bins, it moves a quarter. The same holds for pixels that")
-    print("  the turn carries across a cell border.")
+    print("  the turn carries across a cell border. Interpolation makes the change smaller")
+    print("  and smoother; it does not make HOG rotation invariant, and the turned star still")
+    print("  differs by 0.6 of its own norm.")
 
     # 4. HOG descriptor
     print("\n--- 4. Block-normalised HOG descriptor ---")
@@ -517,6 +532,8 @@ def main():
     for name, group in (("people", held_people), ("cars", held_cars), ("clutter", held_clutter)):
         d = np.array([np.linalg.norm(hog_descriptor(img) - template) for img in group])
         print(f"    {name:<8} mean {d.mean():.3f}  min {d.min():.3f}  max {d.max():.3f}")
+    print("  This compares descriptors by distance; no classifier or decision threshold is")
+    print("  trained on them here. A HOG detector would put a linear SVM on top.")
 
     # 5. Haar features
     print("\n--- 5. Two-rectangle Haar features ---")
@@ -545,6 +562,7 @@ def main():
           f"slicing {brute_time * 1000:.1f} ms, four lookups each {fast_time * 1000:.2f} ms")
     print("  ii[y, x] holds the sum above and to the left, so any rectangle is D - B - C + A:")
     print("  the cost is four reads whether the rectangle is 2 pixels or 200,000.")
+    print("  The timings are one pass each, not a benchmark; the point is the gap in kind.")
     cv2.imwrite(str(OUT_DIR / "integral_image.png"),
                 np.hstack([cv2.resize(sample, (170, 170), interpolation=cv2.INTER_NEAREST),
                            cv2.resize(np.rint(255 * ours / ours.max()).astype(np.uint8), (170, 170),

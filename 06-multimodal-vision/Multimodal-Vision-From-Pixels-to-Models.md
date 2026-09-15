@@ -251,7 +251,9 @@ A star is turned by 5°, a quarter of a 20° bin, and the cell histograms are co
 
 With the whole vote in one bin, a direction crossing a boundary moves all of its
 weight; split between neighbours, it moves a quarter of it. The same holds for
-pixels the turn carries across a cell border.
+pixels the turn carries across a cell border. Interpolation makes the change smaller
+and smoother; it does not make the descriptor rotation invariant, and the turned star
+still differs by 0.627 of its own norm.
 
 ### The descriptor
 
@@ -266,7 +268,9 @@ over the whole window.
 
 Over 40 fresh windows of each kind, measured against the mean of the three reference
 people: **people 0.456, clutter 0.675, cars 0.797** — the ordering the descriptor is
-built to produce.
+built to produce. This half validates the descriptor on rendered windows by distance
+alone; no classifier or decision threshold is trained on it, which in a HOG detector
+is the job of a linear SVM. The trained classifier in this script is the Haar one.
 
 ### Rectangle features and the integral image
 
@@ -278,11 +282,14 @@ built to produce.
 The hand-written integral image matches `cv2.integral` exactly (largest difference
 0.0). On 2000 random rectangles over a 640x480 image, summing by slicing takes
 **10.1 ms** and four lookups each take **0.17 ms**, for the same answers to 1.76e-10.
+Those are single passes rather than a benchmark; what they show is that one cost
+grows with the rectangle's area and the other does not.
 
 ### AdaBoost over every feature
 
 Twenty rounds, each choosing one feature, one threshold and one polarity from all
-17 408 of them; the first feature found is a **top/bottom pair at (3, 5), each 10x3**,
+17 408 of them (thresholds are scored only between distinct values, so a run of
+equal values is never split); the first feature found is a **top/bottom pair at (3, 5), each 10x3**,
 which is the eye band against the cheeks below it.
 
 | Threshold | Faces found | False alarms | Accuracy |
@@ -295,7 +302,10 @@ On real crops — 3000 TinyFace faces against 3000 CIFAR-10 images, 16x16 and
 variance-normalised — the same twenty rounds reach **87.5% of faces at 13.0% false
 alarms, 87.2% accuracy** at threshold 0.5, against 50.0% for predicting the larger
 class. The first round's weighted error is 0.222 on real faces against 0.038 on the
-rendered ones: **the same procedure, a harder problem.**
+rendered ones: **the same procedure, a harder problem.** The TinyFace images come
+already cropped to the face, and this is classification of 16x16 windows, not a
+detector scanning whole photographs at every position and scale; 87.2% is not a
+face-detection benchmark score.
 
 ---
 
