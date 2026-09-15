@@ -871,19 +871,40 @@ def main():
     print("  motion_pair.png: the texture before, after the small shift and after the large one,")
     print("  with a red cross at the same pixel in each; steps 10 and 11 both use these frames")
     print(f"  {BLOCK}x{BLOCK} blocks, sum of squared differences, search radius {SEARCH_RADIUS} px")
+    def flow_panel(points, vectors, shift, label, scale=3):
+        """Texture with the true shift in green and the recovered vectors in yellow, both scaled."""
+        tile = panel(cv2.cvtColor(texture.astype(np.uint8), cv2.COLOR_GRAY2BGR), label)
+        for (x, y), (u, v) in zip(points, vectors):
+            start = (int(round(x)), int(round(y)))
+            cv2.arrowedLine(tile, start, (int(round(x + scale * shift[0])), int(round(y + scale * shift[1]))),
+                            (0, 200, 0), 2, tipLength=0.3)
+            cv2.arrowedLine(tile, start, (int(round(x + scale * u)), int(round(y + scale * v))),
+                            (0, 255, 255), 1, tipLength=0.3)
+        return tile
+
+    def save_panels(name, tiles):
+        """Tiles side by side with a grey divider, plus a key along the bottom."""
+        divided = []
+        for tile in tiles:
+            divided += [tile, np.full((HEIGHT, 4, 3), 128, np.uint8)]
+        row = np.hstack(divided[:-1])
+        key = np.zeros((22, row.shape[1], 3), np.uint8)
+        cv2.putText(key, "green: true shift   yellow: recovered vector   both drawn 3x longer",
+                    (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.imwrite(str(OUT_DIR / name), np.vstack([row, key]))
+
     print(f"  {'true shift':<16}{'blocks':>7}{'median vector':>16}{'mean error':>12}{'within 1 px':>13}")
+    block_tiles = []
     for shift in (SMALL_SHIFT, LARGE_SHIFT):
         vectors, centres = block_matching(texture, shift_image(texture, *shift))
         error = flow_error(vectors, shift)
         median = np.median(vectors, axis=0)
         print(f"  {str(shift):<16}{len(vectors):>7}{'(' + f'{median[0]:.0f}, {median[1]:.0f}' + ')':>16}"
               f"{error.mean():>12.2f}{(error <= 1).mean():>13.1%}")
-        if shift == SMALL_SHIFT:
-            arrows = cv2.cvtColor(texture.astype(np.uint8), cv2.COLOR_GRAY2BGR)
-            for (cx, cy), (u, v) in zip(centres, vectors):
-                cv2.arrowedLine(arrows, (int(cx), int(cy)), (int(cx + 3 * u), int(cy + 3 * v)),
-                                (0, 0, 255), 1, tipLength=0.3)
-            cv2.imwrite(str(OUT_DIR / "block_flow.png"), arrows)
+        block_tiles.append(flow_panel(centres, vectors, shift,
+                                      f"block matching {shift}: mean error {error.mean():.2f} px"))
+    save_panels("block_flow.png", block_tiles)
+    print("  block_flow.png: the small shift on the left, the large one on the right")
     print("  Candidates are whole pixels, so a sub-pixel shift is rounded: the floor on the")
     print(f"  error here is the distance from {SMALL_SHIFT} to (4, -2). A shift longer than the")
     print("  radius has no correct candidate at all, and SSD returns the best wrong one.")
@@ -910,12 +931,11 @@ def main():
         error = flow_error(flow, shift)
         print(f"  {name:<18}{str(shift):<14}{np.median(error):>13.3f}{(error <= 0.1).mean():>15.1%}")
     print(f"  cv2 reported {int(status.sum())} of {len(points)} points as tracked")
-    arrows = cv2.cvtColor(texture.astype(np.uint8), cv2.COLOR_GRAY2BGR)
-    for (x, y), (u, v) in zip(points, rows[2][2]):
-        cv2.circle(arrows, (int(x), int(y)), 2, (0, 0, 255), -1)
-        cv2.arrowedLine(arrows, (int(x), int(y)), (int(round(x + u)), int(round(y + v))),
-                        (0, 255, 255), 1, tipLength=0.25)
-    cv2.imwrite(str(OUT_DIR / "lucas_kanade_flow.png"), arrows)
+    save_panels("lucas_kanade_flow.png",
+                [flow_panel(points, flow, shift, f"{name} {shift}: median error {np.median(flow_error(flow, shift)):.3f} px")
+                 for name, shift, flow in rows[:3]])
+    print("  lucas_kanade_flow.png: one level on the small shift, one level on the large shift,")
+    print("  and the 3-level pyramid on the large shift, left to right")
     print("  The first-order expansion holds over a few pixels. A pyramid level halves the")
     print("  displacement, so three levels bring an 11 px shift within reach of the top one.")
 

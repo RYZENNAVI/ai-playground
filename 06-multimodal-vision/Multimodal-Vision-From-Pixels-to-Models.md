@@ -157,8 +157,12 @@ All **16 true corners** are found, with no detection on the disk that has none.
 Both motion methods run on one blurred-noise texture and two copies of it shifted by a
 known amount. `motion_pair.png` shows the three frames side by side — before, after
 (3.6, -2.4) and after (11.3, 6.8) — with a red cross at the same pixel in each, so the
-texture can be seen sliding past a fixed point. `block_flow.png` and
-`lucas_kanade_flow.png` then draw the vectors each method recovers on the first frame.
+texture can be seen sliding past a fixed point. The result images draw, on the first
+frame, the true shift as a green arrow and each recovered vector as a yellow one, both
+three times longer, so a success shows the two arrows lying together and a failure
+shows them apart. `block_flow.png` has block matching on the small shift and on the
+large one; `lucas_kanade_flow.png` has one level on the small shift, one level on the
+large shift, and the 3-level pyramid on the large shift.
 
 | Method | True shift | Median error |
 | :--- | :--- | ---: |
