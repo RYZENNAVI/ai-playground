@@ -154,6 +154,12 @@ The structure tensor, the same matrix Harris scores and Lucas-Kanade inverts:
 
 All **16 true corners** are found, with no detection on the disk that has none.
 
+Both motion methods run on one blurred-noise texture and two copies of it shifted by a
+known amount. `motion_pair.png` shows the three frames side by side — before, after
+(3.6, -2.4) and after (11.3, 6.8) — with a red cross at the same pixel in each, so the
+texture can be seen sliding past a fixed point. `block_flow.png` and
+`lucas_kanade_flow.png` then draw the vectors each method recovers on the first frame.
+
 | Method | True shift | Median error |
 | :--- | :--- | ---: |
 | Block matching, 16x16, search radius 8 | (3.6, -2.4) | 0.58 px (100% within 1 px) |

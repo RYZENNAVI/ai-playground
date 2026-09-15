@@ -613,6 +613,8 @@ def main():
     def panel(image, label):
         """A mask or frame as a labelled BGR tile."""
         tile = cv2.cvtColor(image.astype(np.uint8) * 255, cv2.COLOR_GRAY2BGR) if image.ndim == 2 else image.copy()
+        (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        cv2.rectangle(tile, (2, 2), (10 + text_w, 10 + text_h), (0, 0, 0), -1)   # legible on any background
         cv2.putText(tile, label, (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
         return tile
 
@@ -857,6 +859,17 @@ def main():
     # 10. Block matching
     print("\n--- 10. Block matching against a known displacement ---")
     texture = texture_scene(rng)
+    # Before and both afters side by side, each with a red cross at the same pixel, so
+    # the texture can be seen sliding past a fixed point by each true shift.
+    pair = []
+    for label, image in (("before", texture), (f"after {SMALL_SHIFT}", shift_image(texture, *SMALL_SHIFT)),
+                         (f"after {LARGE_SHIFT}", shift_image(texture, *LARGE_SHIFT))):
+        tile = panel(cv2.cvtColor(np.clip(image, 0, 255).astype(np.uint8), cv2.COLOR_GRAY2BGR), label)
+        cv2.drawMarker(tile, (WIDTH // 2, HEIGHT // 2), (0, 0, 255), cv2.MARKER_CROSS, 24, 1)
+        pair += [tile, np.full((HEIGHT, 4, 3), 128, np.uint8)]
+    cv2.imwrite(str(OUT_DIR / "motion_pair.png"), np.hstack(pair[:-1]))
+    print("  motion_pair.png: the texture before, after the small shift and after the large one,")
+    print("  with a red cross at the same pixel in each; steps 10 and 11 both use these frames")
     print(f"  {BLOCK}x{BLOCK} blocks, sum of squared differences, search radius {SEARCH_RADIUS} px")
     print(f"  {'true shift':<16}{'blocks':>7}{'median vector':>16}{'mean error':>12}{'within 1 px':>13}")
     for shift in (SMALL_SHIFT, LARGE_SHIFT):
