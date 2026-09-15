@@ -2,7 +2,7 @@
 
 Demonstrates the classical tracking pipeline, each stage scored against a drawn ground truth:
     1. Render a clip of a coloured ellipse that travels a known path, grows, turns and dims.
-    2. Threshold the object's colour in RGB and in HSV, before and after the light drops.
+    2. Threshold the object's colour in BGR and in HSV, before and after the light drops.
     3. Clean the mask with erosion and dilation.
     4. Label connected components two ways by hand and reconcile them with OpenCV.
     5. Track the largest component's centroid through the clip.
@@ -635,21 +635,19 @@ def main():
 
     # 5. Centroid tracking
     print("\n--- 5. Tracking the centroid of the largest component ---")
-    centroid_track, errors, empty = [], [], 0
-    for frame, mask in zip(frames, masks):
+    # One entry per frame, NaN where nothing was found, so index t is always frame t.
+    centroid_track, errors = np.full((FRAMES, 2), np.nan), np.full(FRAMES, np.nan)
+    for t, (frame, mask) in enumerate(zip(frames, masks)):
         cleaned = clean(hsv_mask(frame))[2].astype(np.uint8)
         _, _, stats, centroids = cv2.connectedComponentsWithStats(cleaned, connectivity=8)
         if len(stats) < 2:                       # the colour rule kept nothing in this frame
-            empty += 1
-            centroid_track.append(centroid_track[-1] if centroid_track else mask_centroid(mask))
             continue
         biggest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-        centroid_track.append(centroids[biggest])
-        errors.append(np.hypot(*(centroids[biggest] - np.array(mask_centroid(mask)))))
-    errors = np.array(errors)
-    print(f"  frames with no component at all: {empty} of {FRAMES}")
-    print(f"  centroid error against the true mask: bright mean {errors[:DIM_FROM].mean():.2f} px, "
-          f"dimmed mean {errors[DIM_FROM:].mean():.2f} px, worst {errors.max():.2f} px")
+        centroid_track[t] = centroids[biggest]
+        errors[t] = np.hypot(*(centroids[biggest] - np.array(mask_centroid(mask))))
+    print(f"  frames with no component at all: {int(np.isnan(errors).sum())} of {FRAMES}")
+    print(f"  centroid error against the true mask: bright mean {np.nanmean(errors[:DIM_FROM]):.2f} px, "
+          f"dimmed mean {np.nanmean(errors[DIM_FROM:]):.2f} px, worst {np.nanmax(errors):.2f} px")
     print("  Each frame is segmented from scratch, so the track never drifts; its error is")
     print("  the handful of pinholes and rim pixels the cleaned mask still disagrees on.")
     print("  Detection and tracking are separate jobs, and this step does the first one every")
@@ -727,32 +725,33 @@ def main():
     # 8. CAMSHIFT
     print("\n--- 8. CAMSHIFT: size and orientation from the moments ---")
     window, cv_window = roi, roi
-    cs_rows, cv_error, estimates, lost = [], [], [], 0
-    for prob, mask, state in zip(probs, masks, states):
+    # As in step 5, a lost frame keeps its row as NaN so the thirds stay aligned with the clip.
+    cs_rows, cv_error, last = np.full((FRAMES, 5), np.nan), np.full(FRAMES, np.nan), None
+    for t, (prob, mask, state) in enumerate(zip(probs, masks, states)):
         estimate, window = cam_shift(prob, window)
-        if estimate is None:                     # no probability mass left inside the window
-            lost += 1
-            continue
-        estimates.append(estimate)
         rotated, cv_window = cv2.CamShift(prob, cv_window, criteria)
         truth_centre = mask_centroid(mask)
-        cs_rows.append((np.hypot(estimate[0] - truth_centre[0], estimate[1] - truth_centre[1]),
-                        abs(estimate[2] - state[2]), abs(estimate[3] - state[3]),
-                        angle_gap(estimate[4], state[4]), coverage(mask, window)))
-        cv_error.append(np.hypot(rotated[0][0] - truth_centre[0], rotated[0][1] - truth_centre[1]))
-    cs_rows = np.array(cs_rows)
+        cv_error[t] = np.hypot(rotated[0][0] - truth_centre[0], rotated[0][1] - truth_centre[1])
+        last = estimate if t == FRAMES - 1 else last
+        if estimate is None:                     # no probability mass left inside the window
+            continue
+        cs_rows[t] = (np.hypot(estimate[0] - truth_centre[0], estimate[1] - truth_centre[1]),
+                      abs(estimate[2] - state[2]), abs(estimate[3] - state[3]),
+                      angle_gap(estimate[4], state[4]), coverage(mask, window))
     print(f"  window resized and turned every frame from the second moments; "
-          f"frames where the window held no probability at all: {lost} of {FRAMES}")
+          f"frames where the window held no probability at all: {int(np.isnan(cs_rows[:, 0]).sum())} of {FRAMES}")
     print(f"  {'':<22}{'first third':>12}{'last third':>12}")
     for column, name, unit in ((0, "centre error", "px"), (1, "long semi-axis error", "px"),
                                (2, "short semi-axis error", "px"), (3, "angle error", "deg")):
-        print(f"  {name:<22}{cs_rows[:third, column].mean():>9.2f} {unit:<3}"
-              f"{cs_rows[-third:, column].mean():>8.2f} {unit}")
-    print(f"  {'object covered':<22}{cs_rows[:third, 4].mean():>12.1%}{cs_rows[-third:, 4].mean():>12.1%}")
+        print(f"  {name:<22}{np.nanmean(cs_rows[:third, column]):>9.2f} {unit:<3}"
+              f"{np.nanmean(cs_rows[-third:, column]):>8.2f} {unit}")
+    print(f"  {'object covered':<22}{np.nanmean(cs_rows[:third, 4]):>12.1%}{np.nanmean(cs_rows[-third:, 4]):>12.1%}")
     print(f"  cv2.CamShift centre error over the clip: mean {np.mean(cv_error):.2f} px")
-    last = estimates[-1]
-    print(f"  last frame estimate: semi-axes {last[2]:.1f} x {last[3]:.1f}, angle {last[4]:.1f} deg; "
-          f"truth {last_state[2]:.1f} x {last_state[3]:.1f}, {last_state[4]:.1f} deg")
+    if last is None:
+        print(f"  last frame: window lost; truth {last_state[2]:.1f} x {last_state[3]:.1f}, {last_state[4]:.1f} deg")
+    else:
+        print(f"  last frame estimate: semi-axes {last[2]:.1f} x {last[3]:.1f}, angle {last[4]:.1f} deg; "
+              f"truth {last_state[2]:.1f} x {last_state[3]:.1f}, {last_state[4]:.1f} deg")
     print("  Both trackers start from the box step 6 took off the first frame's true mask, so")
     print("  these errors are what each rule does with a perfect start, not what it does from")
     print("  nothing.")
@@ -760,9 +759,14 @@ def main():
     trajectory = frames[-1].copy()
     truth_path = np.array([mask_centroid(m) for m in masks], np.float32)
     cv2.polylines(trajectory, [np.rint(truth_path).astype(np.int32)], False, (0, 255, 0), 1)
-    cv2.polylines(trajectory, [np.rint(np.array(centroid_track)).astype(np.int32)], False, (0, 0, 255), 1)
+    found_rows = ~np.isnan(centroid_track[:, 0])
+    # Draw only the runs of consecutive frames where a centroid was found.
+    for run in np.split(np.arange(FRAMES), np.flatnonzero(np.diff(found_rows)) + 1):
+        if found_rows[run[0]]:
+            cv2.polylines(trajectory, [np.rint(centroid_track[run]).astype(np.int32)], False, (0, 0, 255), 1)
     cv2.polylines(trajectory, [np.rint(np.array(ms_track)).astype(np.int32)], False, (0, 255, 255), 1)
-    cv2.ellipse(trajectory, ((last[0], last[1]), (2 * last[2], 2 * last[3]), last[4]), (255, 0, 255), 1)
+    if last is not None:
+        cv2.ellipse(trajectory, ((last[0], last[1]), (2 * last[2], 2 * last[3]), last[4]), (255, 0, 255), 1)
     cv2.imwrite(str(OUT_DIR / "trajectory.png"), trajectory)
     cv2.imwrite(str(OUT_DIR / "backprojection.png"),
                 np.hstack([frames[-1], cv2.cvtColor(probs[-1], cv2.COLOR_GRAY2BGR)]))
