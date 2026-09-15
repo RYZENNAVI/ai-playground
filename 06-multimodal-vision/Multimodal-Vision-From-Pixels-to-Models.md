@@ -190,7 +190,14 @@ total magnitude**, thinning 18830 pixels above the low threshold to 6691.
 
 The wide pair lets the high threshold decide what an edge is and the low one decide
 how far it is followed. Against `cv2.Canny` on the same smoothed image: **3270
-pixels against 3269, 100% of each within 1 px of the other.**
+pixels against 3269, 100% of each within 1 px of the other.** The hand-written
+version snaps the gradient to four directions rather than interpolating between
+neighbours, so it is a readable Canny rather than a line-for-line copy of OpenCV's.
+
+Precision and recall here allow **2 px of tolerance**: a precision of 1.000 means every
+detected edge pixel lies within 2 px of a true boundary, not that the two maps are
+identical pixel for pixel. Smoothing and discretisation move an edge by a pixel or
+two, which is why a tolerance is used at all.
 
 ### Votes
 
@@ -202,7 +209,13 @@ pixels against 3269, 100% of each within 1 px of the other.**
 | Circles, along the gradient | same | **191 801** | **22 ms** | **all 3 disks, ranks 1, 2 and 3** |
 
 The gradient at a rim points along the radius, so it names the direction the centre
-lies in; sampling every angle spreads the same evidence around a whole ring.
+lies in; sampling every angle spreads the same evidence around a whole ring. Disks
+are paired with detections one to one, so no detection counts for two disks.
+
+Both savings rest on a prior being right. The lane restriction cannot find a line
+outside its range, however strong. The gradient-directed circle vote trusts each
+pixel's gradient; the Canny edges of these disks give reliable directions, but on a
+blurred or textured rim a wrong direction sends both votes to the wrong centre.
 
 ### The generalised Hough transform
 
@@ -212,7 +225,10 @@ the shape among three distractors, the peak lands **0.07 px** from the true refe
 point. Extended over 6 scales and 19 rotations — 114 hypotheses in 0.1 s — the
 strongest peak is **scale 0.7, rotation 25°, position error 0.33 px**, which is the
 transform that was applied. The runner-up hypotheses are the neighbouring rotations
-at half the peak height.
+at half the peak height. The rotation step equals the 5° R-table bin, so each step is
+a whole-bin shift, and the true 25° lies on that grid; an angle between steps would
+be recovered only to the nearest one. This is a synthetic template among simple
+distractors, and it shows the mechanism rather than robustness on cluttered images.
 
 ---
 

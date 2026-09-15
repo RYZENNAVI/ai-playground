@@ -103,7 +103,11 @@ def gaussian_kernel(size, sigma):
 
 
 def captured_mass(size, sigma):
-    """Share of the continuous Gaussian's weight that falls inside a size x size window."""
+    """Share of a Gaussian's weight that falls inside a size x size window.
+
+    The full Gaussian is approximated by a discrete kernel at least 8 sigma wide, which
+    holds all but a negligible part of the weight, and the central window is summed.
+    """
     wide = gaussian_kernel(8 * int(np.ceil(sigma)) + 1, sigma)
     centre, half = wide.shape[0] // 2, size // 2
     return float(wide[centre - half:centre + half + 1, centre - half:centre + half + 1].sum())
@@ -296,6 +300,25 @@ def strongest_circles(accumulator, radii, count=10, centre_gap=10):
 # ---------------------------------------------------------------------------
 # 8-9. Generalised Hough transform
 # ---------------------------------------------------------------------------
+
+def match_circles(truths, found, centre_tol=3.0, radius_tol=2):
+    """Pair each true circle with at most one detection, and each detection with at most one truth.
+
+    Every (truth, detection) pair is costed by centre distance plus radius gap, and
+    pairs are taken cheapest first, skipping any whose truth or detection is already
+    used. A pair counts as a hit only within both tolerances.
+    """
+    pairs = sorted((np.hypot(c[0] - x, c[1] - y) + abs(c[2] - r), i, j)
+                   for i, (x, y, r) in enumerate(truths) for j, c in enumerate(found))
+    matched, used = [None] * len(truths), set()
+    for _, i, j in pairs:
+        if matched[i] is None and j not in used:
+            matched[i] = j
+            used.add(j)
+    hits = sum(j is not None and np.hypot(found[j][0] - x, found[j][1] - y) <= centre_tol
+               and abs(found[j][2] - r) <= radius_tol for j, (x, y, r) in zip(matched, truths))
+    return matched, hits
+
 
 def polygon_points(scale=1.0, rotation=0.0, position=(0.0, 0.0)):
     """Template polygon vertices after scaling, rotating (degrees) and translating."""
@@ -536,9 +559,7 @@ def main():
         accumulator, cast = hough_circles(edges, gx, gy, radii, along)
         elapsed = time.perf_counter() - started
         top = strongest_circles(accumulator, radii)
-        matched = [min(top, key=lambda c: np.hypot(c[0] - x, c[1] - y) + abs(c[2] - r)) for x, y, r in TRUE_CIRCLES]
-        hits = sum(np.hypot(c[0] - x, c[1] - y) <= 3 and abs(c[2] - r) <= 2
-                   for c, (x, y, r) in zip(matched, TRUE_CIRCLES))
+        matched, hits = match_circles(TRUE_CIRCLES, top)
         print(f"  {name:<30}{cast:>12}{elapsed * 1000:>7.0f}ms{hits:>22}")
         circle_results[name] = (top, matched)
     top, matched = circle_results["along the gradient only"]
@@ -547,12 +568,15 @@ def main():
         truth = [f"disk ({tx}, {ty}) r {tr}" for tx, ty, tr in TRUE_CIRCLES
                  if np.hypot(x - tx, y - ty) <= 3 and abs(r - tr) <= 2]
         print(f"    {rank:>2}  centre ({x:>3}, {y:>3})  r {r:>2}  score {score:.3f}  {truth[0] if truth else '-'}")
-    print("  best match to each true disk:")
-    for (x, y, r), (fx, fy, fr, score) in zip(TRUE_CIRCLES, matched):
-        print(f"    true ({x}, {y}) r {r}  ->  found ({fx}, {fy}) r {fr}, rank {top.index((fx, fy, fr, score)) + 1}")
+    print("  one-to-one match for each true disk (no detection is counted twice):")
+    for (x, y, r), j in zip(TRUE_CIRCLES, matched):
+        found_text = "none" if j is None else f"({top[j][0]}, {top[j][1]}) r {top[j][2]}, rank {j + 1}"
+        print(f"    true ({x}, {y}) r {r}  ->  found {found_text}")
     print("  The gradient at a disk's rim points along the radius, so it names the centre's")
     print("  direction. Sampling every angle casts its votes around a whole ring instead,")
-    print("  and only the ring through the true centre lines up across pixels.")
+    print("  and only the ring through the true centre lines up across pixels. The saving")
+    print("  rests on that gradient being reliable: on a blurred or textured rim a wrong")
+    print("  direction sends both votes to the wrong place.")
     drawn = cv2.cvtColor(noisy.astype(np.uint8), cv2.COLOR_GRAY2BGR)
     for x, y, r, _ in top:
         cv2.circle(drawn, (x, y), r, (0, 0, 255), 1)
@@ -593,7 +617,7 @@ def main():
             y, x = np.unravel_index(int(np.argmax(votes)), votes.shape)
             results.append((float(votes[y, x]), float(scale), float(rotation), int(x), int(y)))
     elapsed = time.perf_counter() - started
-    results.sort(reverse=True)
+    results.sort(key=lambda item: item[0], reverse=True)   # rank by peak height alone
     print(f"  {len(SCALES)} scales x {len(ROTATIONS)} rotations = {len(results)} hypotheses, "
           f"{elapsed:.1f} s")
     expected = np.array(TRUE_POSITION) + place_offset(offset, TRUE_SCALE, TRUE_ROTATION)
@@ -607,7 +631,8 @@ def main():
           f"{np.hypot(best[3] - expected[0], best[4] - expected[1]):.2f} px")
     print("  A turn by phi shifts every gradient angle by phi, which is a whole number of")
     print("  R-table bins when the rotation step equals the bin width, and scales every")
-    print("  offset vector by the same factor as the shape.")
+    print("  offset vector by the same factor as the shape. The true 25 deg lies on that")
+    print("  grid; a turn between grid steps would be recovered only to the nearest step.")
     found = cv2.cvtColor(scene.astype(np.uint8), cv2.COLOR_GRAY2BGR)
     origin = np.array([best[3], best[4]]) - place_offset(offset, best[1], best[2])
     cv2.polylines(found, [polygon_points(best[1], best[2], origin)], True, (0, 0, 255), 1)
