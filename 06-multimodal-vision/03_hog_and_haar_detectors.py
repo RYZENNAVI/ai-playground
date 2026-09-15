@@ -315,7 +315,9 @@ def best_stumps(values, order, sorted_values, weights, labels, chunk=2000):
     for every i at once, and the order of values never changes between rounds.
     A threshold equal to a value applies to every copy of that value, so a position
     inside a run of equal values is not a real threshold and is excluded; only the
-    last position of each run is scored.
+    last position of each run is scored. The threshold returned lies halfway to the
+    next distinct value (one above the largest for the last position), so no training
+    value sits on it and both polarities split the examples exactly as scored.
     """
     positive = np.where(labels == 1, weights, 0).astype(np.float64)
     negative = np.where(labels == 0, weights, 0).astype(np.float64)
@@ -335,7 +337,9 @@ def best_stumps(values, order, sorted_values, weights, labels, chunk=2000):
             flat = int(np.argmin(error))
             row, col = np.unravel_index(flat, error.shape)
             if error[row, col] < best[0]:
-                best = (float(error[row, col]), start + col, float(sorted_values[row, start + col]), polarity)
+                column = sorted_values[:, start + col]
+                threshold = (column[row] + column[row + 1]) / 2 if row + 1 < len(column) else column[row] + 1.0
+                best = (float(error[row, col]), start + col, float(threshold), polarity)
     return best
 
 
