@@ -399,7 +399,9 @@ Two dense output tensors, two ways of reading objects out of them.
 
 ### Anchors and the grid
 
-K-means over the training shapes, with 1 - IoU as the distance:
+Clustering over the training shapes with 1 - IoU as the distance and the median shape
+as each centre — the YOLO anchor recipe, k-means in its assign-and-update loop but not
+in its Euclidean distance or its mean:
 
 | k | Anchors (w, h) | Mean best IoU |
 | ---: | :--- | ---: |
@@ -419,9 +421,17 @@ costs **3.81e-06 px**, and only **2 of 12 066 boxes** find their slot already ta
 | 5 | 0.207 | 0.211 | 0.461 | 0.516 | 0.111 | 1.505 |
 | 30 | 0.033 | 0.035 | 0.007 | 0.011 | 0.001 | 0.086 |
 
+The xy, wh and noobj columns are already weighted (by 5.0, 5.0 and 0.5), so the total
+is their plain sum.
+
 The hand-written per-class suppression keeps **the same boxes as
-`torchvision.ops.batched_nms` in 500 of 500 test images**, and the detector reaches
+`torchvision.ops.batched_nms` in 500 of 500 test images** — agreement on these
+candidates, not a proof of equivalence on every input — and the detector reaches
 **mAP@0.5 = 0.974** (box 0.978, disk 0.979, triangle 0.967) over 1493 unseen boxes.
+The images are rendered and their objects overlap by at most 0.1 IoU, so that score
+shows the grid, anchor, loss, decode, suppression and mAP chain working end to end,
+not what a small detector reaches on photographs; no detector is trained on COCO
+below.
 
 ### The same encoding on COCO
 
@@ -441,6 +451,13 @@ The maps are drawn from keypoints: a Gaussian per keypoint per channel, and, for
 of the 19 limbs, a two-channel band carrying the unit vector from one end to the
 other. A candidate connection is scored by the mean of the field projected onto it —
 the line integral — and pairs are matched greedily per limb.
+
+Because the maps come from the labels rather than from a network, these runs isolate
+the association step: they show what the field adds when the maps are right, not how
+a full OpenPose model scores. Each limb type is matched on its own, and grouping the
+limbs into one skeleton per person is not done here. Recall is taken over every limb
+whose two keypoints are labelled visible, so a missed peak counts against it as well
+as a missed pairing.
 
 | Scenes | Rule | Precision | Recall |
 | :--- | :--- | ---: | ---: |

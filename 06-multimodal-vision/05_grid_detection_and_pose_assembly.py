@@ -1,7 +1,7 @@
 """Turn dense output maps into objects: a grid detector's boxes, and people assembled from part maps.
 
 Demonstrates how single-shot detection and bottom-up pose estimation read structure out of tensors:
-    1. Render a detection dataset whose every box is recorded, and fit anchor shapes with k-means.
+    1. Render a detection dataset whose every box is recorded, and cluster anchor shapes by IoU.
     2. Encode each box onto its grid cell and best anchor, and decode it back.
     3. Build a one-scale YOLO detector and the loss terms that train it.
     4. Train the detector and follow each loss term.
@@ -9,7 +9,7 @@ Demonstrates how single-shot detection and bottom-up pose estimation read struct
     6. Score mean average precision on unseen images and draw detections.
     7. Prepare COCO annotations as grid targets and count what one scale and three scales can hold.
     8. Render part confidence maps and part affinity fields from keypoints.
-    9. Assemble people from the maps by line integrals over the affinity fields, and by distance alone.
+    9. Pair keypoints into limbs by line integrals over the affinity fields, and by distance alone.
 
 Module 06: Multimodal Vision - Grid Detection and Pose Assembly.
 """
@@ -99,10 +99,13 @@ def render_detection(rng):
 def kmeans_anchors(wh, k, rng, iterations=100):
     """Cluster box shapes with 1 - IoU as the distance, as if every box were centred at one point.
 
-    Euclidean distance on (w, h) would let large boxes dominate the clusters; IoU
-    between two shapes aligned at a corner measures what an anchor is for, how much
-    of a box it already covers. Each centre moves to the median shape of its
-    members, and the result is sorted by area.
+    This is the anchor clustering used for YOLO: k-means in its alternation of
+    assigning and updating, but not k-means in the strict sense, which uses squared
+    Euclidean distance and the arithmetic mean. Euclidean distance on (w, h) would
+    let large boxes dominate the clusters; IoU between two shapes aligned at a corner
+    measures what an anchor is for, how much of a box it already covers. Each centre
+    moves to the per-dimension median shape of its members, and the result is sorted
+    by area.
     """
     centres = wh[rng.choice(len(wh), k, replace=False)].astype(np.float64)
     for _ in range(iterations):
@@ -454,8 +457,9 @@ def assembly_scores(people, visible, peaks, connections, radius=2.0):
 
     Every true keypoint claims the nearest detected peak of its type within radius
     map pixels, which gives each peak an owner. A connection is correct when both of
-    its peaks have the same owner; a true limb is recoverable when both its
-    keypoints claimed a peak.
+    its peaks have the same owner. Recall is taken over every true limb whose two
+    keypoints are labelled visible, whether or not a peak was found for them, so it
+    counts a missed peak and a missed pairing alike.
     """
     owner = [dict() for _ in KEYPOINTS]
     for person, (joints, seen) in enumerate(zip(people, visible)):
@@ -465,12 +469,12 @@ def assembly_scores(people, visible, peaks, connections, radius=2.0):
                 nearest = int(np.argmin(gaps))
                 if gaps[nearest] <= radius:
                     owner[j][nearest] = person
-    recoverable = sum(1 for joints, seen in zip(people, visible) for a, b in SKELETON
-                      if seen[a - 1] and seen[b - 1])
+    visible_limbs = sum(1 for joints, seen in zip(people, visible) for a, b in SKELETON
+                        if seen[a - 1] and seen[b - 1])
     correct = sum(1 for limb, i, k in connections
                   if i in owner[SKELETON[limb][0] - 1] and k in owner[SKELETON[limb][1] - 1]
                   and owner[SKELETON[limb][0] - 1][i] == owner[SKELETON[limb][1] - 1][k])
-    return correct, len(connections), recoverable
+    return correct, len(connections), visible_limbs
 
 
 def draw_assembly(canvas, peaks, connections, scale):
@@ -515,8 +519,8 @@ def print_assembly(totals):
     """Precision and recall of the two assembly rules."""
     print(f"  {'rule':<28}{'connections':>12}{'correct':>9}{'precision':>11}{'recall':>9}")
     for use_field, name in ((True, "affinity field line integral"), (False, "shortest distance")):
-        correct, made, recoverable = totals[use_field]
-        print(f"  {name:<28}{made:>12}{correct:>9}{correct / max(made, 1):>11.1%}{correct / max(recoverable, 1):>9.1%}")
+        correct, made, visible_limbs = totals[use_field]
+        print(f"  {name:<28}{made:>12}{correct:>9}{correct / max(made, 1):>11.1%}{correct / max(visible_limbs, 1):>9.1%}")
 
 
 # ---------------------------------------------------------------------------
@@ -581,8 +585,10 @@ def main():
         out = model(torch.zeros(1, 3, IMG, IMG, device=device))
     print(f"  output {tuple(out.shape)} -> reshaped to (batch, anchors, rows, columns, {5 + len(CLASSES)}); "
           f"{sum(p.numel() for p in model.parameters())} parameters")
-    print(f"  loss = {LAMBDA_COORD} * (xy + wh) + obj + {LAMBDA_NOOBJ} * noobj + class; slots whose prediction "
-          f"overlaps a real box by more than {IGNORE_IOU} are left out of noobj")
+    print(f"  loss = xy + wh + obj + noobj + class, where xy and wh already carry the weight {LAMBDA_COORD} "
+          f"and noobj the weight {LAMBDA_NOOBJ}")
+    print(f"  (the table below prints the weighted terms); slots whose prediction overlaps a real box by "
+          f"more than {IGNORE_IOU} are left out of noobj")
 
     # 4. Training
     print("\n--- 4. Training, term by term ---")
@@ -657,7 +663,7 @@ def main():
               f"letterboxed to {COCO_INPUT}x{COCO_INPUT}")
         nine, fit9 = kmeans_anchors(coco_wh, 9, np.random.default_rng(SEED))
         three, fit3 = kmeans_anchors(coco_wh, 3, np.random.default_rng(SEED))
-        print(f"  k-means anchors: k=3 mean best IoU {fit3:.3f}; k=9 mean best IoU {fit9:.3f}")
+        print(f"  IoU-clustered anchors: k=3 mean best IoU {fit3:.3f}; k=9 mean best IoU {fit9:.3f}")
         print(f"  k=9 anchors by area: {', '.join(f'({w:.0f},{h:.0f})' for w, h in nine)}")
         one_scale = three_scales = 0
         roundtrip = 0.0
@@ -738,7 +744,10 @@ def main():
     cv2.imwrite(str(OUT_DIR / "pose_maps_synthetic.png"), maps_overlay(canvas, pcm, paf))
 
     # 9. Assembly
-    print("\n--- 9. Assembling people from the maps ---")
+    print("\n--- 9. Pairing keypoints into limbs from the maps ---")
+    print("  Each limb type is matched on its own; grouping the limbs into whole skeletons, one")
+    print("  per person, is the step after this and is not done here. Recall counts every limb")
+    print("  whose two keypoints are labelled visible, so it includes peaks that were missed.")
     print(f"  {POSE_SCENES} synthetic scenes, two people each, the second 0.2-0.55 body heights to the right:")
     print_assembly(evaluate_scenes(scenes))
     peaks = find_peaks(pcm)
