@@ -200,6 +200,36 @@ def to_u8(array):
         np.rint(255 * (array - array.min()) / span).astype(np.uint8)
 
 
+def tile(image, label):
+    """An image as a labelled BGR tile of the scene's size; non-uint8 arrays are stretched to 0-255."""
+    image = image if image.dtype == np.uint8 else to_u8(image)
+    image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR) if image.ndim == 2 else image.copy()
+    if image.shape[:2] != (HEIGHT, WIDTH):
+        image = cv2.resize(image, (WIDTH, HEIGHT), interpolation=cv2.INTER_NEAREST)
+    (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+    cv2.rectangle(image, (2, 2), (10 + text_w, 10 + text_h), (0, 0, 0), -1)
+    cv2.putText(image, label, (6, 6 + text_h), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1, cv2.LINE_AA)
+    return image
+
+
+def save_grid(name, tiles, columns):
+    """Tiles in rows of `columns`, with grey dividers, written to OUT_DIR."""
+    tiles = tiles + [np.zeros_like(tiles[0])] * (-len(tiles) % columns)
+    rows = []
+    for start in range(0, len(tiles), columns):
+        cells = []
+        for cell in tiles[start:start + columns]:
+            cells += [cell, np.full((HEIGHT, 4, 3), 128, np.uint8)]
+        row = np.hstack(cells[:-1])
+        rows += [row, np.full((4, row.shape[1], 3), 128, np.uint8)]
+    cv2.imwrite(str(OUT_DIR / name), np.vstack(rows[:-1]))
+
+
+def scene_u8(image):
+    """A float scene clipped to 0-255 as a BGR image, without stretching."""
+    return cv2.cvtColor(np.clip(image, 0, 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+
+
 # ---------------------------------------------------------------------------
 # 6-7. Hough transforms for lines and circles
 # ---------------------------------------------------------------------------
@@ -421,7 +451,8 @@ def main():
     for x, y, r in TRUE_CIRCLES:
         print(f"    disk  centre ({x}, {y}), radius {r}")
     print(f"  true boundary pixels: {int(boundary.sum())} (a 2 px band on each side of every step)")
-    cv2.imwrite(str(OUT_DIR / "scene.png"), np.hstack([clean, noisy]).astype(np.uint8))
+    save_grid("scene.png", [tile(scene_u8(clean), "clean"), tile(scene_u8(noisy), f"noise sigma {NOISE_SIGMA:.0f}"),
+                            tile(boundary, "true boundary")], 3)
 
     # 2. Gaussian kernels
     print("\n--- 2. Gaussian kernels: what each size and width keeps ---")
@@ -430,7 +461,6 @@ def main():
     print(f"  {'size':>4}{'sigma':>7}{'mass inside window':>20}{'noise left':>12}{'edge strength left':>20}")
     _, _, raw_edge, _ = sobel_gradients(clean)
     for size in (3, 5, 7):
-        row = []
         for sigma in (0.5, 1.0, 1.5):
             kernel = gaussian_kernel(size, sigma)
             smoothed = filter_image(noisy, kernel)
@@ -438,9 +468,10 @@ def main():
             edge_left = float(sobel_gradients(filter_image(clean, kernel))[2][boundary].mean()
                               / raw_edge[boundary].mean())
             print(f"  {size:>4}{sigma:>7.1f}{captured_mass(size, sigma):>20.3f}{noise_left:>12.2f}{edge_left:>20.3f}")
-            row.append(to_u8(smoothed))
-        grid.append(np.hstack(row))
-    cv2.imwrite(str(OUT_DIR / "gaussian_grid.png"), np.vstack(grid))
+            grid.append(tile(scene_u8(smoothed), f"{size}x{size} sigma {sigma}: noise {noise_left:.1f}, "
+                                                 f"edge {edge_left:.2f}"))
+    save_grid("gaussian_grid.png", grid, 3)
+    print("  gaussian_grid.png: rows are window sizes 3, 5, 7 and columns sigma 0.5, 1.0, 1.5")
     print(f"  noise before smoothing: {float((noisy - clean)[flat].std()):.2f}")
     print("  A wider sigma averages more pixels, so noise falls, and it also spreads each step")
     print("  over more pixels, so the gradient at the edge falls with it. A window too small")
@@ -458,8 +489,8 @@ def main():
         edges = sobel_gradients(image)[2] >= SOBEL_THRESHOLD
         precision, recall = edge_scores(edges, boundary)
         print(f"  {name:<30}{int(edges.sum()):>12}{precision:>11.3f}{recall:>9.3f}")
-        sobel_rows.append(edges.astype(np.uint8) * 255)
-    cv2.imwrite(str(OUT_DIR / "sobel_threshold.png"), np.hstack(sobel_rows))
+        sobel_rows.append(tile(edges, f"{name}: precision {precision:.2f}, recall {recall:.2f}"))
+    save_grid("sobel_threshold.png", sobel_rows, 2)
     print("  Differentiation amplifies pixel-to-pixel noise. Smoothing first removes most of")
     print("  it, but a single threshold still leaves bands several pixels thick along each edge.")
 
@@ -479,12 +510,13 @@ def main():
         direction_colour[(sector == angle) & above] = colour
     raw_direction = np.zeros((HEIGHT, WIDTH), np.uint8)
     raw_direction[above] = np.rint(sobel_gradients(stages["smoothed"])[3][above] * 255 / 180).astype(np.uint8)
-    cv2.imwrite(str(OUT_DIR / "canny_stages.png"), np.hstack([
-        cv2.cvtColor(to_u8(stages["smoothed"]), cv2.COLOR_GRAY2BGR),
-        cv2.cvtColor(to_u8(magnitude), cv2.COLOR_GRAY2BGR),
-        cv2.applyColorMap(raw_direction, cv2.COLORMAP_HSV), direction_colour,
-        cv2.cvtColor(to_u8(thin), cv2.COLOR_GRAY2BGR),
-        cv2.cvtColor(to_u8(magnitude - thin), cv2.COLOR_GRAY2BGR)]))
+    save_grid("canny_stages.png", [
+        tile(scene_u8(stages["smoothed"]), "smoothed"), tile(magnitude, "gradient magnitude"),
+        tile(cv2.applyColorMap(raw_direction, cv2.COLORMAP_HSV), "direction, continuous"),
+        tile(direction_colour, "quantised: red 0 green 45 blue 90 yellow 135"),
+        tile(thin, "after non-maximum suppression"), tile(magnitude - thin, "what suppression removed")], 3)
+    print("  canny_stages.png: smoothing, magnitude, raw and quantised direction, the thinned")
+    print("  magnitude, and the part suppression removed")
 
     # 5. Hysteresis
     print("\n--- 5. Edge tracing between two thresholds ---")
@@ -494,11 +526,14 @@ def main():
         edges = hysteresis(thin, low, high)
         precision, recall = edge_scores(edges, boundary)
         print(f"  {name:<14}{low:>5}{high:>6}{int(edges.sum()):>13}{precision:>11.3f}{recall:>9.3f}")
-        traced.append(edges.astype(np.uint8) * 255)
+        traced.append(tile(edges, f"{name} {low}/{high}: precision {precision:.2f}, recall {recall:.2f}"))
     strong_only = thin >= CANNY_PAIR[1]
     print(f"  {'high only':<14}{'-':>5}{CANNY_PAIR[1]:>6}{int(strong_only.sum()):>13}"
           f"{edge_scores(strong_only, boundary)[0]:>11.3f}{edge_scores(strong_only, boundary)[1]:>9.3f}")
-    cv2.imwrite(str(OUT_DIR / "hysteresis_pairs.png"), np.hstack(traced))
+    traced.append(tile(strong_only, f"high {CANNY_PAIR[1]} only: precision {edge_scores(strong_only, boundary)[0]:.2f}, "
+                                    f"recall {edge_scores(strong_only, boundary)[1]:.2f}"))
+    save_grid("hysteresis_pairs.png", traced, 2)
+    print("  hysteresis_pairs.png: the three threshold pairs and the high threshold alone")
     smoothed_u8 = np.clip(np.rint(stages["smoothed"]), 0, 255).astype(np.uint8)
     ours = canny(smoothed_u8.astype(np.float32), *CANNY_PAIR, size=1, sigma=1.0)["edges"]
     reference = cv2.Canny(smoothed_u8, *CANNY_PAIR, apertureSize=3, L2gradient=True) > 0
@@ -541,10 +576,21 @@ def main():
     print("  The four true lines take the top four ranks. The peaks below them are weaker")
     print("  echoes: the far side of a 3 px stroke lies a few rho away at a slightly different")
     print("  theta, and short runs of disk rim are collinear enough to collect some votes.")
-    drawn = cv2.cvtColor(noisy.astype(np.uint8), cv2.COLOR_GRAY2BGR)
-    for rho, theta, _ in found:
-        cv2.line(drawn, *hesse_endpoints(rho, theta), (0, 0, 255), 1)
-    cv2.imwrite(str(OUT_DIR / "hough_lines.png"), drawn)
+    def draw_lines(lines, label):
+        """Detected lines on the noisy scene: green where one matches a true line, red otherwise."""
+        canvas = scene_u8(noisy)
+        for rho, theta, _ in lines:
+            true = any(match_line(t, [(rho, theta, 0)]) == 0 for t in TRUE_LINES)
+            cv2.line(canvas, *hesse_endpoints(rho, theta), (0, 255, 0) if true else (0, 0, 255), 1)
+        return tile(canvas, label)
+
+    save_grid("hough_lines.png", [
+        tile(np.log1p(accumulator), "votes, theta 0-179 across, rho down"),
+        draw_lines(found, "top 10, all angles: green true, red other"),
+        tile(np.log1p(lane_accumulator), "votes, lane angles only"),
+        draw_lines(lane_found, "top 4, lane angles only")], 2)
+    print("  hough_lines.png: accumulator and top lines over all angles (top row) and over the")
+    print("  lane angles only (bottom row); accumulators on a log scale")
 
     # 7. Hough circles
     print("\n--- 7. Hough transform for circles ---")
@@ -561,8 +607,8 @@ def main():
         top = strongest_circles(accumulator, radii)
         matched, hits = match_circles(TRUE_CIRCLES, top)
         print(f"  {name:<30}{cast:>12}{elapsed * 1000:>7.0f}ms{hits:>22}")
-        circle_results[name] = (top, matched)
-    top, matched = circle_results["along the gradient only"]
+        circle_results[name] = (top, matched, accumulator, hits)
+    top, matched, _, _ = circle_results["along the gradient only"]
     print("  gradient-directed vote, the ten strongest circles:")
     for rank, (x, y, r, score) in enumerate(top, 1):
         truth = [f"disk ({tx}, {ty}) r {tr}" for tx, ty, tr in TRUE_CIRCLES
@@ -577,10 +623,19 @@ def main():
     print("  and only the ring through the true centre lines up across pixels. The saving")
     print("  rests on that gradient being reliable: on a blurred or textured rim a wrong")
     print("  direction sends both votes to the wrong place.")
-    drawn = cv2.cvtColor(noisy.astype(np.uint8), cv2.COLOR_GRAY2BGR)
-    for x, y, r, _ in top:
-        cv2.circle(drawn, (x, y), r, (0, 0, 255), 1)
-    cv2.imwrite(str(OUT_DIR / "hough_circles.png"), drawn)
+    circle_tiles = []
+    for name, (circles, pairs, votes_cube, hits) in circle_results.items():
+        short = "every 6 deg" if name.startswith("every") else "along the gradient"
+        canvas = scene_u8(noisy)
+        true_ranks = {j for j, (x, y, r) in zip(pairs, TRUE_CIRCLES) if j is not None
+                      and np.hypot(circles[j][0] - x, circles[j][1] - y) <= 3 and abs(circles[j][2] - r) <= 2}
+        for j, (x, y, r, _) in enumerate(circles):
+            cv2.circle(canvas, (x, y), r, (0, 255, 0) if j in true_ranks else (0, 0, 255), 1)
+        circle_tiles += [tile(np.log1p(votes_cube.max(axis=2)), f"{short}: centre votes, best radius"),
+                         tile(canvas, f"{short}: top 10, {hits} of 3 true (green)")]
+    save_grid("hough_circles.png", circle_tiles, 2)
+    print("  hough_circles.png: centre votes and top ten circles, sampling every angle (top) and")
+    print("  voting along the gradient (bottom)")
 
     # 8. Generalised Hough, translation only
     print("\n--- 8. Generalised Hough transform: an arbitrary shape by its R-table ---")
@@ -601,9 +656,10 @@ def main():
     print(f"  its reference point is at ({expected[0]:.1f}, {expected[1]:.1f})")
     print(f"  peak at ({x}, {y}), error {np.hypot(x - expected[0], y - expected[1]):.2f} px, "
           f"peak height {votes[y, x]:.1f}")
-    marked = cv2.cvtColor(upright.astype(np.uint8), cv2.COLOR_GRAY2BGR)
+    marked = scene_u8(upright)
     origin = np.array([x, y]) - place_offset(offset, 1.0, 0.0)
     cv2.polylines(marked, [polygon_points(position=origin)], True, (0, 0, 255), 1)
+    upright_votes, upright_error = votes, np.hypot(x - expected[0], y - expected[1])
 
     # 9. Scale and rotation
     print("\n--- 9. The same vote over scale and rotation ---")
@@ -633,11 +689,24 @@ def main():
     print("  R-table bins when the rotation step equals the bin width, and scales every")
     print("  offset vector by the same factor as the shape. The true 25 deg lies on that")
     print("  grid; a turn between grid steps would be recovered only to the nearest step.")
-    found = cv2.cvtColor(scene.astype(np.uint8), cv2.COLOR_GRAY2BGR)
+    found = scene_u8(scene)
     origin = np.array([best[3], best[4]]) - place_offset(offset, best[1], best[2])
     cv2.polylines(found, [polygon_points(best[1], best[2], origin)], True, (0, 0, 255), 1)
-    cv2.imwrite(str(OUT_DIR / "ght_match.png"), np.hstack([
-        cv2.resize(template, (HEIGHT, HEIGHT))[:, :HEIGHT], marked, found]))
+    template_canvas = np.zeros((HEIGHT, WIDTH, 3), np.uint8)
+    template_canvas[:, (WIDTH - HEIGHT) // 2:(WIDTH + HEIGHT) // 2] = cv2.resize(template, (HEIGHT, HEIGHT))
+    peak_map = np.zeros((len(SCALES), len(ROTATIONS)))
+    for peak, scale, rotation, _, _ in results:
+        peak_map[int(np.argmin(np.abs(SCALES - scale))), int(np.argmin(np.abs(ROTATIONS - rotation)))] = peak
+    peak_image = cv2.applyColorMap(to_u8(peak_map), cv2.COLORMAP_JET)
+    save_grid("ght_match.png", [
+        tile(template_canvas, "template"),
+        tile(upright_votes, "votes, shape unscaled and unturned"),
+        tile(marked, f"best peak: error {upright_error:.2f} px"),
+        tile(peak_image, f"peak per hypothesis: scale {SCALES[0]}-{SCALES[-1]} down, turn across"),
+        tile(ght_vote(table, points, angles, best[1], best[2]), f"votes at scale {best[1]:.1f}, {best[2]:.0f} deg"),
+        tile(found, f"recovered scale {best[1]:.1f}, {best[2]:.0f} deg")], 3)
+    print("  ght_match.png: the template, the translation-only vote and its match (top), and the")
+    print("  peak for every scale and rotation, the winning vote and its match (bottom)")
     print(f"\n  images written to {OUT_DIR}")
 
 

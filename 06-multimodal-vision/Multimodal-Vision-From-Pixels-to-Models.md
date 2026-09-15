@@ -273,6 +273,21 @@ a whole-bin shift, and the true 25° lies on that grid; an angle between steps w
 be recovered only to the nearest one. This is a synthetic template among simple
 distractors, and it shows the mechanism rather than robustness on cluttered images.
 
+### What the images show
+
+Every panel is labelled with its setting and, where there is one, its score.
+
+| Image | Panels |
+| :--- | :--- |
+| `scene.png` | clean scene, noisy scene, true boundary |
+| `gaussian_grid.png` | the nine size × σ combinations, each with noise and edge strength left |
+| `sobel_threshold.png` | one threshold on the noisy and on the smoothed image |
+| `canny_stages.png` | smoothed, magnitude, continuous and quantised direction, after suppression, what suppression removed |
+| `hysteresis_pairs.png` | the three threshold pairs and the high threshold alone |
+| `hough_lines.png` | accumulator and top lines over all angles, and over the lane angles only; lines matching a true one in green |
+| `hough_circles.png` | centre votes and top ten circles for sampling every 6° and for voting along the gradient; true disks in green |
+| `ght_match.png` | template, translation-only votes and match; peak per scale and rotation, winning votes and match |
+
 ---
 
 ## 3. HOG and Haar detectors
