@@ -1,12 +1,19 @@
-# Multimodal Vision: Calling Models and Training Them
+# Multimodal Vision: From Pixels to Models
 
-Seven scripts, in two halves that answer the same question from opposite ends:
+Fourteen scripts answering one question from three directions:
 **how does the information in a picture become something a program can use?**
 
-The first half hands the picture to a model somebody else trained and audits what
-comes back. The second half trains a model on pictures nobody else has. Both halves
-fail the same way — the output is well-formed, nothing raises, and the only way to
-find out it is wrong is to check it against a value that was known in advance.
+Scripts 1-7 build the answer from the pixels up, with no pretrained weights anywhere:
+colour, edges, shapes, gradients, corners, motion, and then the networks that learn
+those steps instead of being told them. Scripts 8-11 hand the picture to a model
+somebody else trained and audit what comes back. Scripts 12-14 return to training,
+with the arithmetic of a convolution, what input resolution costs, and where a
+detection metric comes from.
+
+Every script generates its own inputs, and the parts that also read a public dataset
+take its path on the command line. Nothing here is scored against an answer that was
+not known in advance: either the data was drawn by the script, or the labels came
+with it.
 
 Every script here generates its own inputs. Nothing is downloaded, no photograph or
 document is shipped, and every ground truth is recorded at the moment it is drawn.
@@ -40,6 +47,501 @@ Two of these are load-bearing for the scripts below and are demonstrated rather 
 asserted: the third row of the failure taxonomy in script 08 is a character-level
 misread, which is the OCR boundary; and script 09 measures what a model returns when
 asked to point.
+
+---
+
+## 1. Colour tracking and optical flow
+
+`01_color_tracking_and_optical_flow.py`
+
+A clip is rendered frame by frame — a coloured ellipse on a known path that grows,
+turns, and loses more than half its light halfway through — so every stage of the
+classical tracking pipeline can be scored against the mask that drew it.
+
+### Colour: which space survives the light
+
+| Rule | IoU, bright frames | IoU, dimmed frames |
+| :--- | ---: | ---: |
+| Box in the RGB cube | 0.972 | **0.000** |
+| Hue and saturation in HSV | 0.972 | **0.984** |
+
+Dimming multiplies B, G and R by one factor. Hue and saturation are functions of the
+ratios between the channels, which that factor leaves alone; the RGB box tests
+absolute levels, so the object walks out of it. The object's mean colour goes from
+`BGR [165 91 26] HSV [106 216 165]` to `BGR [74 41 11] HSV [106 217 73]`: **only V
+moved.**
+
+### Morphology and connected components
+
+The raw mask of the first frame holds **41 components** — the ellipse plus scattered
+specks. Erosion drops everything thinner than the 3x3 element, dilation restores the
+rim, and a closing fills the pinholes: **1 component, IoU 1.000 against the truth.**
+
+Two labelling algorithms are written out and reconciled with OpenCV:
+
+| Connectivity | Two-pass | Flood fill | OpenCV |
+| :--- | ---: | ---: | ---: |
+| 4 | 42 (from 55 provisional labels) | 42 | 42 |
+| 8 | 41 (from 47 provisional labels) | 41 | 41 |
+
+All three group exactly the same pixels, and the largest component's bounding box
+agrees to the pixel. The gap between 42 and 41 is two squares that touch only at a
+corner. The provisional-label counts are what the equivalence table is for: a U
+shape is labelled as two arms until the scan reaches the bar joining them.
+
+### Back-projection, mean shift and CAMSHIFT
+
+A 16-bin hue histogram of the first frame, back-projected onto every frame, matches
+`cv2.calcHist` and `cv2.calcBackProject` **exactly (largest gap 0.0000 and 0)**. The
+saturation gate is what makes it usable: of the probability mass in the last frame,
+**0.489 lands on the object without the gate and 0.989 with it** — a grey pixel's hue
+is set by noise and lands in every bin.
+
+| | First third | Last third |
+| :--- | ---: | ---: |
+| Mean shift, fixed window: centre error | 1.66 px | 5.60 px |
+| Mean shift: share of the object inside the window | 85.5% | 42.6% |
+| CAMSHIFT: centre error | 0.03 px | 0.02 px |
+| CAMSHIFT: long semi-axis error | 0.58 px | 0.55 px |
+| CAMSHIFT: angle error | 0.27° | 0.27° |
+| CAMSHIFT: share of the object inside the window | 100.0% | 100.0% |
+
+The object grows from 1297 to 4037 pixels. A window fixed at the first frame's size
+still finds the densest part, but sees less of it every frame; CAMSHIFT reads the
+size and orientation out of the second moments and follows. The hand-written mean
+shift picks **the same window as `cv2.meanShift` in 90 of 90 frames.**
+
+### Corners and motion
+
+The structure tensor, the same matrix Harris scores and Lucas-Kanade inverts:
+
+| Point | λ₁ | λ₂ | R |
+| :--- | ---: | ---: | ---: |
+| Flat, inside a square | 0.0000 | 0.0000 | 0.00000 |
+| Edge, middle of a side | 1.4283 | 0.0000 | **-0.10200** |
+| Corner | 0.9739 | 0.3369 | **+0.24218** |
+
+All **16 true corners** are found, with no detection on the disk that has none.
+
+| Method | True shift | Median error |
+| :--- | :--- | ---: |
+| Block matching, 16x16, search radius 8 | (3.6, -2.4) | 0.58 px (100% within 1 px) |
+| Block matching | (11.3, 6.8) | **8.43 px** — no correct candidate is in the search square |
+| Lucas-Kanade, one level | (3.6, -2.4) | **0.010 px** |
+| Lucas-Kanade, one level | (11.3, 6.8) | **12.816 px** |
+| Lucas-Kanade, 3-level pyramid | (11.3, 6.8) | **0.008 px** |
+| `cv2.calcOpticalFlowPyrLK` | (11.3, 6.8) | 0.008 px |
+
+The last row of the aperture problem, on the rectangle scene shifted by (2.6, 1.7):
+
+| Points | Smallest eigenvalue of G | Median error |
+| :--- | ---: | ---: |
+| Rectangle corners | 45892.4 | 0.014 px |
+| Middles of the sides | **0.0** | 2.150 px |
+
+On the three horizontal edges the recovered vectors are `(0.00, 1.70)` three times:
+**the component across the edge is exact and the component along it is unobservable.**
+
+---
+
+## 2. Edges and Hough voting
+
+`02_edges_and_hough_voting.py`
+
+Four lines in Hesse normal form and three filled disks, drawn at known parameters
+under Gaussian noise of σ 25, then recovered.
+
+### The Gaussian, and what each window keeps
+
+| Size | σ | Mass inside the window | Noise left (from 25.0) | Edge strength left |
+| ---: | ---: | ---: | ---: | ---: |
+| 3 | 0.5 | 0.999 | 16.02 | 0.921 |
+| 3 | 1.5 | **0.479** | 8.43 | 0.776 |
+| 7 | 1.0 | 0.999 | 7.06 | 0.714 |
+| 7 | 1.5 | 0.965 | 4.88 | 0.565 |
+
+A window too small for its σ keeps less than half of the kernel's weight. It is
+renormalised and still smooths, but it is no longer the Gaussian σ describes.
+
+### Canny, stage by stage
+
+A single threshold on the Sobel magnitude scores **precision 0.600** on the noisy
+image and **1.000** after smoothing. Quantising the direction to the four lines
+through a pixel's neighbours and comparing along the gradient removes **62.2% of the
+total magnitude**, thinning 18830 pixels above the low threshold to 6691.
+
+| Pair | Low | High | Edge pixels | Precision | Recall |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| Both low | 20 | 50 | 11843 | **0.284** | 1.000 |
+| Both high | 150 | 250 | 3045 | 1.000 | 0.913 |
+| Wide spacing | 40 | 250 | 3161 | 1.000 | **0.947** |
+| High threshold alone, no tracing | – | 250 | 2616 | 1.000 | 0.786 |
+
+The wide pair lets the high threshold decide what an edge is and the low one decide
+how far it is followed. Against `cv2.Canny` on the same smoothed image: **3270
+pixels against 3269, 100% of each within 1 px of the other.**
+
+### Votes
+
+| Search | Accumulator | Votes | Time | Found |
+| :--- | :--- | ---: | ---: | :--- |
+| Lines, every angle | 801 x 180 | 568 980 | 36 ms | **the 4 true lines are the top 4 peaks** |
+| Lines, lane angles only | 801 x 62 | 195 982 | 19 ms | both lane lines; the other two are outside the range |
+| Circles, every 6° | 240 x 320 x 34 | 5 865 905 | 409 ms | 2 of 3 disks in the top 10 |
+| Circles, along the gradient | same | **191 801** | **22 ms** | **all 3 disks, ranks 1, 2 and 3** |
+
+The gradient at a rim points along the radius, so it names the direction the centre
+lies in; sampling every angle spreads the same evidence around a whole ring.
+
+### The generalised Hough transform
+
+The template is a yellow polygon on blue, binarised by a hue lookup, giving **279
+edge points filed into 43 of the 72 gradient-angle bins**. Against a scene holding
+the shape among three distractors, the peak lands **0.07 px** from the true reference
+point. Extended over 6 scales and 19 rotations — 114 hypotheses in 0.1 s — the
+strongest peak is **scale 0.7, rotation 25°, position error 0.33 px**, which is the
+transform that was applied. The runner-up hypotheses are the neighbouring rotations
+at half the peak height.
+
+---
+
+## 3. HOG and Haar detectors
+
+`03_hog_and_haar_detectors.py`
+
+The two hand-built descriptors that carried detection before learned features: one
+counts gradient directions, the other compares rectangle sums.
+
+### Gradient orientation histograms under a small turn
+
+A star is turned by 5°, a quarter of a 20° bin, and the cell histograms are compared:
+
+| Voting | Distance, star against turned star | Relative to the star's own norm |
+| :--- | ---: | ---: |
+| Nearest bin | 201.982 | 0.913 |
+| Split between the two nearest bins | 151.284 | 0.791 |
+| Split between bins **and** between the four surrounding cells | **101.999** | **0.627** |
+
+With the whole vote in one bin, a direction crossing a boundary moves all of its
+weight; split between neighbours, it moves a quarter of it. The same holds for
+pixels the turn carries across a cell border.
+
+### The descriptor
+
+A 64x128 window gives 16x8 cells, 15x7 blocks of 2x2 cells, and a descriptor of
+**3780 = 105 x 36** values after L2-Hys block normalisation and a final normalisation
+over the whole window.
+
+| Window | Person 1 | Person 2 | Person 3 | Mean |
+| :--- | ---: | ---: | ---: | ---: |
+| Unknown person | 0.468 | 0.453 | 0.504 | **0.475** |
+| Unknown car | 0.861 | 0.841 | 0.863 | **0.855** |
+
+Over 40 fresh windows of each kind, measured against the mean of the three reference
+people: **people 0.456, clutter 0.675, cars 0.797** — the ordering the descriptor is
+built to produce.
+
+### Rectangle features and the integral image
+
+| Window | Enumerated | Closed form | Horizontal | Vertical |
+| :--- | ---: | ---: | ---: | ---: |
+| 24x24 | 86 400 | **86 400** | 43 200 | 43 200 |
+| 16x16 | 17 408 | **17 408** | 8 704 | 8 704 |
+
+The hand-written integral image matches `cv2.integral` exactly (largest difference
+0.0). On 2000 random rectangles over a 640x480 image, summing by slicing takes
+**10.1 ms** and four lookups each take **0.17 ms**, for the same answers to 1.76e-10.
+
+### AdaBoost over every feature
+
+Twenty rounds, each choosing one feature, one threshold and one polarity from all
+17 408 of them; the first feature found is a **top/bottom pair at (3, 5), each 10x3**,
+which is the eye band against the cheeks below it.
+
+| Threshold | Faces found | False alarms | Accuracy |
+| ---: | ---: | ---: | ---: |
+| 0.3 | 100.0% | 7.7% | 96.2% |
+| 0.5 | 99.9% | **0.4%** | **99.8%** |
+| 0.7 | 93.8% | 0.0% | 96.9% |
+
+On real crops — 3000 TinyFace faces against 3000 CIFAR-10 images, 16x16 and
+variance-normalised — the same twenty rounds reach **87.5% of faces at 13.0% false
+alarms, 87.2% accuracy** at threshold 0.5, against 50.0% for predicting the larger
+class. The first round's weighted error is 0.222 on real faces against 0.038 on the
+rendered ones: **the same procedure, a harder problem.**
+
+---
+
+## 4. Training mechanics
+
+`04_training_mechanics_xor_softmax_batchnorm.py`
+
+### XOR, and why a hidden layer
+
+A single sigmoid unit, trained from 100 different starting points, reaches **75% at
+best**. A half-plane contains the midpoint of any two points it contains, and both
+XOR pairs share the midpoint (0.5, 0.5), which would have to lie on both sides.
+
+Two-layer networks, full batch, learning rate 2.0, solved when every output is within
+0.1 of its target:
+
+| Hidden units | Initial sd | Solved | Median epochs |
+| ---: | ---: | ---: | ---: |
+| 2 | 0.1 | 54% | 5245 |
+| 2 | 1.0 | 79% | 661 |
+| 4 | 1.0 | **100%** | 505 |
+| 8 | 1.0 | **100%** | **392** |
+
+Two hidden units are the fewest that can represent XOR; the runs that do not solve it
+settle at a loss of about 0.125, where both units compute nearly the same thing.
+Weights that start near zero start the two units nearly identical, and the gradient
+needs thousands of epochs to separate them.
+
+### Softmax and cross-entropy
+
+The analytic gradient (softmax minus one-hot, divided by the batch) matches a central
+difference to **6.75e-10**. On logits `[1000, 1001, 1002]` the definition as written
+returns `[nan, nan, nan]`; subtracting the largest logit, which cancels in the ratio,
+returns `[0.09, 0.2447, 0.6652]`.
+
+### Two networks on digits
+
+| | Rendered digits | MNIST |
+| :--- | ---: | ---: |
+| 784-256-10 in numpy, 5 epochs, 203 530 parameters | 90.30% | **97.75%** (2.25% error) |
+| CNN, 3 epochs, 156 010 parameters | 94.85% | **99.03%** |
+
+The CNN has fewer parameters and a higher score: 131 200 of the MLP's parameters are
+in the first layer alone, which learns one weight per pixel per unit and shares
+nothing between positions.
+
+### Training mode against evaluation mode
+
+Both modes, same weights, on MNIST:
+
+| Measurement | Result |
+| :--- | :--- |
+| Training images scored in evaluation mode / training mode | 99.34% / 99.24% |
+| Test predictions that change with the mode | **56 of 10 000** |
+| Dropout p=0.3 in training mode on a vector of ones | 0.299 zeroed, survivors scaled to 1.4286 = 1/(1-p), mean 1.0011 |
+| BatchNorm in evaluation mode against the running-statistics formula | gap 9.54e-07 |
+| BatchNorm in training mode against this batch's own mean and variance | gap 1.43e-06 |
+| Running variance after one training-mode batch, against 0.9 old + 0.1 unbiased batch | gap 1.49e-08 |
+| Test images fed **one at a time in training mode** | **90.10%**, against 98.80% in evaluation mode |
+
+With a single image, BatchNorm normalises each channel by that image's own spatial
+mean and variance, which erases how strongly a feature map responded overall. That
+is part of the evidence; the running statistics carry it instead.
+
+---
+
+## 5. Grid detection and pose assembly
+
+`05_grid_detection_and_pose_assembly.py`
+
+Two dense output tensors, two ways of reading objects out of them.
+
+### Anchors and the grid
+
+K-means over the training shapes, with 1 - IoU as the distance:
+
+| k | Anchors (w, h) | Mean best IoU |
+| ---: | :--- | ---: |
+| 1 | (35, 35) | 0.485 |
+| 3 | (17, 17), (31, 31), (51, 55) | **0.713** |
+| 5 | (15, 13), (21, 21), (29, 29), (41, 41), (55, 65) | 0.769 |
+
+A 160x160 image at stride 16 with 3 anchors holds **300 slots**. Encoding the centre
+as an offset inside its cell and the size as log(w / anchor_w) and decoding it back
+costs **3.81e-06 px**, and only **2 of 12 066 boxes** find their slot already taken.
+
+### Training and scoring
+
+| Epoch | xy | wh | obj | noobj | class | total |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 1.612 | 1.817 | 3.175 | 24.123 | 2.714 | 33.441 |
+| 5 | 0.207 | 0.211 | 0.461 | 0.516 | 0.111 | 1.505 |
+| 30 | 0.033 | 0.035 | 0.007 | 0.011 | 0.001 | 0.086 |
+
+The hand-written per-class suppression keeps **the same boxes as
+`torchvision.ops.batched_nms` in 500 of 500 test images**, and the detector reaches
+**mAP@0.5 = 0.974** (box 0.978, disk 0.979, triangle 0.967) over 1493 unseen boxes.
+
+### The same encoding on COCO
+
+36 334 non-crowd boxes from `instances_val2017`, letterboxed to 416x416:
+
+| | Mean best IoU | Boxes whose slot is taken |
+| :--- | ---: | ---: |
+| 3 anchors, one 13x13 grid | 0.461 | **4617 (12.7%)** |
+| 9 anchors, grids of 52, 26 and 13 | 0.614 | **860 (2.4%)** |
+
+A stride-32 cell covers 32x32 input pixels, and everything inside it competes for the
+same few slots. A stride-8 level gives small anchors sixteen times as many cells.
+
+### Part confidence maps and part affinity fields
+
+The maps are drawn from keypoints: a Gaussian per keypoint per channel, and, for each
+of the 19 limbs, a two-channel band carrying the unit vector from one end to the
+other. A candidate connection is scored by the mean of the field projected onto it —
+the line integral — and pairs are matched greedily per limb.
+
+| Scenes | Rule | Precision | Recall |
+| :--- | :--- | ---: | ---: |
+| 200 rendered, two people overlapping | Affinity field | **98.8%** | 78.0% |
+| | Shortest distance | 83.5% | 83.4% |
+| COCO, 150 images, people apart | Affinity field | **100.0%** | 89.2% |
+| | Shortest distance | 94.3% | 94.9% |
+| COCO, 112 images, people overlapping | Affinity field | **97.4%** | 83.2% |
+| | Shortest distance | **77.8%** | 75.7% |
+
+Where people stand apart the nearest candidate is usually the right one, and distance
+is nearly as good. **The field earns its cost exactly where the two rules disagree**:
+it rejects a pairing whose band carries no direction, and distance never rejects
+anything, which is why its recall is the higher of the two and its precision the
+lower.
+
+---
+
+## 6. Segmentation and skip connections
+
+`06_unet_segmentation_and_skip_connections.py`
+
+Three architectures with the same job — a class for every pixel — separated by what
+they do about resolution.
+
+### The baseline every model has to beat
+
+Background covers **89.8%** of the rendered dataset, so predicting it everywhere
+scores:
+
+| Metric | Constant prediction |
+| :--- | ---: |
+| Pixel accuracy | **89.78%** |
+| Mean IoU | **0.180** |
+| IoU, each of the four object classes | 0.000 |
+
+Pixel accuracy starts high whatever the model does. Mean IoU gives every class the
+same weight and scores a class that is never predicted as zero, which is why both
+are reported below.
+
+### Three networks
+
+| Model | Parameters | Receptive field | Time | Pixel accuracy | Mean IoU |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| UNet with skips | 1 085 837 | 89 px | 22 s | **99.71%** | **0.964** |
+| UNet without skips | 1 525 235 | 89 px | 27 s | 98.02% | 0.769 |
+| Flat, no resampling | 314 261 | **13 px** | 90 s | 92.01% | 0.371 |
+| Background everywhere | 0 | – | – | 89.78% | 0.180 |
+
+The flat network has the same number of convolutions and no pooling, so its output
+unit sees 13 input pixels instead of 89 — and it costs four times the training time
+for a quarter of the parameters, because every layer runs at full resolution.
+
+### Where the skips show
+
+| Model | Accuracy within 3 px of a boundary | Mean IoU there | Accuracy in the interior |
+| :--- | ---: | ---: | ---: |
+| UNet with skips | **98.62%** | **0.957** | 99.97% |
+| UNet without skips | 91.02% | 0.743 | 99.70% |
+| Flat, no resampling | 73.73% | 0.390 | 96.40% |
+
+Interiors are decided by colour and every model gets them. **The gap is at the
+boundaries**, which is exactly the detail the decoder lost on the way down and the
+skip connections hand back.
+
+### Pascal VOC 2012
+
+1464 training and 1449 validation images at 128x128, 21 classes, trained from
+scratch. Label 255 marks the band drawn around every object and covers **5.47%** of
+the pixels; it is excluded from the loss and from every count, because it is not a
+class the model is asked to predict.
+
+| Model | Pixel accuracy | Mean IoU | Classes ever predicted |
+| :--- | ---: | ---: | ---: |
+| UNet with skips | 71.54% | **0.059** | 8 |
+| UNet without skips | 73.12% | 0.045 | 3 |
+| Background everywhere | **73.33%** | 0.035 | 1 |
+
+Background is 73.5% of the labelled pixels and the largest object class, person, is
+4.8%. **Pixel accuracy falls below the baseline while mean IoU rises**: predicting an
+object class costs background pixels, and only one of the two numbers pays for it.
+From-scratch numbers on this little data are far below what a pretrained encoder
+reaches; what is comparable here is the architectures against each other.
+
+---
+
+## 7. Attention and self-supervised representations
+
+`07_attention_and_self_supervised_representations.py`
+
+### Attention, written out
+
+Scaled dot-product attention over 4 tokens of 96 values in 4 heads of 24: every row
+of the attention weights sums to **1.000000**, and the result matches
+`nn.MultiheadAttention` loaded with identity projections to **3.73e-07**.
+
+Around it, an encoder block of 74 784 parameters: attention and a feed-forward
+network, each added back onto its input and layer-normalised. Zeroing both
+sub-layers leaves the block returning its normalised input exactly (largest gap
+**0.00e+00**) — the residual connections are what let a deep stack start as the
+identity and add to it.
+
+### Two ways to make tokens
+
+| Tokeniser | Tokens | Parameters | Rendered objects | CIFAR-10 |
+| :--- | ---: | ---: | ---: | ---: |
+| Patches, one 4x4 square each | 64 | 236 073 | 84.30% | **57.30%** |
+| Convolutional stem | 64 | 284 361 | **93.15%** | 56.70% |
+
+Same token count, same three encoder blocks, same eight epochs. Cutting the image
+into squares gives each token one patch and nothing of its neighbours; a
+convolutional stem overlaps them, so a token already carries local structure before
+attention starts relating tokens to one another. **That is worth nine points on the
+rendered shapes and nothing measurable on CIFAR-10 at this size** — eight epochs of a
+three-block encoder on 12 000 photographs is short of what either tokeniser needs.
+
+### One linear layer on every frozen representation
+
+Four encoders are trained on the same 12 000 images, three of them without ever
+seeing a label, and each is then frozen and probed with a single linear layer:
+
+| Representation | Labels used | Training | Probe accuracy |
+| :--- | :--- | ---: | ---: |
+| Supervised ConvNet | all | 16 s | **99.85%** |
+| Autoencoder | none | 6 s | 31.45% |
+| Masked autoencoder, half the patches hidden | none | 35 s | 44.95% |
+| Contrastive, with projection head | none | 34 s | **87.65%** |
+| Contrastive, no projection head | none | 33 s | 66.30% |
+| Guessing | – | – | 12.50% |
+
+Reconstruction rewards whatever fills the most pixels, so an autoencoder spends its
+capacity on the background it has to redraw. The masked autoencoder is asked for
+something it cannot copy — the patches its encoder never saw — and the contrastive
+encoder is asked for something a background cannot answer: which two of 512 views
+came from the same image.
+
+**The projection head is discarded after training and is exactly what makes the
+features underneath it worth keeping.** The loss pulls its output onto a sphere and
+throws away whatever it does not need there; the body is one layer removed from that
+pressure, and probing it is worth 21 points.
+
+### The same probes on CIFAR-10
+
+12 000 training and 2000 test images, everything else unchanged:
+
+| Representation | Rendered objects | CIFAR-10 |
+| :--- | ---: | ---: |
+| Supervised ConvNet, probed | 99.85% | **72.45%** |
+| Autoencoder | 31.45% | 33.25% |
+| Masked autoencoder | 44.95% | 38.35% |
+| Contrastive, with head | **87.65%** | **55.05%** |
+| Contrastive, no head | 66.30% | 49.60% |
+| Guessing | 12.50% | 10.00% |
+
+Photographs are harder than rendered shapes and the gap to the supervised ceiling
+widens, but **the ordering of the three objectives does not change**, and neither does
+the cost of dropping the projection head.
 
 ---
 
@@ -728,33 +1230,46 @@ column with a constant that looked harmless.
 
 ---
 
-## What the seven runs settle
+## What the fourteen runs settle
 
-1. **A reply that parses is not a result.** Script 08 scored 83% on clean renders and
+1. **A colour rule is a rule about ratios or about levels, and only one of them
+   survives the light.** The RGB box went from IoU 0.972 to 0.000 when the frame was
+   dimmed; the HSV rule went to 0.984.
+2. **Voting turns a set of edge pixels into parameters, and what you let it vote on
+   is the cost.** The circles cost 5.87 million votes sampled blindly and 191 801
+   along the gradient — 3% of the work, and all three disks instead of two.
+3. **A descriptor is a choice about what to throw away.** Splitting each gradient
+   vote between neighbouring bins and cells cut the distance a 5° turn produces by
+   half; the integral image made a rectangle sum cost four reads at any size.
+4. **Capacity and conditioning are different problems.** XOR needs a hidden layer at
+   all, and then still fails from 46% of starting points when two hidden units start
+   with small weights, and from none of them with eight units.
+5. **The output tensor is not the answer; decoding it is.** Encode-decode round-trips
+   to 3.81e-06 px, and the same grid drops 12.7% of COCO's boxes at one scale against
+   2.4% at three.
+6. **Two numbers can disagree about the same prediction.** On VOC, predicting object
+   classes lowered pixel accuracy below the constant baseline while raising mean IoU.
+7. **What an objective asks for is what the representation ends up holding.** Under
+   the same linear probe: reconstruction 31%, masked patches 45%, contrastive 88%.
+8. **A reply that parses is not a result.** Script 08 scored 83% on clean renders and
    83% on photographs of the same pages — the same JSON shape in both, the same
    headline number, and a different field failing in each.
-2. **Name the kind of mistake, not just the count.** Each of the four kinds in script
-   08 has a different fix; a single accuracy number points at none of them.
-3. **Coordinates come with an unstated convention.** Script 09 read the same four
-   numbers six ways, scoring 0.304 under one and 0.000 under the rest.
-4. **The unit a check counts must be the unit the failure repeats.** A word-level
-   repetition test called a correct answer degenerate because four airline names
-   contained the word Air.
-5. **An image is an attachment, not a memory.** 4/4 with the image in the history,
-   1/4 without, and the wrong answers were as confident as the right ones.
-6. **Sampling buys a bound, not an estimate.** An event shorter than the stride is not
-   hard to see; it is not sampled.
-7. **Count the structure you recovered against the structure you know is there.**
-   Script 11 recovered 3 of 6 headings while reporting 19 heading lines.
-8. **A kernel scores contrast, not alignment.** Script 12's strongest response was on
-   a brighter diagonal, not on the axis-aligned edge it was built for.
-9. **Measure the cost, not the intuition.** Script 13 set out to show a resolution
-   mismatch hiding fine detail and found it did not — the cost is 858× the parameters
-   and a 1×1 output, not accuracy.
-10. **A metric is computed over a list.** Script 14 moved a submission from 0.836 to
+9. **Coordinates come with an unstated convention.** Script 09 read the same four
+   numbers six ways, scoring 0.304 under one and 0.000 under the rest; and an image
+   is an attachment, not a memory — 4/4 with it in the history, 1/4 without.
+10. **Sampling buys a bound, not an estimate.** An event shorter than the stride is
+    not hard to see; it is not sampled.
+11. **Count the structure you recovered against the structure you know is there.**
+    Script 11 recovered 3 of 6 headings while reporting 19 heading lines.
+12. **A kernel scores contrast, not alignment.** Script 12's strongest response was on
+    a brighter diagonal, not on the axis-aligned edge it was built for.
+13. **Measure the cost, not the intuition.** Script 13 set out to show a resolution
+    mismatch hiding fine detail and found it did not — the cost is 858× the parameters
+    and a 1×1 output, not accuracy.
+14. **A metric is computed over a list.** Script 14 moved a submission from 0.836 to
     0.117 by rewriting one column and no coordinates.
 
-The thread through all ten: **every one of these was found by comparing an output
+The thread through all fourteen: **every one of these was found by comparing an output
 against a value that was known in advance.** None would have surfaced from reading the
 output and finding it plausible.
 
@@ -764,13 +1279,26 @@ output and finding it plausible.
 
 ```bash
 pip install -r ../requirements.txt
-python 12_conv_kernels_and_feature_maps.py      # no key, no network
-python 11_document_layout_audit.py              # no key, no network
-python 13_cnn_input_resolution_mismatch.py      # no key, GPU optional
-python 14_yolo_split_audit_and_submission.py    # no key, GPU optional
-python 08_vlm_field_extraction_audit.py         # needs a vision model key
-python 09_vlm_grounding_and_failure_modes.py    # needs a vision model key
-python 10_video_keyframe_understanding.py       # needs a vision model key
+
+# classical vision, no model and no GPU needed
+python 01_color_tracking_and_optical_flow.py
+python 02_edges_and_hough_voting.py
+python 03_hog_and_haar_detectors.py
+python 12_conv_kernels_and_feature_maps.py
+python 11_document_layout_audit.py
+
+# trained here, GPU optional
+python 04_training_mechanics_xor_softmax_batchnorm.py
+python 05_grid_detection_and_pose_assembly.py
+python 06_unet_segmentation_and_skip_connections.py
+python 07_attention_and_self_supervised_representations.py
+python 13_cnn_input_resolution_mismatch.py
+python 14_yolo_split_audit_and_submission.py
+
+# a vision model key required
+python 08_vlm_field_extraction_audit.py
+python 09_vlm_grounding_and_failure_modes.py
+python 10_video_keyframe_understanding.py
 ```
 
 Scripts 08–10 read `GEMINI_API_KEY` or `OPENAI_API_KEY` from `.env` and default to a
@@ -778,6 +1306,30 @@ small vision model, overridable with `VISION_MODEL`. They send batches of images
 each one paces itself and retries on a rate limit rather than failing part way
 through.
 
-Everything each script needs is generated on the first run into `outputs/`: the claim
-forms, the scene and board, the clip, the PDF, the feature maps, the training samples
-and the detection dataset. That directory is disposable — deleting it costs one rerun.
+Five scripts also accept a public dataset and repeat their measurements on it. Nothing
+is downloaded; each path points at a copy you already have:
+
+```bash
+python 03_hog_and_haar_detectors.py --tinyface-root <dir> --cifar10-root <dir>
+python 04_training_mechanics_xor_softmax_batchnorm.py --mnist-root <dir>
+python 05_grid_detection_and_pose_assembly.py --coco-root <dir>   # annotations/ and val2017/
+python 06_unet_segmentation_and_skip_connections.py --voc-root <dir>   # holding VOC2012/
+python 07_attention_and_self_supervised_representations.py --cifar10-root <dir>
+```
+
+- TinyFace: https://qmul-tinyface.github.io/
+- CIFAR-10: https://www.cs.toronto.edu/~kriz/cifar.html
+- MNIST: http://yann.lecun.com/exdb/mnist/
+- COCO: https://cocodataset.org/#download (val2017 images and annotations only)
+- Pascal VOC 2012: http://host.robots.ox.ac.uk/pascal/VOC/voc2012/
+
+Everything else each script needs is generated on the first run into `outputs/`: the
+clip, the scenes, the claim forms, the PDF, the feature maps, the training samples and
+the detection dataset. That directory is disposable — deleting it costs one rerun.
+
+The four scripts that train a network on the GPU (04, 05, 06, 07) also set cuDNN to
+its deterministic algorithms. Without that, cuDNN picks a convolution algorithm per
+shape and some of them accumulate in a non-deterministic order: two runs of the same
+seed gave mean IoU 0.936 and 0.956 for the same model. With it, two runs of script 06
+differ on **0 lines** once the timings are excluded, so every number above is
+reproducible on this machine rather than merely typical.

@@ -146,20 +146,29 @@ torchvision>=0.20.0       # 07 -> the image processor of the vision-language che
 # keeps prompt masking, group advantages and the KL term visible in the scripts.
 
 # --- 06-multimodal-vision ---
-pymupdf>=1.24.0           # 04 -> builds the two-column PDF and reads it back as positioned
+pymupdf>=1.24.0           # 11 -> builds the two-column PDF and reads it back as positioned
 #                         #   spans, which is what makes the heading audit checkable
-opencv-python>=4.9.0      # 03 -> VideoWriter encodes the synthesised clip, VideoCapture
+opencv-python>=4.9.0      # 01-07 -> every classical step: colour conversion, morphology,
+#                         #   filtering, warping, remapping, drawing and the reference
+#                         #   implementations each hand-written routine is checked against
+#                         #   10 -> VideoWriter encodes the synthesised clip, VideoCapture
 #                         #   reads it back, imencode makes the JPEG sent per keyframe
-ultralytics>=8.3.0        # 07 -> YOLO(...).train() and .predict() on the generated dataset
+ultralytics>=8.3.0        # 14 -> YOLO(...).train() and .predict() on the generated dataset
 #                         #   Pulls polars as a transitive dependency; torch is not touched.
 # torch and torchvision are listed under 05-fine-tuning and reused:
-#   05 -> nn.Conv2d with fixed weights, checked against a hand-written convolution
-#   06 -> torchvision.models.resnet50 for the stem trace and the training comparison
-# numpy, Pillow, openai and python-dotenv are listed above and reused:
-#   01-03 -> openai + python-dotenv reach the vision model; Pillow renders every input
-#   05-07 -> numpy + Pillow render the test image, the samples and the defect plates
-# No script here reads a spreadsheet, a downloaded dataset or a shipped photograph:
-# each one generates its own inputs into outputs/ on first run.
+#   04 -> the convolutional network, its BatchNorm and Dropout, and both modes
+#   05 -> the detector, and torchvision.ops.batched_nms as the reference for NMS
+#   06, 07 -> the segmentation networks and the transformer blocks
+#   12 -> nn.Conv2d with fixed weights, checked against a hand-written convolution
+#   13 -> torchvision.models.resnet50 for the stem trace and the training comparison
+# numpy, Pillow, matplotlib, openai and python-dotenv are listed above and reused:
+#   01-07 -> numpy throughout; Pillow reads the VOC palette masks in 06; matplotlib
+#            draws the XOR loss curves in 04
+#   08-10 -> openai + python-dotenv reach the vision model; Pillow renders every input
+#   12-14 -> numpy + Pillow render the test image, the samples and the defect plates
+# Every script generates its own inputs into outputs/ on first run. Scripts 03, 04, 05,
+# 06 and 07 additionally accept a path to a public dataset (TinyFace, CIFAR-10, MNIST,
+# COCO, Pascal VOC) and repeat their measurements on it; none of them downloads anything.
 
 # --- 07-ml-dl-foundation ---
 catboost>=1.2.0           # 03 -> CatBoostRegressor; 05 -> CatBoostClassifier; 06 -> one of the blended regressors

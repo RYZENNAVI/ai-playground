@@ -17,7 +17,7 @@ so switching vendors is a matter of changing `base_url`.
 | [03-text2sql](03-text2sql/) | Natural language to SQL · schema prompting · SQL agents · query safety · result evaluation |
 | [04-agents](04-agents/) | Chain orchestration · ReAct agents · MCP / A2A · LangGraph architectures |
 | [05-fine-tuning](05-fine-tuning/) | Low-rank adaptation · supervised fine-tuning · reward-driven training · vision adapters |
-| [06-multimodal-vision](06-multimodal-vision/) | Vision-language auditing · grounding · keyframe sampling · convolution · detection metrics |
+| [06-multimodal-vision](06-multimodal-vision/) | Classical vision (colour, edges, Hough, HOG, Haar) · optical flow · detection, segmentation and pose · attention & self-supervision · vision-language auditing |
 | [07-ml-dl-foundation](07-ml-dl-foundation/) | Classical ML · gradient boosting · leakage & split discipline · ensembling · networks from scratch |
 | [08-time-series](08-time-series/) | Seasonal decomposition · stationarity · ARIMA / Prophet · periodic factors · rolling-origin backtesting |
 | [09-lowcode-platforms](09-lowcode-platforms/) | Workflow engines from a declarative graph · node & plugin contracts · table knowledge bases · platform API protocol |
@@ -94,9 +94,9 @@ ai-playground/
 ├── 05-fine-tuning/               low-rank adaptation, SFT, reward-driven training, vision adapters
 │   ├── Fine-Tuning-Low-Rank-Adaptation.md      topic write-up
 │   └── 01..07_*.py               scripts
-├── 06-multimodal-vision/         vision-language auditing, grounding, keyframes, detection
-│   ├── Multimodal-Vision-Calling-Models-and-Training-Them.md   topic write-up
-│   └── 01..07_*.py               scripts
+├── 06-multimodal-vision/         classical vision, optical flow, detection, segmentation, pose, VLM audits
+│   ├── Multimodal-Vision-From-Pixels-to-Models.md   topic write-up
+│   └── 01..14_*.py               scripts
 ├── 07-ml-dl-foundation/          classical ML, gradient boosting, networks from scratch
 │   ├── Machine-Learning-and-Deep-Learning-Foundations.md   topic write-up
 │   └── 01..08_*.py               scripts
@@ -203,6 +203,13 @@ See [Fine-Tuning-Low-Rank-Adaptation.md](05-fine-tuning/Fine-Tuning-Low-Rank-Ada
 
 | # | Script | Feature |
 |---|--------|---------|
+| 01 | `01_color_tracking_and_optical_flow.py` | Colour thresholds, morphology, connected components, mean shift and CAMSHIFT, Harris corners, block matching and Lucas-Kanade |
+| 02 | `02_edges_and_hough_voting.py` | Gaussian smoothing, Sobel, Canny by hand, then lines, circles and an arbitrary shape recovered by voting |
+| 03 | `03_hog_and_haar_detectors.py` | Gradient orientation histograms into a HOG descriptor, every two-rectangle Haar feature, the integral image, and AdaBoost |
+| 04 | `04_training_mechanics_xor_softmax_batchnorm.py` | XOR against a straight line, softmax cross-entropy by hand, and what a mode switch changes |
+| 05 | `05_grid_detection_and_pose_assembly.py` | A detector's grid targets, loss, decoding and NMS, then people assembled from part affinity fields |
+| 06 | `06_unet_segmentation_and_skip_connections.py` | A UNet against the same net without skips and one that never resamples, scored at the boundaries |
+| 07 | `07_attention_and_self_supervised_representations.py` | Attention written out, two tokenisers, and three label-free objectives under one linear probe |
 | 08 | `08_vlm_field_extraction_audit.py` | Forms rendered with five traps, scored field by field on a clean page and a photograph of it |
 | 09 | `09_vlm_grounding_and_failure_modes.py` | A returned box scored under every coordinate convention, plus repetition and image-in-history checks |
 | 10 | `10_video_keyframe_understanding.py` | A synthesised clip read by keyframe sampling, with the localisation error the stride buys |
@@ -211,7 +218,7 @@ See [Fine-Tuning-Low-Rank-Adaptation.md](05-fine-tuning/Fine-Tuning-Low-Rank-Ada
 | 13 | `13_cnn_input_resolution_mismatch.py` | A 224-shaped stem on a 32x32 input — what the mismatch costs, and what it does not |
 | 14 | `14_yolo_split_audit_and_submission.py` | A detection split audited before training, and two submission edits that move no box |
 
-See [Multimodal-Vision-Calling-Models-and-Training-Them.md](06-multimodal-vision/Multimodal-Vision-Calling-Models-and-Training-Them.md) for the concepts behind these scripts.
+See [Multimodal-Vision-From-Pixels-to-Models.md](06-multimodal-vision/Multimodal-Vision-From-Pixels-to-Models.md) for the concepts behind these scripts.
 
 ---
 
