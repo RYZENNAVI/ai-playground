@@ -162,10 +162,13 @@ def make_models(classes, in_channels=3):
 
 
 def receptive_field(halvings, blocks_per_level=2, kernel=3):
-    """How far apart two input pixels can be and still reach the same output unit.
+    """Approximately how far apart two input pixels can be and still reach the same output unit.
 
     Every 3x3 convolution adds two pixels to the field at the resolution it runs at,
     and every halving doubles what one pixel at that resolution covers in the input.
+    Only the convolutions are counted: the 2x2 pooling windows and the transposed
+    convolutions widen the field a little more, so the figure is an illustrative
+    approximation of the real network's field, not an exact property of it.
     """
     field, jump = 1, 1
     for level in range(halvings + 1):
@@ -199,7 +202,8 @@ def train_model(model, data, classes, epochs, device, ignore=None):
         for start in range(0, len(order), BATCH):
             idx = order[start:start + BATCH]
             images, labels = x_train[idx].to(device), y_train[idx].to(device)
-            if torch.rand(1, generator=generator).item() < 0.5:   # mirroring a labelled pair is free data
+            # Mirroring a labelled pair is free data; one coin decides for the whole batch.
+            if torch.rand(1, generator=generator).item() < 0.5:
                 images, labels = images.flip(-1), labels.flip(-1)
             logits = model(images)
             loss = F.cross_entropy(logits, labels, ignore_index=ignore if ignore is not None else -100)
@@ -308,12 +312,15 @@ def main():
     print("  the model never predicts scores zero.")
 
     # 3. Models
-    print("\n--- 3. Three networks, matched on parameters ---")
+    print("\n--- 3. Three architectures for the same task ---")
     models = make_models(len(SHAPE_CLASSES))
     for name, model in models.items():
         total = sum(p.numel() for p in model.parameters())
         print(f"  {name:<22}{total:>10} parameters")
-    print(f"  receptive field at the output: {receptive_field(3)} px for the UNet, "
+    print("  The counts are not matched. The UNet without skips is widened from 24 to 30 base")
+    print("  channels and ends up with more parameters than the one with skips; the flat network")
+    print("  is kept narrow because every one of its layers runs at full resolution.")
+    print(f"  receptive field at the output, counting convolutions only: about {receptive_field(3)} px for the UNet, "
           f"{receptive_field(0, blocks_per_level=6)} px for the flat network")
     print("  Every 3x3 convolution adds two pixels to that field; halving the resolution first")
     print("  doubles what each of those pixels covers, which is how a stack of small kernels")
