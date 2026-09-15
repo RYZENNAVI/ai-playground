@@ -811,28 +811,21 @@ def main():
                 cv2.polylines(trajectory, [to_pixels(path[run])], False, colour, thickness, cv2.LINE_AA)
 
     truth_path = np.array([mask_centroid(m) for m in masks], np.float64)
-    draw_path(truth_path, (0, 200, 0), 5)                 # widest, underneath the others
-    draw_path(centroid_track, (0, 0, 255), 1)
-    draw_path(np.array(ms_track), (0, 255, 255), 1)
-    draw_path(cs_track[:, :2], (255, 0, 255), 1)
-    ellipse_frames = [t for t in range(0, FRAMES, 15) if not np.isnan(cs_track[t, 0])]
-    if not np.isnan(cs_track[-1, 0]) and FRAMES - 1 not in ellipse_frames:
-        ellipse_frames.append(FRAMES - 1)
-    for t in ellipse_frames:
-        x, y, a, b, angle = cs_track[t]
-        cv2.ellipse(trajectory, ((x * zoom, y * zoom), (2 * a * zoom, 2 * b * zoom), angle), (255, 0, 255), 1,
-                    cv2.LINE_AA)
-    legend = (("true centre", (0, 200, 0)), ("centroid of largest component", (0, 0, 255)),
-              ("mean shift window centre", (0, 255, 255)),
-              (f"CAMSHIFT centre, ellipse every 15 frames", (255, 0, 255)))
+    # Widest first: CAMSHIFT's centre runs almost on top of the centroid, so it is drawn
+    # wider and beneath it, and the thin centroid line stays visible along its middle.
+    draw_path(truth_path, (0, 200, 0), 9)
+    draw_path(cs_track[:, :2], (255, 0, 255), 5)
+    draw_path(np.array(ms_track), (0, 255, 255), 2)
+    draw_path(centroid_track, (0, 0, 255), 2)
+    legend = (("true centre", (0, 200, 0)), ("CAMSHIFT centre", (255, 0, 255)),
+              ("mean shift window centre", (0, 255, 255)), ("centroid of largest component", (0, 0, 255)))
     cv2.rectangle(trajectory, (4, 4), (300, 12 + 18 * len(legend)), (0, 0, 0), -1)
     for row, (name, colour) in enumerate(legend):
         y = 20 + 18 * row
         cv2.line(trajectory, (10, y - 4), (34, y - 4), colour, 3)
         cv2.putText(trajectory, name, (42, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
     cv2.imwrite(str(OUT_DIR / "trajectory.png"), trajectory)
-    print(f"  trajectory.png: the four paths over the last frame, with the CAMSHIFT ellipse at frames "
-          f"{ellipse_frames}")
+    print("  trajectory.png: the four centre paths over the last frame, widest underneath")
     cv2.imwrite(str(OUT_DIR / "backprojection.png"),
                 np.hstack([frames[-1], cv2.cvtColor(probs[-1], cv2.COLOR_GRAY2BGR)]))
 

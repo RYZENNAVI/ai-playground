@@ -129,10 +129,11 @@ still finds the densest part, but sees less of it every frame; CAMSHIFT reads th
 size and orientation out of the second moments and follows. The hand-written mean
 shift picks **the same window as `cv2.meanShift` in 90 of 90 frames.**
 
-`trajectory.png` draws all four paths over the last frame, with a legend: the true
-centre as a wide green band underneath, the largest component's centroid in red, the
-mean shift window centre in yellow, and the CAMSHIFT centre in magenta with its ellipse
-every 15 frames, so the ellipse can be seen growing and turning with the object.
+`trajectory.png` draws all four centre paths over the last frame, with a legend, widest
+first so none hides another: the true centre as a wide green band, the CAMSHIFT centre
+as a narrower magenta line on it, the mean shift window centre in yellow, and the
+largest component's centroid as a thin red line on top. Red and magenta run almost
+together along the green band; yellow is the one that leaves it.
 
 Two things bound what this table says. **Both trackers start from a box taken off the
 first frame's true mask**, so these are the errors of keeping hold of an object, not
