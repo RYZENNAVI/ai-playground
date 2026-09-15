@@ -766,6 +766,7 @@ def main():
     window, cv_window = roi, roi
     # As in step 5, a lost frame keeps its row as NaN so the thirds stay aligned with the clip.
     cs_rows, cv_error, last = np.full((FRAMES, 5), np.nan), np.full(FRAMES, np.nan), None
+    cs_track = np.full((FRAMES, 5), np.nan)     # centre x, y, semi-axes and angle, for drawing
     for t, (prob, mask, state) in enumerate(zip(probs, masks, states)):
         estimate, window = cam_shift(prob, window)
         rotated, cv_window = cv2.CamShift(prob, cv_window, criteria)
@@ -774,6 +775,7 @@ def main():
         last = estimate if t == FRAMES - 1 else last
         if estimate is None:                     # no probability mass left inside the window
             continue
+        cs_track[t] = estimate
         cs_rows[t] = (np.hypot(estimate[0] - truth_centre[0], estimate[1] - truth_centre[1]),
                       abs(estimate[2] - state[2]), abs(estimate[3] - state[3]),
                       angle_gap(estimate[4], state[4]), coverage(mask, window))
@@ -795,18 +797,42 @@ def main():
     print("  these errors are what each rule does with a perfect start, not what it does from")
     print("  nothing.")
 
-    trajectory = frames[-1].copy()
-    truth_path = np.array([mask_centroid(m) for m in masks], np.float32)
-    cv2.polylines(trajectory, [np.rint(truth_path).astype(np.int32)], False, (0, 255, 0), 1)
-    found_rows = ~np.isnan(centroid_track[:, 0])
-    # Draw only the runs of consecutive frames where a centroid was found.
-    for run in np.split(np.arange(FRAMES), np.flatnonzero(np.diff(found_rows)) + 1):
-        if found_rows[run[0]]:
-            cv2.polylines(trajectory, [np.rint(centroid_track[run]).astype(np.int32)], False, (0, 0, 255), 1)
-    cv2.polylines(trajectory, [np.rint(np.array(ms_track)).astype(np.int32)], False, (0, 255, 255), 1)
-    if last is not None:
-        cv2.ellipse(trajectory, ((last[0], last[1]), (2 * last[2], 2 * last[3]), last[4]), (255, 0, 255), 1)
+    # Drawn at twice the clip's size so the four paths and the legend stay legible.
+    zoom = 2
+    trajectory = cv2.resize(frames[-1], (WIDTH * zoom, HEIGHT * zoom), interpolation=cv2.INTER_NEAREST)
+    to_pixels = lambda points: np.rint(np.asarray(points, np.float64) * zoom).astype(np.int32)
+
+    def draw_path(path, colour, thickness):
+        """Draw only the runs of consecutive frames whose position is known."""
+        path = np.asarray(path, np.float64)
+        known = ~np.isnan(path[:, 0])
+        for run in np.split(np.arange(len(path)), np.flatnonzero(np.diff(known)) + 1):
+            if known[run[0]] and len(run) > 1:
+                cv2.polylines(trajectory, [to_pixels(path[run])], False, colour, thickness, cv2.LINE_AA)
+
+    truth_path = np.array([mask_centroid(m) for m in masks], np.float64)
+    draw_path(truth_path, (0, 200, 0), 5)                 # widest, underneath the others
+    draw_path(centroid_track, (0, 0, 255), 1)
+    draw_path(np.array(ms_track), (0, 255, 255), 1)
+    draw_path(cs_track[:, :2], (255, 0, 255), 1)
+    ellipse_frames = [t for t in range(0, FRAMES, 15) if not np.isnan(cs_track[t, 0])]
+    if not np.isnan(cs_track[-1, 0]) and FRAMES - 1 not in ellipse_frames:
+        ellipse_frames.append(FRAMES - 1)
+    for t in ellipse_frames:
+        x, y, a, b, angle = cs_track[t]
+        cv2.ellipse(trajectory, ((x * zoom, y * zoom), (2 * a * zoom, 2 * b * zoom), angle), (255, 0, 255), 1,
+                    cv2.LINE_AA)
+    legend = (("true centre", (0, 200, 0)), ("centroid of largest component", (0, 0, 255)),
+              ("mean shift window centre", (0, 255, 255)),
+              (f"CAMSHIFT centre, ellipse every 15 frames", (255, 0, 255)))
+    cv2.rectangle(trajectory, (4, 4), (300, 12 + 18 * len(legend)), (0, 0, 0), -1)
+    for row, (name, colour) in enumerate(legend):
+        y = 20 + 18 * row
+        cv2.line(trajectory, (10, y - 4), (34, y - 4), colour, 3)
+        cv2.putText(trajectory, name, (42, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
     cv2.imwrite(str(OUT_DIR / "trajectory.png"), trajectory)
+    print(f"  trajectory.png: the four paths over the last frame, with the CAMSHIFT ellipse at frames "
+          f"{ellipse_frames}")
     cv2.imwrite(str(OUT_DIR / "backprojection.png"),
                 np.hstack([frames[-1], cv2.cvtColor(probs[-1], cv2.COLOR_GRAY2BGR)]))
 
