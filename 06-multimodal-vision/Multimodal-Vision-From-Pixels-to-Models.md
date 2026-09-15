@@ -288,8 +288,10 @@ grows with the rectangle's area and the other does not.
 ### AdaBoost over every feature
 
 Twenty rounds, each choosing one feature, one threshold and one polarity from all
-17 408 of them (thresholds are scored only between distinct values, so a run of
-equal values is never split); the first feature found is a **top/bottom pair at (3, 5), each 10x3**,
+17 408 of them (each threshold sits halfway between two distinct values, so a run of
+equal values is never split and no training value lies on the threshold under either
+polarity; on 300 random tie-heavy problems the error the search reports equals the
+error the stump then makes, and the brute-force optimum, to 3.33e-16); the first feature found is a **top/bottom pair at (3, 5), each 10x3**,
 which is the eye band against the cheeks below it.
 
 | Threshold | Faces found | False alarms | Accuracy |
@@ -299,12 +301,12 @@ which is the eye band against the cheeks below it.
 | 0.7 | 93.8% | 0.0% | 96.9% |
 
 On real crops — 3000 TinyFace faces against 3000 CIFAR-10 images, 16x16 and
-variance-normalised — the same twenty rounds reach **87.5% of faces at 13.0% false
-alarms, 87.2% accuracy** at threshold 0.5, against 50.0% for predicting the larger
-class. The first round's weighted error is 0.222 on real faces against 0.038 on the
+variance-normalised — the same twenty rounds reach **87.1% of faces at 13.3% false
+alarms, 86.9% accuracy** at threshold 0.5, against 50.0% for predicting the larger
+class. The first round's weighted error is 0.222 on real faces against 0.037 on the
 rendered ones: **the same procedure, a harder problem.** The TinyFace images come
 already cropped to the face, and this is classification of 16x16 windows, not a
-detector scanning whole photographs at every position and scale; 87.2% is not a
+detector scanning whole photographs at every position and scale; 86.9% is not a
 face-detection benchmark score.
 
 ---
@@ -500,16 +502,23 @@ are reported below.
 
 ### Three networks
 
-| Model | Parameters | Receptive field | Time | Pixel accuracy | Mean IoU |
+| Model | Parameters | Receptive field, approx. | Time | Pixel accuracy | Mean IoU |
 | :--- | ---: | ---: | ---: | ---: | ---: |
 | UNet with skips | 1 085 837 | 89 px | 22 s | **99.71%** | **0.964** |
 | UNet without skips | 1 525 235 | 89 px | 27 s | 98.02% | 0.769 |
 | Flat, no resampling | 314 261 | **13 px** | 90 s | 92.01% | 0.371 |
 | Background everywhere | 0 | – | – | 89.78% | 0.180 |
 
+The parameter counts are not matched. The UNet without skips is widened from 24 to 30
+base channels and has 40% more parameters than the one with skips; the flat network is
+kept narrow because every layer runs at full resolution. The receptive fields count the
+3x3 convolutions and the halvings only — pooling windows and transposed convolutions
+widen them a little — so they illustrate the gap rather than give exact figures.
+
 The flat network has the same number of convolutions and no pooling, so its output
-unit sees 13 input pixels instead of 89 — and it costs four times the training time
-for a quarter of the parameters, because every layer runs at full resolution.
+unit sees roughly 13 input pixels instead of 89 — and it costs four times the training
+time for a quarter of the parameters, because parameters and computation are different
+things and every one of its layers runs at full resolution.
 
 ### Where the skips show
 
@@ -520,8 +529,11 @@ for a quarter of the parameters, because every layer runs at full resolution.
 | Flat, no resampling | 73.73% | 0.390 | 96.40% |
 
 Interiors are decided by colour and every model gets them. **The gap is at the
-boundaries**, which is exactly the detail the decoder lost on the way down and the
-skip connections hand back.
+boundaries**, which is the detail the decoder loses on the way down and the skip
+connections hand back. The two UNets differ in width as well as in skips, so this is a
+comparison of two configurations rather than a single-variable ablation; the width
+difference favours the model without skips, and it is still the worse of the two.
+Both train with the same flips, one coin per batch.
 
 ### Pascal VOC 2012
 
@@ -557,8 +569,10 @@ of the attention weights sums to **1.000000**, and the result matches
 Around it, an encoder block of 74 784 parameters: attention and a feed-forward
 network, each added back onto its input and layer-normalised. Zeroing both
 sub-layers leaves the block returning its normalised input exactly (largest gap
-**0.00e+00**) — the residual connections are what let a deep stack start as the
-identity and add to it.
+**0.00e+00**). The residual connections keep a direct path for the input through each
+sub-layer; because the normalisation comes after each addition, that path is
+LayerNorm(LayerNorm(x)) rather than x, so this post-norm block does not start as the
+identity function.
 
 ### Two ways to make tokens
 
@@ -571,13 +585,15 @@ Same token count, same three encoder blocks, same eight epochs. Cutting the imag
 into squares gives each token one patch and nothing of its neighbours; a
 convolutional stem overlaps them, so a token already carries local structure before
 attention starts relating tokens to one another. **That is worth nine points on the
-rendered shapes and nothing measurable on CIFAR-10 at this size** — eight epochs of a
-three-block encoder on 12 000 photographs is short of what either tokeniser needs.
+rendered shapes; on CIFAR-10 this single run shows no advantage** (0.6 points the other
+way, from one seed and no repeats) — eight epochs of a three-block encoder on 12 000
+photographs is short of what either tokeniser needs.
 
 ### One linear layer on every frozen representation
 
 Four encoders are trained on the same 12 000 images, three of them without ever
-seeing a label, and each is then frozen and probed with a single linear layer:
+seeing a label, and each is then frozen and probed with a single linear layer. The
+probe itself is trained on the labels; "labels used" refers to the encoder:
 
 | Representation | Labels used | Training | Probe accuracy |
 | :--- | :--- | ---: | ---: |
@@ -588,20 +604,29 @@ seeing a label, and each is then frozen and probed with a single linear layer:
 | Contrastive, no projection head | none | 33 s | 66.30% |
 | Guessing | – | – | 12.50% |
 
-Reconstruction rewards whatever fills the most pixels, so an autoencoder spends its
-capacity on the background it has to redraw. The masked autoencoder is asked for
-something it cannot copy — the patches its encoder never saw — and the contrastive
-encoder is asked for something a background cannot answer: which two of 512 views
-came from the same image.
+What the probe unifies is the data, the evaluation and the linear layer, not the
+encoders: the autoencoder is convolutional with 128 features over 12 epochs, the masked
+autoencoder a transformer with 96 features over 30, and the contrastive encoder a
+ConvNet body with 256 features over 20. The ordering is therefore of these three
+configurations, not a clean ranking of the objectives. It is consistent with
+reconstruction rewarding whatever fills the most pixels, so that an autoencoder spends
+its capacity on the background it has to redraw, while the masked autoencoder is asked
+for something it cannot copy — the patches its encoder never saw — and the contrastive
+encoder for something a background cannot answer: which two of 512 views came from the
+same image. The run does not test that explanation directly.
 
-**The projection head is discarded after training and is exactly what makes the
-features underneath it worth keeping.** The loss pulls its output onto a sphere and
-throws away whatever it does not need there; the body is one layer removed from that
-pressure, and probing it is worth 21 points.
+**The projection head is discarded after training, and in this setup it substantially
+improves the features underneath it.** This is the best-controlled comparison here: the
+two contrastive runs share the body and differ only in the head. The loss pulls the
+head's output onto a sphere and throws away whatever it does not need there; the body
+is one layer removed from that pressure, and probing it is worth 21 points — from one
+seed, one head design, one temperature and one training budget.
 
 ### The same probes on CIFAR-10
 
-12 000 training and 2000 test images, everything else unchanged:
+12 000 training and 2000 held-out images, everything else unchanged. Both are drawn from
+the first two official training batches and the official test batch is not read, so
+these are comparisons between the methods, not CIFAR-10 test-set accuracies:
 
 | Representation | Rendered objects | CIFAR-10 |
 | :--- | ---: | ---: |
@@ -612,8 +637,9 @@ pressure, and probing it is worth 21 points.
 | Contrastive, no head | 66.30% | 49.60% |
 | Guessing | 12.50% | 10.00% |
 
-Photographs are harder than rendered shapes and the gap to the supervised ceiling
-widens, but **the ordering of the three objectives does not change**, and neither does
+Photographs are harder than rendered shapes and the gap to the supervised reference
+widens (a reference for this run, not an upper bound any label-free method must stay
+under), but **the ordering of the three objectives does not change**, and neither does
 the cost of dropping the projection head.
 
 ---

@@ -4,7 +4,7 @@ Demonstrates the transformer block and three label-free training objectives:
     1. Compute scaled dot-product attention from Q, K and V, and check it against PyTorch.
     2. Put it inside an encoder block with residual connections and layer normalisation.
     3. Cut an image into tokens two ways, by patches and by convolution, and classify with labels.
-    4. Train a supervised convolutional baseline, the upper bound the label-free methods aim at.
+    4. Train a supervised convolutional baseline as the reference the label-free methods are read against.
     5. Train an autoencoder on reconstruction alone and probe its representation with one linear layer.
     6. Train a masked autoencoder that rebuilds the patches it was not shown, and probe it the same way.
     7. Train a contrastive encoder on pairs of augmentations, with and without a projection head.
@@ -82,7 +82,12 @@ def synthetic_dataset(count, rng):
 
 
 def load_cifar10(root, train_count, test_count, rng):
-    """CIFAR-10 images as 32x32 BGR arrays, from the python batches."""
+    """CIFAR-10 images as 32x32 BGR arrays, from the python batches.
+
+    Both splits are drawn from the first two training batches; the official test_batch
+    is not read. The held-out split is fine for comparing the methods here with each
+    other, but its accuracies are not CIFAR-10 test-set figures.
+    """
     def read(name):
         with open(Path(root) / name, "rb") as handle:
             batch = pickle.load(handle, encoding="bytes")
@@ -394,8 +399,11 @@ def train_masked_autoencoder(model, x, epochs, device, generator):
     return time.perf_counter() - started, last
 
 
-def augment(images, generator):
-    """Two random views: crop and resize, horizontal flip, colour jitter, sometimes greyscale."""
+def augment(images):
+    """A random view: crop and resize, horizontal flip, colour jitter, sometimes greyscale.
+
+    The draws come from torch's global generator, seeded once in main, on the images' device.
+    """
     import torch
     import torch.nn.functional as F
 
@@ -448,7 +456,7 @@ def train_contrastive(model, x, epochs, device, generator):
             if len(idx) < 4:
                 continue
             images = x[idx].to(device)
-            loss = nt_xent(model(augment(images, generator)), model(augment(images, generator)))
+            loss = nt_xent(model(augment(images)), model(augment(images)))
             optimiser.zero_grad()
             loss.backward()
             optimiser.step()
@@ -553,15 +561,18 @@ def main():
         for parameter in identity.attention.project.parameters():
             parameter.zero_()
     print(f"  with both sub-layers zeroed, the block returns its normalised input: largest gap "
-          f"{(identity(x) - identity.norm2(identity.norm1(x))).abs().max().item():.2e}; the residual")
-    print("  connections are what let a deep stack start as the identity and add to it.")
+          f"{(identity(x) - identity.norm2(identity.norm1(x))).abs().max().item():.2e}.")
+    print("  The residual connections keep a direct path for the input through each sub-layer.")
+    print("  With the normalisation after each addition, that path is LayerNorm(LayerNorm(x)),")
+    print("  not x itself: this block does not start as the identity function.")
 
     # Data
     print("\n--- 3. Tokenising an image two ways ---")
     if args.cifar10_root:
         train_images, train_labels, test_images, test_labels = load_cifar10(
             args.cifar10_root, TRAIN_IMAGES, TEST_IMAGES, rng)
-        classes, source = 10, f"CIFAR-10: {len(train_images)} training and {len(test_images)} test images"
+        classes, source = 10, (f"CIFAR-10: {len(train_images)} training and {len(test_images)} held-out images, "
+                               f"both from the official training batches")
     else:
         train_images, train_labels = synthetic_dataset(TRAIN_IMAGES, rng)
         test_images, test_labels = synthetic_dataset(TEST_IMAGES, rng)
@@ -638,25 +649,29 @@ def main():
               f"temperature {TEMPERATURE}, final NT-Xent {loss:.4f}")
     cv2.imwrite(str(OUT_DIR / "augmentations.png"), np.vstack([
         np.hstack(list(restore(x_test[:8]))),
-        np.hstack(list(restore(augment(x_test[:8].to(device), generator).cpu()))),
-        np.hstack(list(restore(augment(x_test[:8].to(device), generator).cpu())))]))
+        np.hstack(list(restore(augment(x_test[:8].to(device)).cpu()))),
+        np.hstack(list(restore(augment(x_test[:8].to(device)).cpu())))]))
 
     # 8. The same probe on every representation
     print("\n--- 8. One linear layer on every frozen representation ---")
     chance = 1 / classes
     print(f"  {PROBE_EPOCHS} epochs of a single linear layer on standardised features, "
-          f"{len(x_train)} training and {len(x_test)} test images")
+          f"{len(x_train)} training and {len(x_test)} held-out images; the probe itself uses the labels")
     print(f"  {'representation':<26}{'labels used':>12}{'training time':>15}{'probe accuracy':>16}")
     for name, (elapsed, _, accuracy) in results.items():
         used = "all" if name == "supervised ConvNet" else "none"
         print(f"  {name:<26}{used:>12}{elapsed:>14.0f}s{accuracy:>16.2%}")
     print(f"  {'guessing':<26}{'-':>12}{'-':>15}{chance:>16.2%}")
-    print("  Reconstruction rewards whatever fills the most pixels, which is why an autoencoder's")
-    print("  features trail the two objectives that ask for something harder: predicting patches")
-    print("  the encoder never saw, and telling two views of one image apart from every other image.")
-    print("  The projection head is thrown away after training, and it is what makes the features")
-    print("  underneath it worth keeping: the contrastive loss pulls the head's output onto a")
-    print("  sphere and discards what it does not need, and the body is left out of that.")
+    print("  'labels used' refers to training the encoder; every probe is trained on the labels.")
+    print("  The three label-free encoders differ in architecture, feature size and epochs as well")
+    print("  as in objective, so the ordering is of these configurations, not of the objectives alone.")
+    print("  It is consistent with reconstruction rewarding whatever fills the most pixels, while")
+    print("  the other two ask for something harder: predicting patches the encoder never saw, and")
+    print("  telling two views of one image apart from every other image.")
+    print("  The two contrastive runs share their body and differ only in the projection head, and")
+    print("  in this setup the head substantially improves the features underneath it: the loss")
+    print("  pulls the head's output onto a sphere and discards what it does not need, and the")
+    print("  body is one layer removed from that.")
     print(f"\n  images written to {OUT_DIR}")
 
 
