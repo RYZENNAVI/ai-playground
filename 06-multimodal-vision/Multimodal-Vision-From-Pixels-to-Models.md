@@ -102,6 +102,10 @@ All three group exactly the same pixels, and the largest component's bounding bo
 agrees to the pixel. The gap between 42 and 41 is two squares that touch only at a
 corner. The provisional-label counts are what the equivalence table is for: a U
 shape is labelled as two arms until the scan reaches the bar joining them.
+`component_boxes.png` puts the two results side by side, 4-connectivity on the left
+and 8 on the right, with a box around every component of at least 20 pixels: the
+corner-touching squares get two boxes on the left and one on the right, and the specks
+are counted but left unboxed.
 
 ### Back-projection, mean shift and CAMSHIFT
 

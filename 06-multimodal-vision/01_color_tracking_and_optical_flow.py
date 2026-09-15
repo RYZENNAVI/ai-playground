@@ -643,6 +643,7 @@ def main():
     # 4. Connected components
     print("\n--- 4. Connected components, labelled by hand ---")
     test = labelling_test_mask(frames[0])
+    component_panels = []
     for connectivity in (4, 8):
         two_pass, count, provisional = two_pass_label(test, connectivity)
         flood, stats = flood_fill_label(test, connectivity)
@@ -656,12 +657,17 @@ def main():
         print(f"    two-pass and flood fill group the same pixels: {same_partition(two_pass, flood)}; "
               f"flood fill and OpenCV: {same_partition(flood, cv_labels)}")
         print(f"    largest component (x, y, w, h, area): flood fill {largest}, OpenCV {cv_largest}")
-        if connectivity == 8:
-            boxes = cv2.cvtColor(test.astype(np.uint8) * 255, cv2.COLOR_GRAY2BGR)
-            for x, y, w, h, area in stats:
-                if area >= 20:
-                    cv2.rectangle(boxes, (x, y), (x + w - 1, y + h - 1), (0, 0, 255), 1)
-            cv2.imwrite(str(OUT_DIR / "component_boxes.png"), boxes)
+        boxes = panel(test, f"{connectivity}-connectivity: {len(stats)} components")
+        cv2.putText(boxes, "boxes only where area >= 20", (6, HEIGHT - 8), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45, (0, 0, 255), 1, cv2.LINE_AA)
+        for x, y, w, h, area in stats:
+            if area >= 20:
+                cv2.rectangle(boxes, (x, y), (x + w - 1, y + h - 1), (0, 0, 255), 1)
+        component_panels.append(boxes)
+    divider = np.full((HEIGHT, 4, 3), 128, np.uint8)
+    cv2.imwrite(str(OUT_DIR / "component_boxes.png"), np.hstack([component_panels[0], divider, component_panels[1]]))
+    print("  component_boxes.png: 4-connectivity on the left, 8 on the right; the squares at the")
+    print("  bottom right get two boxes on the left and one on the right")
     print("  The two squares touch only at a corner: two components under 4-connectivity,")
     print("  one under 8. The U needs the equivalence table, because its arms are")
     print("  labelled separately until the scan reaches the bar that joins them.")
