@@ -406,8 +406,9 @@ def run_adaboost(name, train_windows, train_labels, test_windows, test_labels, f
     for index, (feature, _, _, alpha, epsilon) in enumerate(stumps[:5], 1):
         print(f"  {index:>5}{str(tuple(int(v) for v in features[feature])):>34}{epsilon:>9.3f}{alpha:>8.3f}")
     print(f"  ... round {ROUNDS}: epsilon {stumps[-1][4]:.3f}, alpha {stumps[-1][3]:.3f}")
-    report_thresholds(strong_scores(test_values, stumps), test_labels)
-    return stumps
+    scores = strong_scores(test_values, stumps)
+    report_thresholds(scores, test_labels)
+    return stumps, scores
 
 
 def load_tinyface(root, count, rng):
@@ -459,6 +460,120 @@ def draw_features(face, features, stumps, scale=15):
 
 
 # ---------------------------------------------------------------------------
+# Drawing
+# ---------------------------------------------------------------------------
+
+FONT = cv2.FONT_HERSHEY_SIMPLEX
+
+
+def labelled(image, text, bottom=False):
+    """A BGR uint8 image with its label on a black strip, top-left or bottom-left."""
+    image = image.copy()
+    (text_w, text_h), _ = cv2.getTextSize(text, FONT, 0.45, 1)
+    top = image.shape[0] - text_h - 12 if bottom else 2
+    cv2.rectangle(image, (2, top), (10 + text_w, top + 8 + text_h), (0, 0, 0), -1)
+    cv2.putText(image, text, (6, top + 4 + text_h), FONT, 0.45, (0, 0, 255), 1, cv2.LINE_AA)
+    return image
+
+
+def side_by_side(tiles):
+    """Equal-height tiles with grey dividers between them."""
+    cells = []
+    for tile in tiles:
+        cells += [tile, np.full((tile.shape[0], 4, 3), 128, np.uint8)]
+    return np.hstack(cells[:-1])
+
+
+def enlarge(img, scale):
+    """A 0-1 float image as an enlarged BGR uint8 image."""
+    grey = np.clip(img * 255, 0, 255).astype(np.uint8)
+    return cv2.cvtColor(cv2.resize(grey, (img.shape[1] * scale, img.shape[0] * scale),
+                                   interpolation=cv2.INTER_NEAREST), cv2.COLOR_GRAY2BGR)
+
+
+def hog_glyphs(img, scale):
+    """Each cell's orientation histogram drawn as lines along the edge directions it counts.
+
+    A gradient points across an edge, so each bin is drawn perpendicular to its
+    direction, with a length set by its share of the strongest bin in the window.
+    """
+    hist = cell_histograms(img, "orientation+spatial")
+    canvas = (enlarge(img, scale) * 0.45).astype(np.uint8)
+    peak, half = hist.max() + 1e-9, CELL * scale / 2
+    for cy in range(hist.shape[0]):
+        for cx in range(hist.shape[1]):
+            centre = np.array([(cx + 0.5) * CELL * scale, (cy + 0.5) * CELL * scale])
+            for b in range(BINS):
+                length = half * hist[cy, cx, b] / peak
+                if length < 0.5:
+                    continue
+                edge = np.radians((b + 0.5) * 180 / BINS + 90)
+                step = length * np.array([np.cos(edge), np.sin(edge)])
+                cv2.line(canvas, tuple(np.rint(centre - step).astype(int)), tuple(np.rint(centre + step).astype(int)),
+                         (0, 255, 255), 1, cv2.LINE_AA)
+    return canvas
+
+
+def distance_chart(groups, height=256, width=340, ceiling=1.2):
+    """Mean distance per group as a bar, with a white line from its minimum to its maximum."""
+    canvas = np.zeros((height, width, 3), np.uint8)
+    top, bottom = 40, height - 30
+    to_y = lambda d: int(round(bottom - (bottom - top) * min(d, ceiling) / ceiling))
+    for tick in np.linspace(0, ceiling, 4):
+        cv2.line(canvas, (40, to_y(tick)), (width - 10, to_y(tick)), (70, 70, 70), 1)
+        cv2.putText(canvas, f"{tick:.1f}", (6, to_y(tick) + 4), FONT, 0.4, (200, 200, 200), 1, cv2.LINE_AA)
+    for i, (name, distances, colour) in enumerate(groups):
+        x = 85 + i * 95
+        cv2.rectangle(canvas, (x - 25, to_y(distances.mean())), (x + 25, bottom), colour, -1)
+        cv2.line(canvas, (x, to_y(distances.min())), (x, to_y(distances.max())), (255, 255, 255), 2)
+        cv2.putText(canvas, name, (x - 25, height - 10), FONT, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(canvas, f"{distances.mean():.2f}", (x - 17, to_y(distances.max()) - 8), FONT, 0.45,
+                    (255, 255, 255), 1, cv2.LINE_AA)   # above the range line, clear of it
+    return canvas
+
+
+def haar_examples(counts, size=PAPER_WINDOW, scale=10):
+    """One left/right and one top/bottom pair on a window grid: +1 white, -1 black."""
+    tiles = []
+    for vertical, (x, y, w, h), name in ((0, (3, 8, 7, 8), "left/right"), (1, (4, 4, 16, 5), "top/bottom")):
+        canvas = np.full((size * scale, size * scale, 3), 110, np.uint8)
+        for k in range(size + 1):
+            cv2.line(canvas, (k * scale, 0), (k * scale, size * scale), (90, 90, 90), 1)
+            cv2.line(canvas, (0, k * scale), (size * scale, k * scale), (90, 90, 90), 1)
+        second = (x, y + h) if vertical else (x + w, y)
+        cv2.rectangle(canvas, (x * scale, y * scale), ((x + w) * scale, (y + h) * scale), (0, 0, 0), -1)
+        cv2.rectangle(canvas, (second[0] * scale, second[1] * scale),
+                      ((second[0] + w) * scale, (second[1] + h) * scale), (255, 255, 255), -1)
+        tiles.append(labelled(labelled(canvas, "value = white sum - black sum", bottom=True),
+                              f"{name}: {counts[vertical]} in {size}x{size}"))
+    return tiles
+
+
+def score_histogram(scores, labels, name, height=260, width=640):
+    """Share of test windows at each strong-classifier score, faces in green and non-faces in red."""
+    canvas = np.zeros((height, width, 3), np.uint8)
+    left, right, top, bottom = 40, width - 20, 40, height - 40
+    edges = np.linspace(0, 1, 41)
+    shares = [np.histogram(scores[labels == cls], bins=edges)[0] / max((labels == cls).sum(), 1) for cls in (0, 1)]
+    peak = max(s.max() for s in shares)
+    to_x = lambda v: int(round(left + (right - left) * v))
+    to_y = lambda v: int(round(bottom - (bottom - top) * v / peak))
+    for theta in STRONG_THRESHOLDS:
+        cv2.line(canvas, (to_x(theta), top), (to_x(theta), bottom), (90, 90, 90), 1)
+        cv2.putText(canvas, f"{theta:.1f}", (to_x(theta) - 10, bottom + 16), FONT, 0.4, (200, 200, 200), 1, cv2.LINE_AA)
+    cv2.line(canvas, (left, bottom), (right, bottom), (200, 200, 200), 1)
+    for share, colour in zip(shares, ((0, 0, 255), (0, 200, 0))):
+        points = []
+        for i, value in enumerate(share):
+            points += [(to_x(edges[i]), to_y(value)), (to_x(edges[i + 1]), to_y(value))]
+        cv2.polylines(canvas, [np.array(points, np.int32)], False, colour, 2)
+    found, alarms = (scores[labels == 1] >= 0.5).mean(), (scores[labels == 0] >= 0.5).mean()
+    cv2.putText(canvas, "strong-classifier score", (width // 2 - 80, height - 6), FONT, 0.45, (200, 200, 200), 1,
+                cv2.LINE_AA)
+    return labelled(canvas, f"{name}: green faces, red non-faces; at 0.5, {found:.1%} found, {alarms:.1%} false alarms")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -482,8 +597,16 @@ def main():
     others = np.stack([non_face_window(rng) for _ in range(TRAIN_PER_CLASS + TEST_PER_CLASS)])
     print(f"  person and car windows {WINDOW_W}x{WINDOW_H}; star 128x128; "
           f"{len(faces)} face and {len(others)} non-face windows {FACE}x{FACE}")
-    cv2.imwrite(str(OUT_DIR / "windows.png"), np.clip(255 * np.hstack(
-        people + [unknown_person, unknown_car]), 0, 255).astype(np.uint8))
+    cv2.imwrite(str(OUT_DIR / "windows.png"), side_by_side([
+        labelled(enlarge(img, 2), name) for img, name in
+        zip(people + [unknown_person, unknown_car, held_clutter[0]],
+            ("person 1", "person 2", "person 3", "test person", "test car", "clutter"))]))
+    face_rows = [np.hstack([enlarge(w, 8) for w in group[:8]]) for group in (faces, others)]
+    cv2.imwrite(str(OUT_DIR / "face_windows.png"), np.vstack([
+        labelled(face_rows[0], "faces"), np.full((4, face_rows[0].shape[1], 3), 128, np.uint8),
+        labelled(face_rows[1], "non-faces")]))
+    print("  windows.png: the three reference people, the unknown person and car, and clutter;")
+    print("  face_windows.png: eight rendered faces above eight non-faces")
 
     # 2. Gradients
     print("\n--- 2. Gradient direction, drawn with opacity proportional to magnitude ---")
@@ -495,7 +618,9 @@ def main():
         print(f"  person window: {strong.mean():.1%} of pixels above a quarter of the peak magnitude; "
               f"their directions, histogram of 4 bins: "
               f"{np.histogram(direction[strong], bins=4, range=(0, 180))[0].tolist()}")
-    cv2.imwrite(str(OUT_DIR / "gradient_direction.png"), np.hstack(overlays))
+    cv2.imwrite(str(OUT_DIR / "gradient_direction.png"), side_by_side([
+        labelled(cv2.resize(overlay, (WINDOW_W * 2, WINDOW_H * 2), interpolation=cv2.INTER_NEAREST), f"person {i + 1}")
+        for i, overlay in enumerate(overlays)]))
     print("  Near-vertical limbs and torso sides have horizontal gradients, the 0-45 and 135-180")
     print("  bins; head and shoulders fill the middle. Weak gradients carry little shape, so they")
     print("  are drawn nearly transparent and, in the histograms below, vote with little weight.")
@@ -505,10 +630,22 @@ def main():
     turned = rotate(star, -5)
     print(f"  {BINS} unsigned bins of {180 // BINS} deg, {CELL}x{CELL} cells")
     print(f"  {'voting':<22}{'distance, star vs turned':>26}{'relative to star':>18}")
+    star_changes = {}
     for mode in ("nearest", "orientation", "orientation+spatial"):
-        a, b = cell_histograms(star, mode).ravel(), cell_histograms(turned, mode).ravel()
+        hist_a, hist_b = cell_histograms(star, mode), cell_histograms(turned, mode)
+        a, b = hist_a.ravel(), hist_b.ravel()
         distance = np.linalg.norm(a - b)
         print(f"  {mode:<22}{distance:>26.3f}{distance / np.linalg.norm(a):>18.3f}")
+        star_changes[mode] = (np.abs(hist_a - hist_b).sum(-1), distance)
+    ceiling = max(change.max() for change, _ in star_changes.values())
+    change_tiles = [labelled(cv2.applyColorMap(cv2.resize(np.rint(255 * change / ceiling).astype(np.uint8), (256, 256),
+                                                          interpolation=cv2.INTER_NEAREST), cv2.COLORMAP_INFERNO),
+                             f"{mode}: {distance:.0f}") for mode, (change, distance) in star_changes.items()]
+    cv2.imwrite(str(OUT_DIR / "cell_histograms.png"), side_by_side(
+        [labelled(hog_glyphs(star, 2), "star, cell histograms"), labelled(hog_glyphs(turned, 2), "turned 5 deg")]
+        + change_tiles))
+    print("  cell_histograms.png: both stars with their cell histograms drawn in, then how much each")
+    print("  cell changed under each voting rule, on one colour scale, with the total distance")
     print("  A 5-degree turn moves a direction a quarter of a bin. With the whole vote in one")
     print("  bin, every direction that crosses a boundary moves all of its weight; split")
     print("  between the two nearest bins, it moves a quarter. The same holds for pixels that")
@@ -533,9 +670,21 @@ def main():
     print(f"  smaller mean distance to the three people: {closer}")
     template = np.mean(reference, axis=0)
     print(f"  distance to the mean of the three people, {len(held_people)} new windows each:")
+    group_distances = {}
     for name, group in (("people", held_people), ("cars", held_cars), ("clutter", held_clutter)):
         d = np.array([np.linalg.norm(hog_descriptor(img) - template) for img in group])
+        group_distances[name] = d
         print(f"    {name:<8} mean {d.mean():.3f}  min {d.min():.3f}  max {d.max():.3f}")
+    hog_tiles = [labelled(hog_glyphs(img, 2), name) for img, name in zip(
+        people + [unknown_person, unknown_car],
+        ("person 1", "person 2", "person 3", f"person? {unknown_means['unknown person']:.2f}",
+         f"car? {unknown_means['unknown car']:.2f}"))]
+    chart = labelled(distance_chart([(name, group_distances[name], colour) for name, colour in
+                                     (("people", (0, 200, 0)), ("cars", (0, 0, 255)), ("clutter", (200, 120, 0)))]),
+                     "distance to the mean person, 40 each")
+    cv2.imwrite(str(OUT_DIR / "hog_descriptor.png"), side_by_side(hog_tiles + [chart]))
+    print("  hog_descriptor.png: cell histograms of the three people and the two unknowns (their mean")
+    print("  distance in the label), and the distance of 40 new people, cars and clutter windows")
     print("  This compares descriptors by distance; no classifier or decision threshold is")
     print("  trained on them here. A HOG detector would put a linear SVM on top.")
 
@@ -545,7 +694,11 @@ def main():
         enumerated = enumerate_two_rect(size)
         print(f"  {size}x{size} window: enumerated {len(enumerated)}, closed form {closed_form_count(size)} "
               f"(horizontal {int((enumerated[:, 0] == 0).sum())}, vertical {int((enumerated[:, 0] == 1).sum())})")
+        if size == PAPER_WINDOW:
+            paper_counts = (int((enumerated[:, 0] == 0).sum()), int((enumerated[:, 0] == 1).sum()))
     features = enumerate_two_rect(FACE)
+    cv2.imwrite(str(OUT_DIR / "haar_feature_types.png"), side_by_side(haar_examples(paper_counts)))
+    print("  haar_feature_types.png: one pair of each orientation on a 24x24 grid")
 
     # 6. Integral image
     print("\n--- 6. The integral image ---")
@@ -567,19 +720,35 @@ def main():
     print("  ii[y, x] holds the sum above and to the left, so any rectangle is D - B - C + A:")
     print("  the cost is four reads whether the rectangle is 2 pixels or 200,000.")
     print("  The timings are one pass each, not a benchmark; the point is the gap in kind.")
-    cv2.imwrite(str(OUT_DIR / "integral_image.png"),
-                np.hstack([cv2.resize(sample, (170, 170), interpolation=cv2.INTER_NEAREST),
-                           cv2.resize(np.rint(255 * ours / ours.max()).astype(np.uint8), (170, 170),
-                                      interpolation=cv2.INTER_NEAREST)]))
+    rx, ry, rw, rh, scale = 3, 5, 10, 3, 15        # the eye band, the first feature AdaBoost picks
+    window_tile = np.zeros(((FACE + 1) * scale, FACE * scale, 3), np.uint8)
+    window_tile[:FACE * scale] = enlarge(sample / 255.0, scale)
+    cv2.rectangle(window_tile, (rx * scale, ry * scale), ((rx + rw) * scale - 1, (ry + rh) * scale - 1), (0, 0, 255), 2)
+    ii_tile = cv2.cvtColor(cv2.resize(np.rint(255 * ours / ours.max()).astype(np.uint8), ((FACE + 1) * scale,) * 2,
+                                      interpolation=cv2.INTER_NEAREST), cv2.COLOR_GRAY2BGR)
+    for letter, (row, col) in (("A", (ry, rx)), ("B", (ry, rx + rw)), ("C", (ry + rh, rx)), ("D", (ry + rh, rx + rw))):
+        centre = (int((col + 0.5) * scale), int((row + 0.5) * scale))
+        cv2.circle(ii_tile, centre, 5, (0, 0, 255), -1)
+        cv2.putText(ii_tile, letter, (centre[0] + 6, centre[1] - 6), FONT, 0.5, (0, 0, 255), 2, cv2.LINE_AA)
+    cv2.imwrite(str(OUT_DIR / "integral_image.png"), side_by_side([
+        labelled(window_tile, f"box sum {int(sample[ry:ry + rh, rx:rx + rw].sum())}"),
+        labelled(ii_tile, f"D - B - C + A = {rect_sum(ours, rx, ry, rw, rh):.0f}")]))
+    print("  integral_image.png: a face window with one box, and its integral image with the four")
+    print("  corners whose combination gives the same sum")
 
     # 7. AdaBoost
     print("\n--- 7. AdaBoost over every feature ---")
     train_w, train_l, test_w, test_l = split(faces, others, TRAIN_PER_CLASS, rng)
-    stumps = run_adaboost("synthetic faces", train_w, train_l, test_w, test_l, features)
+    stumps, scores = run_adaboost("synthetic faces", train_w, train_l, test_w, test_l, features)
+    cv2.imwrite(str(OUT_DIR / "adaboost_scores.png"), score_histogram(scores, test_l, "rendered"))
+    print("  adaboost_scores.png: how the test faces and non-faces spread over the strong score,")
+    print("  with the thresholds of the table marked")
 
     # 8. Chosen features and real data
     print("\n--- 8. What the classifier looks at, and the same training on real images ---")
-    cv2.imwrite(str(OUT_DIR / "haar_features.png"), draw_features(faces.mean(axis=0), features, stumps))
+    cv2.imwrite(str(OUT_DIR / "haar_features.png"),
+                labelled(draw_features(faces.mean(axis=0), features, stumps), "features 1-3: red green blue",
+                         bottom=True))
     for index, (feature, threshold, polarity, alpha, _) in enumerate(stumps[:3], 1):
         vertical, x, y, w, h = (int(v) for v in features[feature])
         kind = "top/bottom" if vertical else "left/right"
@@ -590,9 +759,13 @@ def main():
         real_others = load_cifar10(args.cifar10_root, TRAIN_PER_CLASS + TEST_PER_CLASS, rng)
         print(f"  TinyFace: {len(real_faces)} of {available} training crops; CIFAR-10: {len(real_others)} images")
         real = split(real_faces, real_others, TRAIN_PER_CLASS, rng)
-        real_stumps = run_adaboost("TinyFace vs CIFAR-10", *real, features)
+        real_stumps, real_scores = run_adaboost("TinyFace vs CIFAR-10", *real, features)
         cv2.imwrite(str(OUT_DIR / "haar_features_tinyface.png"),
-                    draw_features(real_faces.mean(axis=0), features, real_stumps))
+                    labelled(draw_features(real_faces.mean(axis=0), features, real_stumps),
+                             "features 1-3: red green blue", bottom=True))
+        cv2.imwrite(str(OUT_DIR / "adaboost_scores_tinyface.png"), score_histogram(real_scores, real[3], "TinyFace"))
+        print("  haar_features_tinyface.png and adaboost_scores_tinyface.png: the same two images for")
+        print("  the real data")
     else:
         print("  pass --tinyface-root and --cifar10-root to repeat the training on TinyFace crops")
         print("  against CIFAR-10 images")

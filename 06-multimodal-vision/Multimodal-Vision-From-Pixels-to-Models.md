@@ -367,6 +367,20 @@ already cropped to the face, and this is classification of 16x16 windows, not a
 detector scanning whole photographs at every position and scale; 86.9% is not a
 face-detection benchmark score.
 
+### What the images show
+
+| Image | Panels |
+| :--- | :--- |
+| `windows.png` | the three reference people, the test person, the test car and a clutter window |
+| `face_windows.png` | eight rendered faces above eight non-faces |
+| `gradient_direction.png` | each reference person with gradient direction as colour and magnitude as opacity |
+| `cell_histograms.png` | the star and the turned star with their cell histograms drawn in, then how much each cell changes under nearest, orientation and orientation-plus-spatial voting |
+| `hog_descriptor.png` | cell histograms of the three people, the test person and the test car with their mean distances, and a chart of the distance of 40 new people, cars and clutter windows |
+| `haar_feature_types.png` | one left/right and one top/bottom pair on a 24x24 grid, with how many of each there are |
+| `integral_image.png` | a face window with the eye-band box, and its integral image with corners A, B, C, D giving the same sum |
+| `adaboost_scores.png`, `adaboost_scores_tinyface.png` | how test faces and non-faces spread over the strong-classifier score, with the thresholds of the table |
+| `haar_features.png`, `haar_features_tinyface.png` | the mean face with the first three chosen features |
+
 ---
 
 ## 4. Training mechanics
