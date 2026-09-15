@@ -337,7 +337,8 @@ needs thousands of epochs to separate them.
 ### Softmax and cross-entropy
 
 The analytic gradient (softmax minus one-hot, divided by the batch) matches a central
-difference to **6.75e-10**. On logits `[1000, 1001, 1002]` the definition as written
+difference to **8.11e-10**. The loss is computed as logsumexp minus the true logit, with
+no epsilon inside a log, so the function differenced is exactly the one differentiated. On logits `[1000, 1001, 1002]` the definition as written
 returns `[nan, nan, nan]`; subtracting the largest logit, which cancels in the ratio,
 returns `[0.09, 0.2447, 0.6652]`.
 
@@ -345,12 +346,16 @@ returns `[0.09, 0.2447, 0.6652]`.
 
 | | Rendered digits | MNIST |
 | :--- | ---: | ---: |
-| 784-256-10 in numpy, 5 epochs, 203 530 parameters | 90.30% | **97.75%** (2.25% error) |
+| 784-256-10 in numpy, 5 epochs, 203 530 parameters | 89.35% | **97.84%** (2.16% error) |
 | CNN, 3 epochs, 156 010 parameters | 94.85% | **99.03%** |
 
-The CNN has fewer parameters and a higher score: 131 200 of the MLP's parameters are
+The CNN has fewer parameters and a higher score. 200 960 of the MLP's parameters are
 in the first layer alone, which learns one weight per pixel per unit and shares
-nothing between positions.
+nothing between positions, and weight sharing is the natural explanation. The two
+networks also differ in optimiser, depth, epochs, BatchNorm and Dropout, so the
+comparison shows that this CNN beats this MLP, not that sharing alone accounts for
+the gap. Test accuracy is printed every epoch only to show the curve; nothing is
+chosen from it.
 
 ### Training mode against evaluation mode
 
@@ -364,11 +369,25 @@ Both modes, same weights, on MNIST:
 | BatchNorm in evaluation mode against the running-statistics formula | gap 9.54e-07 |
 | BatchNorm in training mode against this batch's own mean and variance | gap 1.43e-06 |
 | Running variance after one training-mode batch, against 0.9 old + 0.1 unbiased batch | gap 1.49e-08 |
-| Test images fed **one at a time in training mode** | **90.10%**, against 98.80% in evaluation mode |
 
-With a single image, BatchNorm normalises each channel by that image's own spatial
-mean and variance, which erases how strongly a feature map responded overall. That
-is part of the evidence; the running statistics carry it instead.
+The first 1000 test images fed **one at a time**, with each layer type switched
+separately:
+
+| BatchNorm | Dropout | Accuracy |
+| :--- | :--- | ---: |
+| training | training | **90.10%** |
+| training | evaluation | 91.60% |
+| evaluation | training | 98.40% |
+| evaluation | evaluation | 98.80% |
+
+Dropout alone costs 0.4 points; BatchNorm alone costs 7.2. With a single image,
+BatchNorm normalises each channel by that image's own spatial mean and variance,
+which erases how strongly a feature map responded overall. That is part of the
+evidence; the running statistics carry it instead.
+
+`torch.no_grad()` only stops gradients being recorded. Inside it a training-mode
+network still drops activations and still updates BatchNorm's running statistics,
+which is why the probes run on copies of the trained model.
 
 ---
 

@@ -119,8 +119,14 @@ def softmax(z):
 
 
 def cross_entropy(z, y_onehot):
-    """Mean of -log p[true class], computed from logits."""
-    return float(-(y_onehot * np.log(softmax(z) + 1e-12)).sum(axis=-1).mean())
+    """Mean of -log p[true class], computed from logits as logsumexp(z) - z[true class].
+
+    Working in log space needs no epsilon inside a log, so the function differentiated
+    numerically below is exactly the one whose gradient is softmax minus one-hot.
+    """
+    shifted = z - z.max(axis=-1, keepdims=True)
+    log_probs = shifted - np.log(np.exp(shifted).sum(axis=-1, keepdims=True))
+    return float(-(y_onehot * log_probs).sum(axis=-1).mean())
 
 
 # ---------------------------------------------------------------------------
@@ -201,11 +207,11 @@ def train_mlp(x_train, y_train, x_test, y_test, rng):
     for epoch in range(1, MLP_EPOCHS + 1):
         started = time.perf_counter()
         order = rng.permutation(len(x_train))
-        for start in range(0, len(order) - MLP_BATCH + 1, MLP_BATCH):
+        for start in range(0, len(order), MLP_BATCH):   # the last, shorter batch is trained too
             idx = order[start:start + MLP_BATCH]
             x, y = x_train[idx], eye[y_train[idx]]
             z1, a1, logits = mlp_forward(p, x)
-            dz2 = (softmax(logits) - y) / MLP_BATCH
+            dz2 = (softmax(logits) - y) / len(idx)
             dz1 = (dz2 @ p["w2"].T) * (z1 > 0)
             for name, grad in (("w2", a1.T @ dz2), ("b2", dz2.sum(0)), ("w1", x.T @ dz1), ("b1", dz1.sum(0))):
                 p[name] -= MLP_LEARNING_RATE * grad
@@ -458,6 +464,9 @@ def main():
               f"{evaluate(model, xv, yv):>10.2%}{time.perf_counter() - started:>7.1f}s")
     print("  The running figures are averaged over the epoch while the weights are still moving,")
     print("  in training mode; the test figure is measured once, at the end, in evaluation mode.")
+    print("  Test accuracy is printed every epoch in both networks only to show the curve: no")
+    print("  epoch, setting or stopping point is chosen from it. A project that tunes anything")
+    print("  would watch a validation split carved from the training data and test once.")
 
     # 7. Modes
     print("\n--- 7. Training mode against evaluation mode, on the trained network ---")
@@ -473,6 +482,9 @@ def main():
     print(f"  same weights, first {subset.stop} training images: evaluation mode {eval_train:.2%}, "
           f"training mode {train_train:.2%}")
     print(f"  test predictions that change with the mode: {(eval_pred != train_pred).sum().item()} of {len(xv)}")
+    print("  torch.no_grad() stops gradients being recorded, not the mode: inside it, training-mode")
+    print("  dropout still drops and BatchNorm still updates its running statistics, which is why")
+    print("  this probe runs on a copy.")
 
     dropout = nn.Dropout(DROPOUT).train()
     ones = torch.ones(100000, device=device)
@@ -505,14 +517,27 @@ def main():
     print(f"  batch mean against running mean, per channel: largest gap "
           f"{(mu - bn.running_mean).abs().max().item():.4f}")
 
-    single = copy.deepcopy(model).train()
-    with torch.no_grad():
-        one_at_a_time = sum((single(xv[i:i + 1]).argmax(1) == yv[i:i + 1]).sum().item() for i in range(1000)) / 1000
-    print(f"  training mode fed one image at a time, first 1000 test images: {one_at_a_time:.2%} "
-          f"(evaluation mode {evaluate(model.eval(), xv[:1000], yv[:1000]):.2%})")
+    def one_at_a_time(batchnorm_training, dropout_training):
+        """Accuracy on the first 1000 test images fed singly, with each layer type in the chosen mode."""
+        single = copy.deepcopy(model)
+        for module in single.modules():
+            if isinstance(module, nn.BatchNorm2d):
+                module.train(batchnorm_training)
+            elif isinstance(module, nn.Dropout):
+                module.train(dropout_training)
+        with torch.no_grad():
+            return sum((single(xv[i:i + 1]).argmax(1) == yv[i:i + 1]).sum().item() for i in range(1000)) / 1000
+
+    print("  one image at a time, first 1000 test images, each layer type set separately:")
+    print(f"  {'BatchNorm':<11}{'Dropout':<11}{'accuracy':>9}")
+    for bn_mode, dropout_mode in ((True, True), (True, False), (False, True), (False, False)):
+        print(f"  {'training' if bn_mode else 'evaluation':<11}{'training' if dropout_mode else 'evaluation':<11}"
+              f"{one_at_a_time(bn_mode, dropout_mode):>9.2%}")
     print("  With one image, BatchNorm normalises each channel by that image's own spatial mean")
     print("  and variance, erasing how bright a feature map is overall, which is part of the")
     print("  evidence; running statistics collected over training carry that information instead.")
+    print("  The rows separate the two layers: switching only BatchNorm or only Dropout shows how")
+    print("  much of the drop each one accounts for.")
     print(f"\n  images written to {OUT_DIR}")
 
 
