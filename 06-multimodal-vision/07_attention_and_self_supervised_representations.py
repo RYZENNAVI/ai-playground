@@ -30,6 +30,7 @@ SEED = 3407
 SIZE = 32
 PATCH = 4
 CLASSES = ("bar", "box", "cross", "disk", "ring", "triangle", "wedge", "zigzag")
+CIFAR_CLASSES = ("aeroplane", "car", "bird", "cat", "deer", "dog", "frog", "horse", "ship", "truck")
 TRAIN_IMAGES, TEST_IMAGES = 12000, 2000
 
 EMBED, HEADS, DEPTH, MLP_RATIO = 96, 4, 3, 2
@@ -341,15 +342,18 @@ def train_supervised(model, x, y, epochs, device, generator):
     import torch.nn.functional as F
 
     optimiser = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    started = time.perf_counter()
+    started, history = time.perf_counter(), []
     for _ in range(epochs):
         model.train()
+        total = 0.0
         for idx in batches(len(x), BATCH, generator):
             loss = F.cross_entropy(model(x[idx].to(device)), y[idx].to(device))
             optimiser.zero_grad()
             loss.backward()
             optimiser.step()
-    return time.perf_counter() - started
+            total += loss.item() * len(idx)
+        history.append(total / len(x))
+    return time.perf_counter() - started, history
 
 
 def train_autoencoder(model, x, epochs, device, generator):
@@ -358,7 +362,7 @@ def train_autoencoder(model, x, epochs, device, generator):
     import torch.nn.functional as F
 
     optimiser = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    started, last = time.perf_counter(), 0.0
+    started, history = time.perf_counter(), []
     for _ in range(epochs):
         model.train()
         total = 0.0
@@ -369,8 +373,8 @@ def train_autoencoder(model, x, epochs, device, generator):
             loss.backward()
             optimiser.step()
             total += loss.item() * len(idx)
-        last = total / len(x)
-    return time.perf_counter() - started, last
+        history.append(total / len(x))
+    return time.perf_counter() - started, history[-1], history
 
 
 def train_masked_autoencoder(model, x, epochs, device, generator):
@@ -381,7 +385,7 @@ def train_masked_autoencoder(model, x, epochs, device, generator):
     optimiser = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
     tokens = model.tokens
     visible = int(round(tokens * (1 - MASK_RATIO)))
-    started, last = time.perf_counter(), 0.0
+    started, history = time.perf_counter(), []
     for _ in range(epochs):
         model.train()
         total = 0.0
@@ -395,8 +399,8 @@ def train_masked_autoencoder(model, x, epochs, device, generator):
             loss.backward()
             optimiser.step()
             total += loss.item() * len(idx)
-        last = total / len(x)
-    return time.perf_counter() - started, last
+        history.append(total / len(x))
+    return time.perf_counter() - started, history[-1], history
 
 
 def augment(images):
@@ -448,7 +452,7 @@ def train_contrastive(model, x, epochs, device, generator):
     import torch
 
     optimiser = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    started, last = time.perf_counter(), 0.0
+    started, history = time.perf_counter(), []
     for _ in range(epochs):
         model.train()
         total, seen = 0.0, 0
@@ -462,8 +466,27 @@ def train_contrastive(model, x, epochs, device, generator):
             optimiser.step()
             total += loss.item() * len(idx)
             seen += len(idx)
-        last = total / max(seen, 1)
-    return time.perf_counter() - started, last
+        history.append(total / max(seen, 1))
+    return time.perf_counter() - started, history[-1], history
+
+
+def labelled(image, text):
+    """A BGR uint8 image with its label on a black strip in the top-left corner."""
+    image = image.copy()
+    (text_w, text_h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+    cv2.rectangle(image, (2, 2), (10 + text_w, 10 + text_h), (0, 0, 0), -1)
+    cv2.putText(image, text, (6, 6 + text_h), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1, cv2.LINE_AA)
+    return image
+
+
+def image_rows(rows, scale=4):
+    """Rows of 32x32 BGR images, enlarged, each row labelled on its first image, grey dividers between rows."""
+    stacked = []
+    for name, images in rows:
+        line = np.hstack([cv2.resize(image, (SIZE * scale, SIZE * scale), interpolation=cv2.INTER_NEAREST)
+                          for image in images])
+        stacked += [labelled(line, name), np.full((4, line.shape[1], 3), 128, np.uint8)]
+    return np.vstack(stacked[:-1])
 
 
 def representations(model, x, device, batch=500):
@@ -510,6 +533,10 @@ def main():
 
     import torch
     import torch.nn as nn
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
 
     torch.manual_seed(SEED)
     # cuDNN chooses a convolution algorithm per shape and some of them accumulate in a
@@ -543,6 +570,23 @@ def main():
     print("  Dividing by the square root of the head dimension keeps the dot products from")
     print("  growing with the dimension; without it the softmax saturates and the gradient")
     print("  through it vanishes.")
+    fig, axes = plt.subplots(1, HEADS, figsize=(3.3 * HEADS, 3.9))
+    for head, ax in enumerate(axes):
+        grid = weights[0, head].numpy()
+        ax.imshow(grid, cmap="viridis", vmin=0, vmax=1)
+        for i in range(grid.shape[0]):
+            for j in range(grid.shape[1]):
+                ax.text(j, i, f"{grid[i, j]:.2f}", ha="center", va="center", color="w", fontsize=9)
+        ax.set_title(f"head {head + 1}", fontsize=10)
+        ax.set_xlabel("key token")
+        ax.set_ylabel("query token")
+        ax.set_xticks(range(grid.shape[1]))
+        ax.set_yticks(range(grid.shape[0]))
+    fig.suptitle("attention weights of the first sequence, per head: every row sums to 1")
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "attention_weights.png", dpi=110)
+    plt.close(fig)
+    print("  attention_weights.png: the 4x4 weight matrix of every head for the first sequence")
 
     # 2. Encoder block
     print("\n--- 2. The encoder block around it ---")
@@ -565,6 +609,23 @@ def main():
     print("  The residual connections keep a direct path for the input through each sub-layer.")
     print("  With the normalisation after each addition, that path is LayerNorm(LayerNorm(x)),")
     print("  not x itself: this block does not start as the identity function.")
+    with torch.no_grad():
+        zeroed_out = identity(x)
+    fig, axes = plt.subplots(1, 3, figsize=(14, 3.8))
+    axes[0].hist(x.flatten().numpy(), bins=60, color="grey")
+    axes[0].set_title(f"input values: mean {x.mean().item():+.3f}, sd {x.std().item():.3f}", fontsize=10)
+    axes[1].hist(y.detach().flatten().numpy(), bins=60, color="tab:blue")
+    axes[1].set_title(f"block output: mean {y.mean().item():+.3f}, sd {y.std().item():.3f}", fontsize=10)
+    axes[2].scatter(x.flatten().numpy(), zeroed_out.flatten().numpy(), s=3, alpha=0.4)
+    axes[2].plot([-3, 3], [-3, 3], "k--", linewidth=1, label="identity")
+    axes[2].set_xlabel("input value")
+    axes[2].set_ylabel("output value")
+    axes[2].set_title("sub-layers zeroed: LN(LN(x)) is not x", fontsize=10)
+    axes[2].legend()
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "encoder_block.png", dpi=110)
+    plt.close(fig)
+    print("  encoder_block.png: input and output value distributions, and the zeroed block against the identity")
 
     # Data
     print("\n--- 3. Tokenising an image two ways ---")
@@ -579,7 +640,16 @@ def main():
         classes = len(CLASSES)
         source = (f"rendered objects in {classes} classes: {len(train_images)} training and "
                   f"{len(test_images)} test images (pass --cifar10-root for CIFAR-10)")
-    cv2.imwrite(str(OUT_DIR / "dataset.png"), np.hstack(list(train_images[:16])))
+    names_of = CIFAR_CLASSES if args.cifar10_root else CLASSES
+    fig, axes = plt.subplots(2, 8, figsize=(12, 4.3))
+    for ax, image, label in zip(axes.ravel(), train_images[:16], train_labels[:16]):
+        ax.imshow(image[..., ::-1], interpolation="nearest")
+        ax.set_title(names_of[int(label)], fontsize=9)
+        ax.axis("off")
+    fig.suptitle("the first 16 training images: " + ("CIFAR-10" if args.cifar10_root else "rendered objects"))
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "dataset.png", dpi=110)
+    plt.close(fig)
     mean = train_images.reshape(-1, 3).mean(0) / 255
     std = train_images.reshape(-1, 3).std(0) / 255
     to_tensor = lambda images: ((torch.from_numpy(images).permute(0, 3, 1, 2).float() / 255
@@ -591,34 +661,62 @@ def main():
 
     models = build_models(classes)
     print(f"  {'tokeniser':<24}{'tokens':>8}{'parameters':>12}{'time':>8}{'test accuracy':>15}")
+    token_accuracy, loss_histories = {}, {}
     for name in ("patch tokens", "convolutional tokens"):
         model = models[name]().to(device)
         with torch.no_grad():
             tokens = model.tokeniser(x_test[:1].to(device)).shape[1]
-        elapsed = train_supervised(model, x_train, y_train, SUPERVISED_EPOCHS, device, generator)
+        elapsed, loss_histories[name] = train_supervised(model, x_train, y_train, SUPERVISED_EPOCHS, device, generator)
         model.eval()
         with torch.no_grad():
             accuracy = (torch.cat([model(x_test[s:s + 500].to(device)).argmax(1).cpu()
                                    for s in range(0, len(x_test), 500)]) == y_test).float().mean().item()
         print(f"  {name:<24}{tokens:>8}{sum(p.numel() for p in model.parameters()):>12}"
               f"{elapsed:>7.0f}s{accuracy:>15.2%}")
+        token_accuracy[name] = accuracy
     print(f"  {SUPERVISED_EPOCHS} epochs each, {DEPTH} encoder blocks of {EMBED} values and {HEADS} heads.")
     print("  Cutting the image into squares gives every token one patch and nothing of its")
     print("  neighbours; a convolutional stem overlaps them, so a token already carries local")
     print("  structure before attention starts relating tokens to each other.")
+    # A 3x3 convolution at stride 1 and two at stride 2 give each output token a 9x9 input
+    # window centred on 4 * (its row or column), so neighbouring windows overlap by 5 pixels.
+    fig, axes = plt.subplots(1, 2, figsize=(11, 5.6))
+    for ax, name in zip(axes, ("patch tokens", "convolutional tokens")):
+        ax.imshow(test_images[0][..., ::-1], extent=(0, SIZE, SIZE, 0), interpolation="nearest")
+        for k in range(0, SIZE + 1, PATCH):
+            ax.axhline(k, color="w", linewidth=0.4)
+            ax.axvline(k, color="w", linewidth=0.4)
+        for column, colour in ((3, "red"), (4, "yellow")):
+            if name == "patch tokens":
+                corner, side = (column * PATCH, 3 * PATCH), PATCH
+            else:
+                corner, side = (column * PATCH - 4, 3 * PATCH - 4), 9
+            ax.add_patch(Rectangle(corner, side, side, fill=False, edgecolor=colour, linewidth=2.5))
+        window = PATCH if name == "patch tokens" else 9
+        ax.set_title(f"{name}: two neighbouring tokens see {window}x{window} px each\n"
+                     f"test accuracy {token_accuracy[name]:.2%}", fontsize=10)
+        ax.set_xlim(0, SIZE)
+        ax.set_ylim(SIZE, 0)
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "tokenisers.png", dpi=110)
+    plt.close(fig)
+    print("  tokenisers.png: the input window of two neighbouring tokens under each tokeniser;")
+    print("  dataset.png: the first 16 training images with their classes")
 
     # 4-7. Representations
     print("\n--- 4. A supervised baseline, and three objectives that use no labels ---")
     results = {}
     baseline = models["supervised ConvNet"]().to(device)
-    elapsed = train_supervised(baseline, x_train, y_train, SUPERVISED_EPOCHS, device, generator)
+    elapsed, loss_histories["supervised ConvNet"] = train_supervised(baseline, x_train, y_train, SUPERVISED_EPOCHS,
+                                                                     device, generator)
     results["supervised ConvNet"] = (elapsed, None, linear_probe(
         representations(baseline, x_train, device), y_train,
         representations(baseline, x_test, device), y_test, classes, device, generator))
     print(f"  supervised ConvNet trained in {elapsed:.0f}s")
 
     autoencoder = models["autoencoder"]().to(device)
-    elapsed, loss = train_autoencoder(autoencoder, x_train, AE_EPOCHS, device, generator)
+    elapsed, loss, loss_histories["autoencoder"] = train_autoencoder(autoencoder, x_train, AE_EPOCHS, device,
+                                                                     generator)
     results["autoencoder"] = (elapsed, loss, linear_probe(
         representations(autoencoder, x_train, device), y_train,
         representations(autoencoder, x_test, device), y_test, classes, device, generator))
@@ -627,30 +725,72 @@ def main():
         sample = x_test[:8].to(device)
         rebuilt = autoencoder(sample).cpu()
     restore = lambda t: np.clip(255 * (t.permute(0, 2, 3, 1).numpy() * std + mean), 0, 255).astype(np.uint8)
-    cv2.imwrite(str(OUT_DIR / "autoencoder.png"),
-                np.vstack([np.hstack(list(restore(sample.cpu()))), np.hstack(list(restore(rebuilt)))]))
+    cv2.imwrite(str(OUT_DIR / "autoencoder.png"), image_rows([
+        ("input", list(restore(sample.cpu()))), ("reconstruction", list(restore(rebuilt)))]))
+    print("  autoencoder.png: eight test images above their reconstructions")
 
     masked = models["masked autoencoder"]().to(device)
-    elapsed, loss = train_masked_autoencoder(masked, x_train, MAE_EPOCHS, device, generator)
+    elapsed, loss, loss_histories["masked autoencoder"] = train_masked_autoencoder(masked, x_train, MAE_EPOCHS,
+                                                                                   device, generator)
     results["masked autoencoder"] = (elapsed, loss, linear_probe(
         representations(masked, x_train, device), y_train,
         representations(masked, x_test, device), y_test, classes, device, generator))
     print(f"  masked autoencoder: {MAE_EPOCHS} epochs at mask ratio {MASK_RATIO}, "
           f"{int((SIZE // PATCH) ** 2 * (1 - MASK_RATIO))} of {(SIZE // PATCH) ** 2} patches encoded, "
           f"final MSE on the hidden patches {loss:.4f}")
+    # The mask for the picture comes from a generator of its own, so drawing it takes
+    # nothing from the global stream that the contrastive augmentations draw from next.
+    mask_generator = torch.Generator().manual_seed(SEED)
+    side = SIZE // PATCH
+    to_image = lambda p: p.view(p.shape[0], side, side, 3, PATCH, PATCH).permute(0, 3, 1, 4, 2, 5).reshape(
+        p.shape[0], 3, SIZE, SIZE)
+    with torch.no_grad():
+        sample = x_test[:8].to(device)
+        visible = int(round(masked.tokens * (1 - MASK_RATIO)))
+        shuffle = torch.argsort(torch.rand(8, masked.tokens, generator=mask_generator), dim=1).to(device)
+        keep, hidden = shuffle[:, :visible], shuffle[:, visible:]
+        predicted, _ = masked(sample, keep, hidden)
+        patches = masked.to_patches(sample)
+        index = hidden[..., None].expand(-1, -1, patches.shape[-1])
+        shown = patches.scatter(1, index, torch.zeros_like(predicted))   # zero is the mean colour
+        rebuilt = patches.scatter(1, index, predicted)
+    cv2.imwrite(str(OUT_DIR / "masked_autoencoder.png"), image_rows([
+        ("input", list(restore(sample.cpu()))),
+        (f"what the encoder sees: {visible} of {masked.tokens} patches", list(restore(to_image(shown).cpu()))),
+        ("hidden patches filled in by the decoder", list(restore(to_image(rebuilt).cpu())))]))
+    print("  masked_autoencoder.png: eight test images, the half the encoder is shown, and the")
+    print("  hidden half as the decoder predicts it")
 
     for name in ("contrastive with head", "contrastive without head"):
         model = models[name]().to(device)
-        elapsed, loss = train_contrastive(model, x_train, CONTRASTIVE_EPOCHS, device, generator)
+        elapsed, loss, loss_histories[name] = train_contrastive(model, x_train, CONTRASTIVE_EPOCHS, device, generator)
         results[name] = (elapsed, loss, linear_probe(
             representations(model, x_train, device), y_train,
             representations(model, x_test, device), y_test, classes, device, generator))
         print(f"  {name}: {CONTRASTIVE_EPOCHS} epochs, batch {CONTRASTIVE_BATCH}, "
               f"temperature {TEMPERATURE}, final NT-Xent {loss:.4f}")
-    cv2.imwrite(str(OUT_DIR / "augmentations.png"), np.vstack([
-        np.hstack(list(restore(x_test[:8]))),
-        np.hstack(list(restore(augment(x_test[:8].to(device)).cpu()))),
-        np.hstack(list(restore(augment(x_test[:8].to(device)).cpu())))]))
+    cv2.imwrite(str(OUT_DIR / "augmentations.png"), image_rows([
+        ("original", list(restore(x_test[:8]))),
+        ("view 1", list(restore(augment(x_test[:8].to(device)).cpu()))),
+        ("view 2", list(restore(augment(x_test[:8].to(device)).cpu())))]))
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    for name in ("patch tokens", "convolutional tokens", "supervised ConvNet"):
+        axes[0].plot(np.arange(1, len(loss_histories[name]) + 1), loss_histories[name], "o-", label=name)
+    axes[0].set_title("supervised: cross-entropy", fontsize=10)
+    for name in ("autoencoder", "masked autoencoder"):
+        axes[1].plot(np.arange(1, len(loss_histories[name]) + 1), loss_histories[name], "o-", label=name)
+    axes[1].set_title("reconstruction: MSE (masked autoencoder on hidden patches only)", fontsize=10)
+    for name in ("contrastive with head", "contrastive without head"):
+        axes[2].plot(np.arange(1, len(loss_histories[name]) + 1), loss_histories[name], "o-", label=name)
+    axes[2].set_title(f"contrastive: NT-Xent over batches of {CONTRASTIVE_BATCH}", fontsize=10)
+    for ax in axes:
+        ax.set_xlabel("epoch")
+        ax.legend(fontsize=9)
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "training_losses.png", dpi=110)
+    plt.close(fig)
+    print("  augmentations.png: eight test images and two random views of each;")
+    print("  training_losses.png: every training loss per epoch, grouped by objective")
 
     # 8. The same probe on every representation
     print("\n--- 8. One linear layer on every frozen representation ---")
@@ -662,6 +802,23 @@ def main():
         used = "all" if name == "supervised ConvNet" else "none"
         print(f"  {name:<26}{used:>12}{elapsed:>14.0f}s{accuracy:>16.2%}")
     print(f"  {'guessing':<26}{'-':>12}{'-':>15}{chance:>16.2%}")
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    names = list(results)
+    values = [100 * results[name][2] for name in names]
+    colours = ["tab:grey" if name == "supervised ConvNet" else "tab:blue" for name in names]
+    ax.bar(names, values, color=colours)
+    for i, value in enumerate(values):
+        ax.text(i, value + 1, f"{value:.1f}%", ha="center")
+    ax.axhline(100 * chance, color="tab:red", linestyle="--", label=f"guessing {100 * chance:.1f}%")
+    ax.set_ylabel("linear probe accuracy on held-out images, %")
+    ax.set_ylim(0, 110)
+    ax.set_title("one linear layer on each frozen representation (grey: encoder trained with labels)", fontsize=10)
+    ax.legend()
+    plt.setp(ax.get_xticklabels(), fontsize=9)
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "probe_accuracy.png", dpi=110)
+    plt.close(fig)
+    print("  probe_accuracy.png: the probe accuracy of every representation against guessing")
     print("  'labels used' refers to training the encoder; every probe is trained on the labels.")
     print("  The three label-free training families differ in architecture, feature size and epochs as well")
     print("  as in objective, so the ordering is of these configurations, not of the objectives alone.")
