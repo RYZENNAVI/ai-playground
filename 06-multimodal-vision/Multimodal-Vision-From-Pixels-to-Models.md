@@ -774,40 +774,73 @@ identity function.
 
 ### Two ways to make tokens
 
-| Tokeniser | Tokens | Parameters | Rendered objects | CIFAR-10 |
-| :--- | ---: | ---: | ---: | ---: |
-| Patches, one 4x4 square each | 64 | 236 073 | 84.30% | **57.30%** |
-| Convolutional stem | 64 | 284 361 | **93.15%** | 56.70% |
+| Tokeniser | Tokens | Parameters | Rendered, end-to-end | Rendered, probe | CIFAR-10, end-to-end | CIFAR-10, probe |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Patches, one 4x4 square each | 64 | 236 073 | 84.30% | 84.75% | **57.30%** | 57.70% |
+| Convolutional stem | 64 | 284 361 | **93.15%** | **95.90%** | 56.70% | **62.35%** |
 
 Same token count, same three encoder blocks, same eight epochs. Cutting the image
 into squares gives each token one patch and nothing of its neighbours; a
 convolutional stem overlaps them, so a token already carries local structure before
 attention starts relating tokens to one another. **That is worth nine points on the
-rendered shapes; on CIFAR-10 this single run shows no advantage** (0.6 points the other
-way, from one seed and no repeats) — eight epochs of a three-block encoder on 12 000
-photographs is short of what either tokeniser needs.
+rendered shapes; on CIFAR-10 this single run shows no advantage end to end** (0.6 points
+the other way, from one seed and no repeats) — eight epochs of a three-block encoder on
+12 000 photographs is short of what either tokeniser needs.
 
-### One linear layer on every frozen representation
+The last two columns of each pair are different measurements and must not be read as one
+correcting the other. End-to-end accuracy is what the classifier reaches on its own task
+with its own head. The probe throws that head away, freezes everything behind it and
+trains one fresh Linear(96 → classes) on the pooled tokens, which asks how linearly
+separable the representation already is. **On CIFAR-10 the two answers disagree in
+direction**: end to end the patch tokeniser is 0.6 points ahead, while under the probe the
+convolutional stem is 4.65 points ahead. One run each, so this is a reason to keep the two
+numbers apart, not a finding about tokenisers.
 
-Five encoder configurations are trained on the same 12 000 images, four of them
-without ever seeing a label, and each is then frozen and probed with a single linear
-layer. The
-probe itself is trained on the labels; "labels used" refers to the encoder:
+### Two evaluations, six encoders
 
-| Representation | Labels used | Training | Probe accuracy |
-| :--- | :--- | ---: | ---: |
-| Supervised ConvNet | all | 16 s | **99.85%** |
-| Autoencoder | none | 6 s | 31.45% |
-| Masked autoencoder, half the patches hidden | none | 35 s | 44.95% |
-| Contrastive, with projection head | none | 34 s | **87.65%** |
-| Contrastive, no projection head | none | 33 s | 66.30% |
-| Guessing | – | – | 12.50% |
+Six encoder configurations are trained on the same 12 000 images, three of them without
+ever seeing a label, and each is then put through the same two evaluations. They answer
+different questions and are never added together:
 
-What the probe unifies is the data, the evaluation and the linear layer, not the
-encoders: the autoencoder is convolutional with 128 features over 12 epochs, the masked
-autoencoder a transformer with 96 features over 30, and the contrastive encoder a
-ConvNet body with 256 features over 20. The ordering is therefore of these three
-configurations, not a clean ranking of the objectives. It is consistent with
+**Frozen linear probe.** Freeze the encoder, train only a fresh `Linear(width → classes)`
+on its features, standardised by the training set's own mean and standard deviation. It
+asks: *how linearly separable is the representation this encoder has already learned?* It
+scores the representation.
+
+**Fine-tuning.** Unfreeze the encoder, put a fresh `Linear(width → classes)` on it — never
+the head it may already carry — and train the two together. Every encoder gets the same
+labelled data, the same 8 epochs, batch 128, Adam at 1e-3 and cross-entropy; only the width
+of its representation differs. It asks: *what does this model reach once it is allowed to
+adapt to the labelled task?* It scores the adapted model.
+
+Neither is the end-to-end accuracy of the section above, which belongs to a classifier
+trained with its own head from the start. Three numbers, three questions.
+
+| Representation | Labels in pretraining | Width | Pretraining | Probe | Fine-tuned | Gain |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| Patch-token transformer | all | 96 | 7 s | 84.75% | 88.80% | +4.05 |
+| Convolutional-token transformer | all | 96 | 9 s | 95.90% | 98.40% | +2.50 |
+| Supervised ConvNet | all | 256 | 17 s | **99.85%** | **100.00%** | +0.15 |
+| Autoencoder | none | 128 | 6 s | 31.45% | 68.95% | **+37.50** |
+| Masked autoencoder, half the patches hidden | none | 96 | 35 s | 44.95% | 89.70% | **+44.75** |
+| Contrastive, with projection head | none | 256 | 34 s | 87.65% | **100.00%** | +12.35 |
+| Guessing | – | – | – | 12.50% | 12.50% | – |
+
+The gain column is in percentage points, and it runs opposite to the probe: the encoders
+whose features are least linearly separable gain the most once they are allowed to keep
+learning. A low probe score says the representation is not linearly separable, not that
+the encoder is a poor starting point. **On these rendered shapes the fine-tuning column
+saturates** — two configurations reach 100.00% and a third 98.40% — so it separates the six
+far less than the probe does, and the ordering it appears to give should not be read as
+one. The CIFAR-10 run below is where that column has room to move.
+
+What the two evaluations unify is the data, the split, the objective and the classifier
+they end in, not the encoders: the autoencoder is convolutional with 128 features over 12
+epochs, the masked autoencoder a transformer with 96 features over 30, and the contrastive
+encoder a ConvNet body with 256 features over 20, while three of the six had already seen
+the class labels before either evaluation began. The ordering is therefore of these six
+configurations under a common downstream protocol, not a causal ranking of training
+methods. It is consistent with
 reconstruction rewarding whatever fills the most pixels, so that an autoencoder spends
 its capacity on the background it has to redraw, while the masked autoencoder is asked
 for something it cannot copy — the patches its encoder never saw — and the contrastive
@@ -823,25 +856,44 @@ head's output onto a sphere and throws away whatever it does not need there; the
 is one layer removed from that pressure, and probing it is worth 21 points — from one
 seed, one head design, one temperature and one training budget.
 
-### The same probes on CIFAR-10
+### The same two evaluations on CIFAR-10
 
 12 000 training and 2000 held-out images, everything else unchanged. Both are drawn from
 the first two official training batches and the official test batch is not read, so
 these are comparisons between the methods, not CIFAR-10 test-set accuracies:
 
-| Representation | Rendered objects | CIFAR-10 |
-| :--- | ---: | ---: |
-| Supervised ConvNet, probed | 99.85% | **72.45%** |
-| Autoencoder | 31.45% | 33.25% |
-| Masked autoencoder | 44.95% | 38.35% |
-| Contrastive, with head | **87.65%** | **55.05%** |
-| Contrastive, no head | 66.30% | 49.60% |
-| Guessing | 12.50% | 10.00% |
+| Representation | Probe | Fine-tuned | Gain |
+| :--- | ---: | ---: | ---: |
+| Patch-token transformer | 57.70% | 56.00% | −1.70 |
+| Convolutional-token transformer | 62.35% | 61.00% | −1.35 |
+| Supervised ConvNet | **72.45%** | **63.00%** | **−9.45** |
+| Autoencoder | 33.25% | 54.35% | +21.10 |
+| Masked autoencoder | 38.35% | 60.95% | +22.60 |
+| Contrastive, with projection head | 55.05% | 62.25% | +7.20 |
+| Contrastive, no projection head | 49.60% | – | – |
+| Guessing | 10.00% | 10.00% | – |
 
 Photographs are harder than rendered shapes and the gap to the supervised reference
 widens (a reference for this run, not an upper bound any label-free method must stay
-under), but **the ordering of the three label-free training families does not change**, and neither does
-the cost of dropping the projection head.
+under), but **the ordering of the three label-free training families does not change**
+under the probe, and neither does the cost of dropping the projection head.
+
+**The fine-tuning column does something the rendered shapes hid.** There it saturated;
+here it compresses the six into 54.35% to 63.00%, a spread of under nine points against
+the probe's 39. And for the three encoders that had already been trained with labels the
+gain is *negative* — the supervised ConvNet loses **9.45 points**, ending below its own
+frozen representation. Eight more epochs on 12 000 photographs with a freshly initialised
+head is enough to move an already-fitted encoder somewhere worse on held-out images, while
+the three label-free encoders, starting from features that no label had yet shaped, all
+gain. This is one run per cell with no repeats, and nothing here was tuned against the
+held-out split, so read it as a demonstration that the two evaluations can disagree in
+sign — which is the reason to report both — rather than as a measurement of how much
+fine-tuning costs.
+
+Added cost of the two evaluations: the six fine-tuning runs take 59 s on the rendered
+shapes (7, 9, 17, 3, 6 and 17 s) and 67 s on CIFAR-10, against the 146 s of encoder
+training the script already did; the two probes added to the tokeniser section cost a few
+seconds more.
 
 ### What the images show
 
@@ -855,7 +907,9 @@ the cost of dropping the projection head.
 | `masked_autoencoder.png` | eight test images, the half of the patches the encoder is shown, and the hidden half as the decoder predicts it |
 | `augmentations.png` | eight test images and two random views of each |
 | `training_losses.png` | every training loss per epoch, grouped into supervised, reconstruction and contrastive |
-| `probe_accuracy.png` | linear probe accuracy of every representation against guessing |
+| `probe_accuracy.png` | linear probe accuracy of all seven configurations against guessing; grey for the encoders that saw labels in pretraining, hatched for the projection-head ablation |
+| `representation_evaluation.png` | the six compared encoders under both evaluations side by side, each labelled with its feature width |
+| `fine_tuning_losses.png` | the downstream cross-entropy of all six encoders over the shared fine-tuning epochs |
 
 ---
 

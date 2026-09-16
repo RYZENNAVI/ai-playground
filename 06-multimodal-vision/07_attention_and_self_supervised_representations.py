@@ -3,12 +3,13 @@
 Demonstrates the transformer block and three label-free training objectives:
     1. Compute scaled dot-product attention from Q, K and V, and check it against PyTorch.
     2. Put it inside an encoder block with residual connections and layer normalisation.
-    3. Cut an image into tokens two ways, by patches and by convolution, and classify with labels.
+    3. Cut an image into tokens two ways, by patches and by convolution, classify with labels,
+       and probe what each tokeniser's frozen representation is worth on its own.
     4. Train a supervised convolutional baseline as the reference the label-free methods are read against.
     5. Train an autoencoder on reconstruction alone and probe its representation with one linear layer.
     6. Train a masked autoencoder that rebuilds the patches it was not shown, and probe it the same way.
     7. Train a contrastive encoder on pairs of augmentations, with and without a projection head.
-    8. Put every representation on the same scale: one linear layer, the same probe, the same data.
+    8. Score six encoders two ways: a frozen linear probe, and the same fine-tuning for all of them.
 
 Module 06: Multimodal Vision - Attention and Self-Supervised Representations.
 """
@@ -37,7 +38,15 @@ EMBED, HEADS, DEPTH, MLP_RATIO = 96, 4, 3, 2
 SUPERVISED_EPOCHS, BATCH, LEARNING_RATE = 8, 128, 1e-3
 AE_EPOCHS, MAE_EPOCHS, CONTRASTIVE_EPOCHS = 12, 30, 20
 PROBE_EPOCHS, PROBE_BATCH, PROBE_LEARNING_RATE = 5, 256, 1e-3
+# Fine-tuning deliberately borrows the supervised settings, so that the six encoders meet the
+# downstream task on exactly the terms the supervised baseline was trained on.
+FINETUNE_EPOCHS, FINETUNE_BATCH, FINETUNE_LEARNING_RATE = SUPERVISED_EPOCHS, BATCH, LEARNING_RATE
 MASK_RATIO, TEMPERATURE, CONTRASTIVE_BATCH = 0.5, 0.2, 256
+# The six encoders compared head to head in step 8. The projection-head ablation of step 7 is
+# deliberately left out: it is a second run of one of these six, not a seventh design.
+COMPARED = ("patch tokens", "convolutional tokens", "supervised ConvNet", "autoencoder",
+            "masked autoencoder", "contrastive with head")
+LABELLED_PRETRAINING = ("patch tokens", "convolutional tokens", "supervised ConvNet")
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +529,51 @@ def linear_probe(train_features, train_labels, test_features, test_labels, class
         return (probe(test_features).argmax(1).cpu() == test_labels).float().mean().item()
 
 
+def fine_tune(encoder, x_train, y_train, x_test, y_test, classes, device, generator):
+    """Unfreeze a trained encoder, put a fresh linear classifier on it, and train the two together.
+
+    This asks a different question from the probe. The probe freezes the encoder and measures how
+    linearly separable its representation already is; this lets the encoder keep learning from the
+    labels and measures what the whole system reaches after adapting to the task.
+
+    The encoder is deep-copied, so the representation the probe scored is left exactly as it was,
+    and the classifier is a new layer rather than the task head the encoder may already carry. Every
+    encoder gets the same labelled data, epochs, batch size, optimiser, learning rate and objective;
+    only the width of its representation differs. Parts that the representation does not use - an
+    autoencoder's decoder, a contrastive projection head, an original classification head - stay in
+    the copy but receive no gradient, so they never move.
+    """
+    import copy
+
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    model = copy.deepcopy(encoder)
+    model.eval()
+    with torch.no_grad():
+        width = model.features(x_train[:1].to(device)).shape[1]
+    head = nn.Linear(width, classes).to(device)
+    optimiser = torch.optim.Adam(list(model.parameters()) + list(head.parameters()),
+                                 lr=FINETUNE_LEARNING_RATE)
+    started, history = time.perf_counter(), []
+    for _ in range(FINETUNE_EPOCHS):
+        model.train()
+        total = 0.0
+        for idx in batches(len(x_train), FINETUNE_BATCH, generator):
+            loss = F.cross_entropy(head(model.features(x_train[idx].to(device))), y_train[idx].to(device))
+            optimiser.zero_grad()
+            loss.backward()
+            optimiser.step()
+            total += loss.item() * len(idx)
+        history.append(total / len(x_train))
+    model.eval()
+    with torch.no_grad():
+        predicted = torch.cat([head(model.features(x_test[start:start + 500].to(device))).argmax(1).cpu()
+                               for start in range(0, len(x_test), 500)])
+    return time.perf_counter() - started, history, (predicted == y_test).float().mean().item(), width
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -660,8 +714,9 @@ def main():
     print(f"  {source}")
 
     models = build_models(classes)
-    print(f"  {'tokeniser':<24}{'tokens':>8}{'parameters':>12}{'time':>8}{'test accuracy':>15}")
-    token_accuracy, loss_histories = {}, {}
+    print(f"  {'tokeniser':<24}{'tokens':>8}{'parameters':>12}{'time':>8}{'end-to-end':>13}{'linear probe':>14}")
+    token_accuracy, loss_histories, encoders = {}, {}, {}
+    probe_accuracy, pretrain_time = {}, {}
     for name in ("patch tokens", "convolutional tokens"):
         model = models[name]().to(device)
         with torch.no_grad():
@@ -671,13 +726,29 @@ def main():
         with torch.no_grad():
             accuracy = (torch.cat([model(x_test[s:s + 500].to(device)).argmax(1).cpu()
                                    for s in range(0, len(x_test), 500)]) == y_test).float().mean().item()
+        # The probe added here must not disturb the random stream the later objectives draw from,
+        # so it runs on a forked generator of its own and the outer stream resumes untouched.
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(SEED)
+            probe_generator = torch.Generator().manual_seed(SEED)
+            probe_accuracy[name] = linear_probe(
+                representations(model, x_train, device), y_train,
+                representations(model, x_test, device), y_test, classes, device, probe_generator)
         print(f"  {name:<24}{tokens:>8}{sum(p.numel() for p in model.parameters()):>12}"
-              f"{elapsed:>7.0f}s{accuracy:>15.2%}")
+              f"{elapsed:>7.0f}s{accuracy:>13.2%}{probe_accuracy[name]:>14.2%}")
         token_accuracy[name] = accuracy
+        encoders[name], pretrain_time[name] = model, elapsed
     print(f"  {SUPERVISED_EPOCHS} epochs each, {DEPTH} encoder blocks of {EMBED} values and {HEADS} heads.")
     print("  Cutting the image into squares gives every token one patch and nothing of its")
     print("  neighbours; a convolutional stem overlaps them, so a token already carries local")
     print("  structure before attention starts relating tokens to each other.")
+    print("  Two different questions sit in those last two columns. End-to-end accuracy is what the")
+    print("  whole classifier reaches on its own task, its original head included. The linear probe")
+    print(f"  throws that head away, freezes everything else, and trains one fresh Linear({EMBED} -> "
+          f"{classes})")
+    print("  on the pooled features: how linearly separable the representation already is. They are")
+    print("  not the same measurement and should not be read as one number being a corrected version")
+    print("  of the other.")
     # A 3x3 convolution at stride 1 and two at stride 2 give each output token a 9x9 input
     # window centred on 4 * (its row or column), so neighbouring windows overlap by 5 pixels.
     fig, axes = plt.subplots(1, 2, figsize=(11, 5.6))
@@ -712,6 +783,7 @@ def main():
     results["supervised ConvNet"] = (elapsed, None, linear_probe(
         representations(baseline, x_train, device), y_train,
         representations(baseline, x_test, device), y_test, classes, device, generator))
+    encoders["supervised ConvNet"] = baseline
     print(f"  supervised ConvNet trained in {elapsed:.0f}s")
 
     autoencoder = models["autoencoder"]().to(device)
@@ -720,6 +792,7 @@ def main():
     results["autoencoder"] = (elapsed, loss, linear_probe(
         representations(autoencoder, x_train, device), y_train,
         representations(autoencoder, x_test, device), y_test, classes, device, generator))
+    encoders["autoencoder"] = autoencoder
     print(f"  autoencoder: {AE_EPOCHS} epochs, final reconstruction MSE {loss:.4f}")
     with torch.no_grad():
         sample = x_test[:8].to(device)
@@ -735,6 +808,7 @@ def main():
     results["masked autoencoder"] = (elapsed, loss, linear_probe(
         representations(masked, x_train, device), y_train,
         representations(masked, x_test, device), y_test, classes, device, generator))
+    encoders["masked autoencoder"] = masked
     print(f"  masked autoencoder: {MAE_EPOCHS} epochs at mask ratio {MASK_RATIO}, "
           f"{int((SIZE // PATCH) ** 2 * (1 - MASK_RATIO))} of {(SIZE // PATCH) ** 2} patches encoded, "
           f"final MSE on the hidden patches {loss:.4f}")
@@ -767,6 +841,7 @@ def main():
         results[name] = (elapsed, loss, linear_probe(
             representations(model, x_train, device), y_train,
             representations(model, x_test, device), y_test, classes, device, generator))
+        encoders[name] = model
         print(f"  {name}: {CONTRASTIVE_EPOCHS} epochs, batch {CONTRASTIVE_BATCH}, "
               f"temperature {TEMPERATURE}, final NT-Xent {loss:.4f}")
     cv2.imwrite(str(OUT_DIR / "augmentations.png"), image_rows([
@@ -792,39 +867,124 @@ def main():
     print("  augmentations.png: eight test images and two random views of each;")
     print("  training_losses.png: every training loss per epoch, grouped by objective")
 
-    # 8. The same probe on every representation
-    print("\n--- 8. One linear layer on every frozen representation ---")
+    # 8. The same two evaluations on every representation
+    print("\n--- 8. Six encoders, two evaluations ---")
     chance = 1 / classes
-    print(f"  {PROBE_EPOCHS} epochs of a single linear layer on standardised features, "
-          f"{len(x_train)} training and {len(x_test)} held-out images; the probe itself uses the labels")
-    print(f"  {'representation':<26}{'labels used':>12}{'training time':>15}{'probe accuracy':>16}")
-    for name, (elapsed, _, accuracy) in results.items():
-        used = "all" if name == "supervised ConvNet" else "none"
-        print(f"  {name:<26}{used:>12}{elapsed:>14.0f}s{accuracy:>16.2%}")
-    print(f"  {'guessing':<26}{'-':>12}{'-':>15}{chance:>16.2%}")
-    fig, ax = plt.subplots(figsize=(10, 4.5))
-    names = list(results)
-    values = [100 * results[name][2] for name in names]
-    colours = ["tab:grey" if name == "supervised ConvNet" else "tab:blue" for name in names]
-    ax.bar(names, values, color=colours)
+    probe_accuracy.update({name: accuracy for name, (_, _, accuracy) in results.items()})
+    pretrain_time.update({name: elapsed for name, (elapsed, _, _) in results.items()})
+    widths = {name: representations(model, x_train[:1], device).shape[1] for name, model in encoders.items()}
+
+    print("\n  A. Frozen linear probe: freeze the encoder, train only a new linear classifier.")
+    print("     It asks how linearly separable the representation the encoder already learned is.")
+    print(f"     {PROBE_EPOCHS} epochs of a single Linear(width -> {classes}) on features standardised by the")
+    print(f"     training mean and standard deviation, {len(x_train)} training and {len(x_test)} held-out images.")
+    print(f"  {'representation':<26}{'labels in pretraining':>23}{'feature width':>15}{'probe accuracy':>16}")
+    for name in COMPARED:
+        used = "all" if name in LABELLED_PRETRAINING else "none"
+        print(f"  {name:<26}{used:>23}{widths[name]:>15}{probe_accuracy[name]:>16.2%}")
+    print(f"  {'guessing':<26}{'-':>23}{'-':>15}{chance:>16.2%}")
+
+    print("\n  B. Fine-tuning: unfreeze the encoder, put a fresh linear classifier on it, train both.")
+    print("     It asks what the whole system reaches once it is allowed to adapt to the labelled task.")
+    print(f"     {FINETUNE_EPOCHS} epochs, batch {FINETUNE_BATCH}, Adam {FINETUNE_LEARNING_RATE}, cross-entropy, "
+          f"the same split for all six.")
+    # Fine-tuning runs last and on a generator of its own, so nothing above it moves.
+    finetune_generator = torch.Generator().manual_seed(SEED)
+    fine_tuned, finetune_histories = {}, {}
+    print(f"  {'representation':<26}{'feature width':>15}{'fine-tuning time':>18}{'accuracy':>12}")
+    for name in COMPARED:
+        elapsed, finetune_histories[name], accuracy, width = fine_tune(
+            encoders[name], x_train, y_train, x_test, y_test, classes, device, finetune_generator)
+        fine_tuned[name] = accuracy
+        print(f"  {name:<26}{width:>15}{elapsed:>17.0f}s{accuracy:>12.2%}")
+
+    print("\n  Side by side, with what each encoder's own pretraining cost:")
+    print(f"  {'representation':<26}{'pretraining':>13}{'probe':>10}{'fine-tuned':>13}{'gain, points':>14}")
+    for name in COMPARED:
+        difference = 100 * (fine_tuned[name] - probe_accuracy[name])
+        print(f"  {name:<26}{pretrain_time[name]:>12.0f}s{probe_accuracy[name]:>10.2%}"
+              f"{fine_tuned[name]:>13.2%}{difference:>+14.2f}")
+    print("\n  Three numbers in this script must not be run together into one ranking:")
+    print("    end-to-end accuracy (step 3) - what a classifier reaches on its own task, its own head included")
+    print("    probe accuracy             - how linearly separable a frozen representation already is")
+    print("    fine-tuned accuracy        - what the encoder reaches after adapting to the labels")
+    print("  The six encoders meet the same downstream protocol, but their pretraining objectives,")
+    print("  architectures, feature widths, epochs and exposure to labels all differ, so this compares")
+    print("  these configurations, not the objectives in isolation, and it is not a causal ranking of")
+    print("  training methods. Three of the six saw the class labels during pretraining; the other three")
+    print("  did not, and only meet a label at the probe or the fine-tuning head.")
+    fig, ax = plt.subplots(figsize=(11, 4.8))
+    names = list(COMPARED) + ["contrastive without head"]
+    values = [100 * probe_accuracy[name] for name in names]
+    colours = ["tab:grey" if name in LABELLED_PRETRAINING else "tab:blue" for name in names]
+    bars = ax.bar(names, values, color=colours)
+    bars[-1].set_hatch("//")        # the ablation, not one of the six compared
     for i, value in enumerate(values):
         ax.text(i, value + 1, f"{value:.1f}%", ha="center")
     ax.axhline(100 * chance, color="tab:red", linestyle="--", label=f"guessing {100 * chance:.1f}%")
     ax.set_ylabel("linear probe accuracy on held-out images, %")
     ax.set_ylim(0, 110)
-    ax.set_title("one linear layer on each frozen representation (grey: encoder trained with labels)", fontsize=10)
+    ax.set_title("one linear layer on each frozen representation (grey: labels seen in pretraining; "
+                 "hatched: the step 7 ablation)", fontsize=10)
     ax.legend()
-    plt.setp(ax.get_xticklabels(), fontsize=9)
+    plt.setp(ax.get_xticklabels(), fontsize=8, rotation=12, ha="right")
     fig.tight_layout()
     fig.savefig(OUT_DIR / "probe_accuracy.png", dpi=110)
     plt.close(fig)
-    print("  probe_accuracy.png: the probe accuracy of every representation against guessing")
-    print("  'labels used' refers to training the encoder; every probe is trained on the labels.")
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    position = np.arange(len(COMPARED))
+    probe_values = [100 * probe_accuracy[name] for name in COMPARED]
+    tuned_values = [100 * fine_tuned[name] for name in COMPARED]
+    ax.bar(position - 0.2, probe_values, 0.4, color="tab:blue", label="frozen linear probe")
+    ax.bar(position + 0.2, tuned_values, 0.4, color="tab:orange", label="end-to-end fine-tuning")
+    for x, value in zip(position - 0.2, probe_values):
+        ax.text(x, value + 1, f"{value:.1f}", ha="center", fontsize=8)
+    for x, value in zip(position + 0.2, tuned_values):
+        ax.text(x, value + 1, f"{value:.1f}", ha="center", fontsize=8)
+    ax.axhline(100 * chance, color="tab:red", linestyle="--",
+               label=f"guessing {100 * chance:.1f}%")
+    ax.set_xticks(position)
+    ax.set_xticklabels([f"{name}\n{widths[name]}-d" for name in COMPARED], fontsize=8)
+    ax.set_ylabel("accuracy on held-out images, %")
+    ax.set_ylim(0, 132)          # headroom for the legend, since two bars reach 100
+    ax.set_title("the same six encoders under both evaluations; the probe scores the representation, "
+                 "fine-tuning scores the adapted model", fontsize=10)
+    ax.legend(loc="upper center", ncol=3, fontsize=9)
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "representation_evaluation.png", dpi=110)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    for name in COMPARED:
+        ax.plot(np.arange(1, FINETUNE_EPOCHS + 1), finetune_histories[name], "o-", label=name)
+    ax.set_xlabel("fine-tuning epoch")
+    ax.set_ylabel("cross-entropy on the training set")
+    ax.set_yscale("log")
+    ax.set_title(f"the same downstream fine-tuning for all six encoders, {FINETUNE_EPOCHS} epochs", fontsize=10)
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / "fine_tuning_losses.png", dpi=110)
+    plt.close(fig)
+    print("\n  probe_accuracy.png: the probe accuracy of all seven configurations against guessing")
+    print("  representation_evaluation.png: the six compared encoders under the probe and under fine-tuning")
+    print("  fine_tuning_losses.png: the downstream cross-entropy of all six, epoch by epoch")
+    print("\n  'labels in pretraining' refers to training the encoder; the probe and the fine-tuning head")
+    print("  are trained on labels in every row, and the held-out split is only ever read for scoring:")
+    print("  the standardising mean and standard deviation come from the training features alone, and")
+    print("  no setting here was chosen by looking at a held-out number.")
     print("  The three label-free training families differ in architecture, feature size and epochs as well")
     print("  as in objective, so the ordering is of these configurations, not of the objectives alone.")
     print("  It is consistent with reconstruction rewarding whatever fills the most pixels, while")
     print("  the other two ask for something harder: predicting patches the encoder never saw, and")
     print("  telling two views of one image apart from every other image.")
+    print("\n  The projection-head ablation of step 7 stays out of the six above, being a second run of")
+    print("  one of them rather than a seventh design; its probe accuracy is the hatched bar:")
+    print(f"  contrastive with a projection head {probe_accuracy['contrastive with head']:.2%} against "
+          f"{probe_accuracy['contrastive without head']:.2%} without one, a gap of "
+          f"{100 * (probe_accuracy['contrastive with head'] - probe_accuracy['contrastive without head']):.1f} "
+          f"points.")
     print("  The two contrastive runs share the body architecture and every training setting, and")
     print("  the projection head is their one design difference; each still starts from its own")
     print("  random weights, augmentations and batch order, so it is not a strict single-variable")
