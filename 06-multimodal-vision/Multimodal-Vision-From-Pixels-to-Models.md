@@ -520,6 +520,80 @@ shows the grid, anchor, loss, decode, suppression and mAP chain working end to e
 not what a small detector reaches on photographs; no detector is trained on COCO
 below.
 
+### Why every term rises near epoch 25
+
+`05b_loss_spikes_and_step_size.py`
+
+In the table above the loss falls smoothly, yet `loss_terms.png` shows every term rising
+together in epochs 25 and 26 before falling back. The supplement reproduces that run with
+every optimiser step recorded, then tests the explanations that come to mind. It changes
+nothing about the detector, and its trajectory matches this one epoch for epoch.
+
+**It is not one unlucky batch.** Across the rise the heaviest batch of an epoch costs
+**3.20x and 2.24x** the epoch's median, against **2.16x to 2.44x** in the quiet epochs 21
+to 23 — no outlier step exists. The rise is not a jolt either: the parameter update norm
+and the loss climb together over hundreds of steps and decay the same way, which
+`spike_anatomy.png` shows as a wide smooth hill rather than a spike.
+
+**It is not Adam's denominator shrinking.** Between the quiet epochs and the rise:
+
+| | Quiet, epochs 21-24 | Rising, epochs 25-26 | Ratio |
+| :--- | ---: | ---: | ---: |
+| Total loss | 0.1227 | 0.4092 | 3.33 |
+| Gradient norm | 7.758 | 12.818 | 1.65 |
+| Parameter update norm | 0.0357 | 0.1090 | 3.05 |
+| Mean sqrt(v), second moment | 0.01052 | 0.00954 | **0.91** |
+| Mean absolute m, first moment | 0.00058 | 0.00159 | 2.76 |
+| Gradient cosine with the previous step | 0.386 | 0.358 | 0.93 |
+
+The second moment does not dip during the rise; it declines slowly throughout and is
+slightly higher at the peak than just before it. Successive gradients do not line up
+either — that cosine moves inside its usual band rather than rising. What does change is
+how far Adam travels per unit of gradient, **x1.82**, so the larger steps are not only
+larger gradients. Which coordinates produce that is not measured here.
+
+**The whole network moves, not only the head.** Relative movement per step grows by
+**x2.0 to x5.1** across the seventeen parameter tensors; the 1x1 prediction head grows
+least, by **x2.3 to x2.8**. And the terms rise by very different amounts — class **x18.4**
+and objectness **x10.3**, against **x2.9** for the centre offsets — because the unbounded
+cross-entropies answer to the scale of the logits while the coordinate terms sit behind a
+sigmoid.
+
+**Three controls place the cause.** Each trains the same detector from the same seed:
+
+| Run | Break-up starts at | Loss it left |
+| :--- | ---: | ---: |
+| Batch order 3407, rate 1e-3 (the script's own) | epoch 25 | 0.1247 |
+| Batch order 12345, rate 1e-3 | epoch 30 | 0.1175 |
+| Batch order 3407, rate 5e-4, run to 60 epochs | epoch 56 | 0.0599 |
+
+A different batch order moves the break-up instead of removing it, so it does not belong
+to particular batches. Halving the step does not remove it either: it postpones it and
+buys roughly half the loss first. Stopping that run at 30 epochs would have been
+misleading, since it stands at **0.1326** there, above the level either full-rate run
+broke from, and so looks perfectly clean — which is why it runs to 60.
+
+**It repeats.** Four times the original training, at the original settings:
+
+| Starts at | Leaving | Peaking at | Ratio |
+| ---: | ---: | ---: | ---: |
+| epoch 25 | 0.1247 | 0.5600 | 4.49 |
+| epoch 54 | 0.0574 | 0.7342 | 12.79 |
+| epoch 86 | 0.0359 | 0.6236 | 17.36 |
+| epoch 117 | 0.0218 | 0.0341 | 1.56 |
+
+Spaced **29, 32 and 31 epochs** apart, each leaving from a lower loss than the last, while
+the trend underneath keeps falling: **0.0188 at epoch 101**, against 0.0857 after the 30
+epochs this module trains. Script 05 stops at 30, so `loss_terms.png` catches only the
+first.
+
+That pattern — a break-up that survives a change of data order, that a smaller step
+postpones to a lower loss, and that returns at a regular spacing — is what a fixed step
+size meeting a loss surface that keeps sharpening looks like: the run oscillates out of
+the narrowing region, the surface it lands on is flatter, and it settles again. A learning
+rate schedule is the usual answer, and this module deliberately runs without one. Closing
+the case would take a direct measurement of curvature, which these runs do not make.
+
 ### The same encoding on COCO
 
 36 334 non-crowd boxes from `instances_val2017`, letterboxed to 416x416:
@@ -577,6 +651,15 @@ lower.
 | `paf_vectors.png` | the peaks found in the confidence maps, and the affinity fields as arrows along each limb |
 | `pose_assembly.png` | the true skeletons, the limbs paired by the field and the limbs paired by distance, with how many are correct |
 | `pose_maps_coco.png` | a COCO image with overlapping people, both maps, and the limbs paired by the field |
+
+From `05b_loss_spikes_and_step_size.py`, into the same folder:
+
+| Image | Panels |
+| :--- | :--- |
+| `spike_anatomy.png` | every one of the 3750 optimiser steps: total loss, gradient norm, parameter update norm, the cosine against the previous step with its running median, and Adam's two moments, with the rise shaded |
+| `spike_batch_content.png` | batch loss against the boxes the batch holds, quiet epochs against rising ones, and each epoch's heaviest batch as a share of its median |
+| `spike_terms_and_layers.png` | each loss term over training, and how much further every parameter tensor moves per step during the rise, the head apart from the body |
+| `spike_controls.png` | the two batch orders and the halved rate together, and the 120-epoch run with every break-up marked |
 
 ---
 

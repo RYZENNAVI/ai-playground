@@ -208,6 +208,7 @@ See [Fine-Tuning-Low-Rank-Adaptation.md](05-fine-tuning/Fine-Tuning-Low-Rank-Ada
 | 03 | `03_hog_and_haar_detectors.py` | Gradient orientation histograms into a HOG descriptor, every two-rectangle Haar feature, the integral image, and AdaBoost |
 | 04 | `04_training_mechanics_xor_softmax_batchnorm.py` | XOR against a straight line, softmax cross-entropy by hand, and what a mode switch changes |
 | 05 | `05_grid_detection_and_pose_assembly.py` | A detector's grid targets, loss, decoding and NMS, then people assembled from part affinity fields |
+| 05b | `05b_loss_spikes_and_step_size.py` | Why that detector's loss breaks up near epoch 25, measured step by step and tested against batch order and step size |
 | 06 | `06_unet_segmentation_and_skip_connections.py` | A UNet against the same net without skips and one that never resamples, scored at the boundaries |
 | 07 | `07_attention_and_self_supervised_representations.py` | Attention written out, two tokenisers, and three label-free objectives under one linear probe |
 | 08 | `08_vlm_field_extraction_audit.py` | Forms rendered with five traps, scored field by field on a clean page and a photograph of it |
