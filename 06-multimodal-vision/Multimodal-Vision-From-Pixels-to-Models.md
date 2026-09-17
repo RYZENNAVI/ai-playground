@@ -622,8 +622,12 @@ climbs from **1450** at epoch 1 to a plateau near **3100** — but that plateau 
 around epoch 14, ten epochs before anything happens, and λ_max then *falls* into the
 break-up: **3073** over the quiet epochs, **2837** at epoch 24, **2609** at epoch 25.
 Sampling every 25 steps through epochs 22–27 says the same from inside the event: λ_max
-falls from **2899** at epoch 24.2 to **2285** at epoch 25.2 while the loss climbs, and the
-parameter step size starts growing first, from 0.019 per step to 0.075. The
+falls from **2899** at epoch 24.2 to **2285** at epoch 25.2 while the loss climbs. What does
+grow is how far the parameters actually move each step, from **0.019 to 0.075** — the
+learning rate never changes, but Adam's own scaling lets a step cover four times the ground
+it did while the loss was flat. That growth and the loss both pass a quarter above their
+settled level at the same sample, epoch 24.00, so at this resolution neither leads the
+other. The
 curvature along the step Adam actually takes stays between **0.4 and 1.0** throughout,
 three orders of magnitude below λ_max: the sharpest direction is not the one Adam walks in.
 

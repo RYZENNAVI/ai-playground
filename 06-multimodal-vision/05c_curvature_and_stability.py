@@ -417,6 +417,18 @@ def main():
                   f"{row['lambda max']:>12.1f}{row['along update']:>12.2f}"
                   f"{row['preconditioned']:>13.1f}{row['update norm']:>11.5f}")
         if first:
+            # Which of them moves first. The baseline is the part of the window before the
+            # break-up epoch, and the crossing is the first sample a quarter above it.
+            settled_mask = where < first - 1
+            print(f"\n  {'quantity':<28}{'baseline':>10}{'first 1.25x above it':>23}")
+            for label, key in (("loss on the probe set", "probe loss"),
+                               ("parameters moved per step", "update norm"),
+                               ("sharpest curvature", "lambda max"),
+                               ("Adam-scaled curvature", "preconditioned")):
+                values, base = fine(key), float(np.median(fine(key)[settled_mask]))
+                over = np.flatnonzero((values > 1.25 * base) & ~settled_mask)
+                crossed = f"epoch {where[over[0]]:.2f}" if len(over) else "never"
+                print(f"  {label:<28}{base:>10.4f}{crossed:>23}")
             settled = where < first - 1
             during = (where >= first - 1) & (where <= first + 1)
             for label, key in (("sharpest curvature", "lambda max"),
@@ -427,19 +439,28 @@ def main():
                 print(f"  {label:<26} before {level:>10.1f}, highest during the break-up "
                       f"{peak:>10.1f}, ratio {peak / level if level else float('nan'):>5.2f}")
 
-        fig, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
-        axes[0].plot(where, fine("batch loss"), ".-", color="k", lw=0.9)
+        fig, axes = plt.subplots(4, 1, figsize=(10, 11), sharex=True)
+        # The batch loss is whatever 32 images the step happened to draw, so it swings by a
+        # factor of two while nothing is happening. The probe loss is the same 128 images every
+        # time, which is what makes it readable against the step size below.
+        axes[0].plot(where, fine("batch loss"), ".-", color="0.65", lw=0.8,
+                     label="the batch just trained on")
+        axes[0].plot(where, fine("probe loss"), ".-", color="k", lw=1.2, label="the fixed probe set")
         axes[0].set_yscale("log")
-        axes[0].set_ylabel("loss of the batch\njust trained on")
-        axes[1].plot(where, fine("lambda max"), ".-", color="tab:red", lw=0.9, label="lambda max(H)")
-        axes[1].plot(where, fine("preconditioned"), ".-", color="tab:green", lw=0.9,
-                     label="after Adam's scaling")
+        axes[0].set_ylabel("loss")
+        axes[0].legend(fontsize=9)
+        axes[1].plot(where, fine("update norm"), ".-", color="tab:blue", lw=1.2)
         axes[1].set_yscale("log")
-        axes[1].set_ylabel("curvature")
-        axes[1].legend(fontsize=9)
-        axes[2].plot(where, fine("along update"), ".-", color="tab:purple", lw=0.9)
-        axes[2].set_ylabel("curvature along\nthe steps just taken")
-        axes[2].set_xlabel("epoch")
+        axes[1].set_ylabel("how far the\nparameters move per step")
+        axes[2].plot(where, fine("lambda max"), ".-", color="tab:red", lw=0.9, label="lambda max(H)")
+        axes[2].plot(where, fine("preconditioned"), ".-", color="tab:green", lw=0.9,
+                     label="after Adam's scaling")
+        axes[2].set_yscale("log")
+        axes[2].set_ylabel("curvature")
+        axes[2].legend(fontsize=9)
+        axes[3].plot(where, fine("along update"), ".-", color="tab:purple", lw=0.9)
+        axes[3].set_ylabel("curvature along\nthe steps just taken")
+        axes[3].set_xlabel("epoch")
         for ax in axes:
             if first:
                 ax.axvspan(first - 1, first + 1, color="tab:red", alpha=0.1)
@@ -449,8 +470,8 @@ def main():
         fig.tight_layout()
         fig.savefig(OUT_DIR / "curvature_inside_the_break_up.png", dpi=110)
         plt.close(fig)
-        print(f"  curvature_inside_the_break_up.png: the same three curvatures at "
-              f"{args.fine_every}-step resolution through the epochs where the loss leaves and returns")
+        print(f"  curvature_inside_the_break_up.png: loss, how far the parameters move per step and "
+              f"the three curvatures, at {args.fine_every}-step resolution through the break-up")
 
     if args.half_rate_epochs:
         print(f"\n--- 5. The same measurement at half the step size ---")
