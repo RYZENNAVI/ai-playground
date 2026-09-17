@@ -23,7 +23,10 @@ import numpy as np
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-OUT_DIR = Path(__file__).parent / "outputs" / "training_mechanics"
+OUT_BASE = Path(__file__).parent / "outputs" / "training_mechanics"
+# A run on real digits and a run on the rendered ones write the same file names, so each
+# gets its own folder and neither overwrites the other.
+OUT_DIR = OUT_BASE / "synthetic"
 SEED = 3407
 
 XOR_X = np.array([[0, 0], [0, 1], [1, 0], [1, 1]], np.float64)
@@ -300,6 +303,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--mnist-root", help="MNIST folder holding the uncompressed IDX files (or raw/)")
     args = parser.parse_args()
+    global OUT_DIR
+    OUT_DIR = OUT_BASE / ("mnist" if args.mnist_root else "synthetic")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(SEED)
 

@@ -465,6 +465,10 @@ which is why the probes run on copies of the trained model.
 
 ### What the images show
 
+Every image below is written twice, once per run: `outputs/training_mechanics/synthetic/`
+holds the run on rendered digits and `outputs/training_mechanics/mnist/` the run on MNIST.
+The file names are the same in both, which is why they are kept apart.
+
 | Image | Panels |
 | :--- | :--- |
 | `xor_boundaries.png` | output over the input plane with the 0.5 line: the best single unit, the two-unit network at random weights, a trained seed that solves XOR, a trained seed that gets stuck |
@@ -1008,6 +1012,11 @@ training the script already did; the two probes added to the tokeniser section c
 seconds more.
 
 ### What the images show
+
+Every image below is written twice, once per run:
+`outputs/attention_and_representations/synthetic/` holds the run on the rendered objects and
+`outputs/attention_and_representations/cifar10/` the run on CIFAR-10. The file names are the
+same in both, which is why they are kept apart.
 
 | Image | Panels |
 | :--- | :--- |

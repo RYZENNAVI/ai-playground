@@ -25,7 +25,10 @@ import numpy as np
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-OUT_DIR = Path(__file__).parent / "outputs" / "attention_and_representations"
+OUT_BASE = Path(__file__).parent / "outputs" / "attention_and_representations"
+# A run on photographs and a run on the rendered objects write the same file names, so
+# each gets its own folder and neither overwrites the other.
+OUT_DIR = OUT_BASE / "synthetic"
 SEED = 3407
 
 SIZE = 32
@@ -582,6 +585,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--cifar10-root", help="folder holding the CIFAR-10 python batches")
     args = parser.parse_args()
+    global OUT_DIR
+    OUT_DIR = OUT_BASE / ("cifar10" if args.cifar10_root else "synthetic")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(SEED)
 
