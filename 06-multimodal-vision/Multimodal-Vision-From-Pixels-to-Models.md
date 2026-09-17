@@ -645,21 +645,53 @@ the Adam-scaled curvature the two runs agree to **11%** while breaking up 31 epo
 factor of two in loss apart. On the raw curvature they are 37% apart. The quantity the step
 size meets is the preconditioned one, which is what Adam's own update is scaled by.
 
+**Four break-ups at one step size say the same, without changing anything.** Trained four
+times longer, the detector breaks up at epochs 25, 54, 86 and 117, each time from a lower
+loss:
+
+| Break-up | Loss it left | λ_max before | Adam-scaled before | rate × Adam-scaled |
+| ---: | ---: | ---: | ---: | ---: |
+| epoch 25 | 0.1247 | 2772.2 | 6688.7 | **6.689** |
+| epoch 54 | 0.0574 | 2729.8 | 8194.7 | **8.195** |
+| epoch 86 | 0.0359 | 1885.6 | 8004.9 | **8.005** |
+| epoch 117 | 0.0218 | 1418.1 | 8598.1 | **8.598** |
+
+The losses these leave from span **5.7x** and the raw curvature **1.95x** — and it falls
+across the run, from 2772 to 1418, the opposite of sharpening — while the product spans
+**1.29x**, from 6.69 to 8.60 around a median of 8.10. Of the three quantities, it is the one
+the events hold fixed, over four of them and with no setting changed between. Traced over
+the whole run it sawtooths: climbing to between 7 and 8.6, collapsing at each break-up,
+climbing again.
+
+**A run that acts on the warning does not break up.** The last experiment trains the same
+detector again and halves its own learning rate the first time that product rises past
+**1.4x its median over epochs 5–10** — a rule fixed beforehand that reads only early
+training and knows nothing about where the break-up falls. It fires at **epoch 21**, four
+epochs before the untouched run breaks up, and over 35 epochs **no break-up happens at
+all**, ending at **0.0626** against the untouched run's 0.0857 after 30. The
+Adam-scaled curvature keeps climbing afterwards, to 9870 by epoch 27, but at half the rate
+the product stays near 4.9 and never reaches the level the events leave from.
+
 So the reading that survives is not that curvature climbs until a fixed step no longer
 fits. It is that **each step size has a curvature it can tolerate, training pushes the model
 up to that level, and it breaks up there** — at half the rate, twice the tolerance and half
-the loss.
+the loss; four times over within one run; and not at all if the rate comes down when the
+product gets there.
 
 Three things this does not establish. The Hessian here is of the smooth piece of the loss:
 the ignore mask in the YOLO loss is a threshold, so it holds one setting while the Hessian
 is taken and can jump between epochs. A *step size × curvature* boundary is the analysis of
 gradient descent on a quadratic, and Adam on this loss is neither, so that product is a
 diagnostic proxy and not Adam's stability condition — it is reported as a number to compare
-across runs, not as a threshold of 2. And two step sizes agreeing is a correlation over two
-runs; the experiment that would settle it is to turn the step size down when the proxy
-climbs and see the break-up not happen, which this script does not run.
+across these runs, not as a threshold of 2. And the intervention lowers a learning rate,
+which raises the curvature a run can take whenever it is applied; it shows that **acting on
+the warning is enough**, not that the warning names the cause. Separating those would take a
+rate cut matched in size and duration but applied away from the warning, which this script
+does not run.
 
-Cost: about 30 minutes, most of it the 90 curvature estimates.
+Cost: about 45 minutes and 245 curvature estimates — 30 epochs at the full rate plus 30
+inside the break-up, 60 at half the rate, 120 for the repeats and 35 for the intervention.
+`--long-epochs 0`, `--intervene 0` and `--half-rate-epochs 0` each drop one arm.
 
 ### The same encoding on COCO
 
@@ -735,6 +767,7 @@ From `05c_curvature_and_stability.py`, into the same folder:
 | `curvature_over_training.png` | loss, sharpest curvature, curvature along the step taken and curvature after Adam's scaling, epoch by epoch, with the quiet stretch and the break-up shaded |
 | `curvature_inside_the_break_up.png` | the same three curvatures at 25-step resolution through epochs 22–27, where the loss leaves and returns |
 | `curvature_lr_control.png` | loss, raw curvature, Adam-scaled curvature and the step-size × curvature proxy for both step sizes, with each run's break-up marked |
+| `curvature_repeated_breakups.png` | the 120-epoch run's loss and proxy with all four break-ups marked, and the four lined up on the epoch each left from |
 
 ---
 

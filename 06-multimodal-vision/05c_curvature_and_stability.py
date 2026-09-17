@@ -9,11 +9,21 @@ that its own measurements could not check, because it never measured curvature. 
        building the Hessian: Hessian-vector products driven by power iteration.
     3. Measure two curvatures beside it - along the direction the parameters actually moved,
        and after Adam's own preconditioner, which is the one its step size answers to.
-    4. Report what the numbers do and do not support.
+    4. Sample the same curvatures every few steps through the break-up, where epoch
+       boundaries are too coarse to see what happens.
+    5. Measure the same run at half the step size, which breaks up much later.
+    6. Train four times longer, where the break-up repeats, and compare every event.
+    7. Let a run act on its own measurement, halving its rate when the proxy first climbs,
+       and see whether the break-up still arrives.
+    8. Report what the numbers do and do not support.
 
 Nothing here trains differently from script 05. The measurement takes gradients but never a
 step, restores the batch-norm statistics its forward passes would otherwise move, and draws its
-random vectors from a generator of its own, so the trajectory is the one 05 and 05b report.
+random vectors from a generator of its own, so the trajectory is the one 05 and 05b report. The
+one run that does change is the intervention of step 7, and it is a separate run.
+
+Expect about 45 minutes: 245 curvature estimates across four trainings. Pass --long-epochs 0,
+--intervene 0 or --half-rate-epochs 0 to drop an arm.
 
 Module 06: Multimodal Vision - Grid Detection and Pose Assembly, a supplement to script 05.
 """
@@ -39,6 +49,11 @@ QUIET_EPOCHS = 4        # how many settled epochs before a break-up to read as i
 FINE_WINDOW, FINE_EVERY = (22, 27), 25
 # Script 05b found the half-rate run breaks up near epoch 56, so it has to run past that.
 HALF_RATE_EPOCHS = 60
+# The warning rule, fixed before any run and read off early training only: halve the rate the
+# first time the stability proxy passes this multiple of its median over the baseline epochs.
+BASELINE_EPOCHS, WARNING_FACTOR = (5, 10), 1.4
+LONG_EPOCHS = 120       # four times the original training, where script 05b found four break-ups
+INTERVENE_EPOCHS = 35   # past the epoch the untouched run breaks up at, to see whether it does
 
 
 def load_detector_module():
@@ -193,6 +208,12 @@ def main():
                         metavar=("FIRST", "LAST"),
                         help=f"epochs measured inside as well as at their end (default {FINE_WINDOW[0]} "
                              f"{FINE_WINDOW[1]})")
+    parser.add_argument("--long-epochs", type=int, default=LONG_EPOCHS,
+                        help=f"epochs for the repeat-the-break-up run, 0 to skip "
+                             f"(default {LONG_EPOCHS})")
+    parser.add_argument("--intervene", type=int, default=INTERVENE_EPOCHS,
+                        help=f"epochs for the run that acts on its own warning, 0 to skip "
+                             f"(default {INTERVENE_EPOCHS})")
     parser.add_argument("--half-rate-epochs", type=int, default=HALF_RATE_EPOCHS,
                         help=f"epochs for the half-step-size control, 0 to skip "
                              f"(default {HALF_RATE_EPOCHS})")
@@ -240,8 +261,14 @@ def main():
     print(f"  {width} parameters, so the Hessian it stands for would hold "
           f"{width ** 2 / 1e12:.1f} trillion entries")
 
-    def run(epochs, learning_rate, fine_window, label):
-        """Train as script 05 does, measuring curvature at every epoch and inside a window."""
+    def run(epochs, learning_rate, fine_window, label, watch=False):
+        """Train as script 05 does, measuring curvature at every epoch and inside a window.
+
+        With watch set, the run acts on its own measurements: it halves the learning rate the
+        first time the stability proxy rises past WARNING_FACTOR times its median over the
+        baseline epochs. That rule is fixed before the run and reads only early epochs, so it
+        cannot have been fitted to where the break-up turns out to be.
+        """
         torch.manual_seed(s05.SEED)
         model = s05.build_detector().to(device)
         optimiser = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -252,6 +279,7 @@ def main():
         parameters = [p for p in model.parameters() if p.requires_grad]
         fine_first, fine_last = fine_window
         rows, fine_rows, started = [], [], time.perf_counter()
+        rate, fired = learning_rate, None
         print(f"\n  {label}: Adam {learning_rate}, batch {s05.BATCH}, {epochs} epochs, "
               f"{steps_per_epoch} steps to the epoch, no schedule")
         if fine_first <= fine_last:
@@ -294,16 +322,28 @@ def main():
                                args.power_iters)
             measured.update({"epoch": epoch, "train loss": running / len(train),
                              "update norm": update_norm})
+            measured["proxy"] = rate * measured["preconditioned"]
+            measured["rate"] = rate
             rows.append(measured)
             print(f"  {epoch:>5}{measured['train loss']:>12.4f}{measured['probe loss']:>12.4f}"
                   f"{measured['lambda max']:>12.1f}{measured['drift']:>9.1e}"
                   f"{measured['along update']:>12.1f}{measured['preconditioned']:>13.1f}"
                   f"{measured['gradient norm']:>9.2f}{update_norm:>10.4f}"
                   f"{time.perf_counter() - started:>7.0f}s")
-        return rows, fine_rows
+            if watch and fired is None and epoch > BASELINE_EPOCHS[1]:
+                baseline = np.median([row["proxy"] for row in rows[BASELINE_EPOCHS[0] - 1:
+                                                                   BASELINE_EPOCHS[1]]])
+                if measured["proxy"] > WARNING_FACTOR * baseline:
+                    fired, rate = epoch, rate / 2
+                    for group in optimiser.param_groups:
+                        group["lr"] = rate
+                    print(f"  ^ the proxy passed {WARNING_FACTOR:g}x its epochs "
+                          f"{BASELINE_EPOCHS[0]}-{BASELINE_EPOCHS[1]} median of {baseline:.2f}; "
+                          f"the rate is halved to {rate:g} from here")
+        return rows, fine_rows, fired
 
     print(f"\n--- 2. Training, measuring curvature after every epoch ---")
-    rows, fine_rows = run(epochs, s05.LEARNING_RATE, args.fine_window, "full rate")
+    rows, fine_rows, _ = run(epochs, s05.LEARNING_RATE, args.fine_window, "full rate")
 
     # 3. What the numbers say
     print("\n--- 3. Curvature against the break-up ---")
@@ -417,7 +457,8 @@ def main():
         print("  Script 05b found that halving the rate does not remove the break-up but postpones")
         print("  it to about half the loss. If a smaller step can tolerate a sharper surface, the")
         print("  curvature it breaks up at should be the higher of the two.")
-        half_rows, _ = run(args.half_rate_epochs, s05.LEARNING_RATE / 2, (1, 0), "half rate")
+        half_rows, _, _ = run(args.half_rate_epochs, s05.LEARNING_RATE / 2, (1, 0),
+                              "half rate")
         half = lambda key: np.array([row[key] for row in half_rows])
         half_loss, half_lam = half("train loss"), half("lambda max")
         half_rise = [i + 1 for i in range(10, len(half_loss)) if half_loss[i] > 1.25 * half_loss[i - 1]]
@@ -489,29 +530,129 @@ def main():
         print("  curvature_lr_control.png: loss and sharpest curvature for both step sizes, with")
         print("  each run's break-up marked")
 
+    long_events = []
+    if args.long_epochs:
+        print(f"\n--- 6. Four times longer, where script 05b found the break-up repeating ---")
+        print("  Two step sizes give two break-ups. This run gives several at one step size, which")
+        print("  is the repeat the boundary reading needs: if it holds, every event should leave")
+        print("  from a similar proxy however far the loss has fallen by then.")
+        long_rows, _, _ = run(args.long_epochs, s05.LEARNING_RATE, (1, 0), "four times longer")
+        get = lambda key: np.array([row[key] for row in long_rows])
+        long_loss = get("train loss")
+        starts, previous = [], -9
+        for i in range(10, len(long_loss)):
+            if long_loss[i] > 1.25 * long_loss[i - 1] and i + 1 > previous + 3:
+                starts.append(i + 1)
+                previous = i + 1
+        print(f"\n  {'break-up':>10}{'loss it left':>14}{'lambda max':>13}{'Adam-scaled':>14}"
+              f"{'proxy':>9}")
+        for start in starts:
+            long_events.append((start, float(long_loss[start - 2]), float(get("lambda max")[start - 2]),
+                                float(get("preconditioned")[start - 2]), float(get("proxy")[start - 2])))
+            print(f"  {start:>10}{long_loss[start - 2]:>14.4f}{get('lambda max')[start - 2]:>13.1f}"
+                  f"{get('preconditioned')[start - 2]:>14.1f}{get('proxy')[start - 2]:>9.3f}")
+        if len(long_events) > 1:
+            proxies = np.array([event[4] for event in long_events])
+            losses = np.array([event[1] for event in long_events])
+            lambdas = np.array([event[2] for event in long_events])
+            print(f"  across {len(long_events)} break-ups the loss they leave spans "
+                  f"{losses.max() / losses.min():.1f}x and the raw curvature "
+                  f"{lambdas.max() / lambdas.min():.2f}x,")
+            print(f"  while the proxy spans {proxies.max() / proxies.min():.2f}x "
+                  f"({proxies.min():.2f} to {proxies.max():.2f}, median {np.median(proxies):.2f})")
+
+        fig, axes = plt.subplots(3, 1, figsize=(11, 10))
+        axis = np.arange(1, len(long_rows) + 1)
+        axes[0].plot(axis, long_loss, "-", lw=1, color="k")
+        axes[0].set_yscale("log")
+        axes[0].set_ylabel("training loss")
+        axes[1].plot(axis, get("proxy"), "-", lw=1, color="tab:green")
+        axes[1].set_ylabel("step size x\nAdam-scaled curvature")
+        axes[1].set_xlabel("epoch")
+        for ax in axes[:2]:
+            for start in starts:
+                ax.axvline(start, color="tab:red", linestyle="--", lw=1)
+            ax.grid(alpha=0.3)
+        # Every event on one axis, lined up on the epoch it left from.
+        offsets = np.arange(-4, 5)
+        for start in starts:
+            inside = [start + o for o in offsets]
+            keep = [(o, e) for o, e in zip(offsets, inside) if 1 <= e <= len(long_rows)]
+            axes[2].plot([o for o, _ in keep], [get("proxy")[e - 1] for _, e in keep], "o-",
+                         ms=4, label=f"break-up at epoch {start}")
+        axes[2].axvline(-1, color="tab:red", linestyle="--", lw=1)
+        axes[2].set_xlabel("epochs from the break-up (dashed: the last epoch before it)")
+        axes[2].set_ylabel("step size x\nAdam-scaled curvature")
+        axes[2].legend(fontsize=8)
+        axes[2].grid(alpha=0.3)
+        axes[0].set_title(f"{len(starts)} break-ups in {args.long_epochs} epochs at one step size, "
+                          f"and the proxy each one leaves from", fontsize=10)
+        fig.tight_layout()
+        fig.savefig(OUT_DIR / "curvature_repeated_breakups.png", dpi=110)
+        plt.close(fig)
+        print("  curvature_repeated_breakups.png: the long run's loss and proxy with every break-up")
+        print("  marked, and all of them lined up on the epoch they left from")
+
+    if args.intervene:
+        print(f"\n--- 7. Acting on the warning ---")
+        print(f"  The same run again, except that it halves its own rate the first time the proxy")
+        print(f"  passes {WARNING_FACTOR:g}x its epochs {BASELINE_EPOCHS[0]}-{BASELINE_EPOCHS[1]} "
+              f"median. The rule reads early training only.")
+        watched, _, fired = run(args.intervene, s05.LEARNING_RATE, (1, 0), "watching the proxy",
+                                watch=True)
+        watched_loss = np.array([row["train loss"] for row in watched])
+        watched_events = [i + 1 for i in range(10, len(watched_loss))
+                          if watched_loss[i] > 1.25 * watched_loss[i - 1]]
+        print(f"\n  the warning fired at epoch {fired}" if fired else
+              f"\n  the warning never fired")
+        print(f"  break-ups with the warning acted on: {watched_events or 'none'}, against "
+              f"{[first] if first else 'none'} in the untouched run")
+        print(f"  loss after {len(watched_loss)} epochs: {watched_loss[-1]:.4f} watched, against "
+              f"{column('train loss')[-1]:.4f} untouched over {len(rows)}")
+        if fired and first and not watched_events:
+            print(f"  the break-up the untouched run had at epoch {first} does not happen, and the")
+            print(f"  warning came {first - fired} epochs before it.")
+        print("  What this does and does not show. Halving the rate halves the proxy by definition,")
+        print("  so the proxy falling is not evidence of anything. What is worth having is that")
+        print("  acting only when warned, late in training, is enough: script 05b had to halve the")
+        print("  rate from the first epoch to postpone the break-up, and this pays that cost only")
+        print("  after the warning. It still cannot separate the proxy being the cause from a lower")
+        print("  rate helping whenever it is applied, since a rate cut at any time raises the")
+        print("  curvature the run can take.")
+
     print(f"\n--- What the curvature measurements support ---")
     if first:
         quiet_level, before_it, at_it = np.median(lam[quiet]), lam[first - 2], lam[first - 1]
         print(f"  The sharpest curvature sits near {quiet_level:.0f} over the quiet epochs, is "
               f"{before_it:.0f} by the epoch before the break-up and {at_it:.0f} at it, so it does "
-              f"{'rise' if before_it > quiet_level else 'not rise'} into the event. The finer")
-        print("  sampling above says the same from inside it. A version of the explanation in which")
-        print("  curvature climbs until the step no longer fits is not what this run does.")
+              f"{'rise' if before_it > quiet_level else 'not rise'} into the event, and the finer")
+        print("  sampling says the same from inside it. A version of the explanation in which the")
+        print("  sharpest curvature climbs until the step no longer fits is not what happens.")
+    print("  What holds instead is a boundary on the curvature Adam's own step size answers to.")
     if args.half_rate_epochs:
-        print("  What the two step sizes show is the other half of it. Each run breaks up at its own")
-        print("  loss, far apart, and the curvature it breaks up from is the higher one for the")
-        print("  smaller step. Read as a step-size-times-curvature boundary, the two agree much")
-        print("  better on the Adam-scaled curvature than on the raw one, and the Adam-scaled one is")
-        print("  what Adam's own step size answers to. That is the prediction such a boundary makes,")
-        print("  from two runs.")
-    print("  Three things this does not establish. The Hessian here is of the smooth piece of the")
-    print("  loss the detector sits on: the ignore mask is a threshold, so it holds one setting")
-    print("  while the Hessian is taken and can jump between epochs. A boundary of this form is the")
-    print("  analysis of gradient descent on a quadratic, and Adam on this loss is neither, so the")
-    print("  product above is a diagnostic proxy and not Adam's stability condition. And two step")
-    print("  sizes agreeing is a correlation across two runs; turning the step size down when the")
-    print("  proxy climbs, and seeing the break-up not happen, is the experiment that would settle")
-    print("  it, and this script does not run it.")
+        print("  Two step sizes break up at losses a factor of two apart, and the product of step")
+        print("  size and that curvature is close at both.")
+    if long_events and len(long_events) > 1:
+        proxies = np.array([event[4] for event in long_events])
+        losses = np.array([event[1] for event in long_events])
+        lambdas = np.array([event[2] for event in long_events])
+        print(f"  At one step size, {len(long_events)} break-ups leave from losses spanning "
+              f"{losses.max() / losses.min():.1f}x and raw curvatures spanning "
+              f"{lambdas.max() / lambdas.min():.2f}x,")
+        print(f"  while that product spans {proxies.max() / proxies.min():.2f}x. Of the three, it is")
+        print("  the one the events hold fixed.")
+    if args.intervene:
+        print("  And a run that halves its rate when the product first rises past a level read off")
+        print("  its own early epochs does not break up where the untouched run does.")
+    print(f"\n  Three things this still does not establish. The Hessian here is of the smooth piece")
+    print("  of the loss: the ignore mask is a threshold, so it holds one setting while the Hessian")
+    print("  is taken and can jump between epochs. A boundary of this form is the analysis of")
+    print("  gradient descent on a quadratic, and Adam on this loss is neither, so the product is a")
+    print("  diagnostic proxy, not Adam's stability condition, and its value is only comparable")
+    print("  between these runs. And the intervention lowers a rate, which raises the curvature a")
+    print("  run can take whenever it is applied; it shows that acting on the warning is enough,")
+    print("  not that the warning names the cause. Separating those would take an intervention")
+    print("  matched in size and duration but applied away from the warning.")
     print(f"\n  images written to {OUT_DIR}")
 
 
