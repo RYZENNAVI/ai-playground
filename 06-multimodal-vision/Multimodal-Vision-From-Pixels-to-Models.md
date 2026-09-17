@@ -1806,9 +1806,16 @@ python 06_unet_segmentation_and_skip_connections.py --voc-root <dir>   # holding
 python 07_attention_and_self_supervised_representations.py --cifar10-root <dir>
 ```
 
+None of these is kept in this repository, only linked: together they are about 3.7 GB, and
+TinyFace alone is 169 000 files. Download whichever a script asks for and point it there.
+
 - TinyFace: https://qmul-tinyface.github.io/
-- CIFAR-10: https://www.cs.toronto.edu/~kriz/cifar.html
-- MNIST: http://yann.lecun.com/exdb/mnist/
+- CIFAR-10: https://www.cs.toronto.edu/~kriz/cifar.html (the python batches)
+- MNIST: `torchvision.datasets.MNIST(root, download=True)` is the easiest route and lays
+  the files out the way script 04 reads them; the four files it fetches also sit under
+  https://ossci-datasets.s3.amazonaws.com/mnist/ (`train-images-idx3-ubyte.gz` and the
+  other three). The original page at yann.lecun.com no longer serves them. Script 04 wants
+  the four IDX files uncompressed, either in the folder given or in a `raw/` inside it
 - COCO: https://cocodataset.org/#download (val2017 images and annotations only)
 - Pascal VOC 2012: http://host.robots.ox.ac.uk/pascal/VOC/voc2012/
 
