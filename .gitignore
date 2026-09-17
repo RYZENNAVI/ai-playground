@@ -61,15 +61,19 @@ models/
 03-text2sql/data/vanna_store/
 03-text2sql/data/charts/
 
-# Runtime artefacts rebuilt by the 05-fine-tuning scripts: rendered images,
-# trained adapters and the generated training split. Nothing here is source.
-05-fine-tuning/outputs/
+# The figures under 05-fine-tuning/outputs/ are kept, so that the document can be read
+# without running anything. The trained adapters are not: they are tens of megabytes of
+# weights that one training run rebuilds, and git would carry them forever.
+05-fine-tuning/outputs/*_adapter/
 05-fine-tuning/data/underwriting_triage.jsonl
 
-# Runtime artefacts rebuilt by the 06-multimodal-vision scripts: rendered forms,
-# the synthesised clip, the generated detection dataset and its training run.
-# Every script regenerates its own inputs, so nothing here is source.
-06-multimodal-vision/outputs/
+# The figures, clips and tables under 06-multimodal-vision/outputs/ are kept, so that the
+# document can be read without running anything, and without downloading the datasets some
+# of them need. What is left out is the material the scripts render for themselves - the
+# detection dataset and the split made from it - and the detector weights.
+06-multimodal-vision/outputs/defect_detection/raw/
+06-multimodal-vision/outputs/defect_detection/as_arrived/
+*.cache
 
 # Detector weights the trainer fetches on its own: the automatic mixed-precision
 # check downloads a small checkpoint into the working directory before training.
@@ -79,7 +83,6 @@ models/
 # and by the plots script 07 writes. The generator is seeded and reproduces the
 # five tables byte for byte, so none of this is source.
 07-ml-dl-foundation/data/
-07-ml-dl-foundation/outputs/
 
 # CatBoost writes a training log directory into the working directory on every
 # fit. It reappears whenever a script that uses CatBoost runs.
@@ -89,7 +92,6 @@ catboost_info/
 # and written by the backtest script. The generator is seeded and reproduces the
 # five series byte for byte, so none of this is source.
 08-time-series/data/
-08-time-series/outputs/
 
 # Written by 09-lowcode-platforms scripts at run time, rewritten identically on every run
 09-lowcode-platforms/data/review_feed/
@@ -99,4 +101,3 @@ catboost_info/
 # by the scripts that follow it. The generator is seeded and reproduces every file
 # byte for byte, so none of this is source.
 10-projects/data/
-10-projects/outputs/
