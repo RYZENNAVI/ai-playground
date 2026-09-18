@@ -1,12 +1,21 @@
 # ai-playground
 
-A curated portfolio of hands-on AI engineering work — LLM applications, RAG pipelines,
-agents, fine-tuning, and deep learning. Every module is self-contained, documented,
-and runnable.
+A personal learning playground for hands-on AI engineering — LLM fundamentals and
+prompting, retrieval-augmented generation, text-to-SQL, agents, fine-tuning, computer
+vision and multimodal models, classical machine learning and deep learning, time-series
+forecasting, low-code workflow platforms, and end-to-end projects. Every module is
+self-contained, documented, and runnable.
 
-Each module folder holds flat, numbered scripts plus a topic write-up explaining the
-concepts behind them. Everything talks to providers through the OpenAI SDK protocol,
-so switching vendors is a matter of changing `base_url`.
+Each module folder holds flat, numbered scripts plus a topic write-up that explains the
+concepts behind them and records the numbers the scripts actually produced. Scripts that
+call a hosted model do so through the OpenAI SDK protocol, so DeepSeek, Gemini and OpenAI
+are interchangeable by changing `base_url` and the key. The rest run entirely on your own
+machine: local models through Ollama or Transformers, PyTorch training on a GPU,
+scikit-learn and gradient boosting, and statistical forecasting. Where a script needs data,
+it either generates it with a fixed seed or reads a public dataset that the topic write-up
+links to instead of committing; only small source documents with no public download are
+kept in the repository. The figures and tables the scripts produce are kept
+in each module's `outputs/` folder, so every write-up can be read without running anything.
 
 ## Modules
 
