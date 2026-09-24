@@ -1,10 +1,10 @@
-"""Prompt engineering patterns via standard OpenAI SDK (DeepSeek / OpenAI).
+"""Four ways to write the same request, and what each one changes in the reply.
 
-Demonstrates four key prompt engineering techniques:
-    1. Structured Template — `# Objective` / `# Output Format` / `# User Input`
-    2. JSON Mode          — `response_format={"type": "json_object"}`
-    3. Chain-of-Thought   — Step-by-step reasoning & rule checking
-    4. Prompt-Tuning      — Meta-prompting: LLM optimizing its own prompt
+Demonstrates prompt structure on one mobile-plan task:
+    1. Split the prompt into objective, output format and user input under headings.
+    2. Ask for JSON and switch on JSON mode, so the reply parses without cleanup.
+    3. Ask for step-by-step reasoning before a verdict on whether a support reply follows three rules.
+    4. Hand the model a weak system prompt and ask it to rewrite that prompt.
 """
 
 import os

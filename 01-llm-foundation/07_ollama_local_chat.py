@@ -1,15 +1,11 @@
-"""Local model deployment and inference via the Ollama REST API.
+"""Run a reasoning model on your own machine through Ollama, with no API key.
 
-Demonstrates the full local-deployment stack for private LLM hosting:
-    1. Weight acquisition: check whether the model is already pulled and
-       download it only when missing (idempotent, safe to re-run).
-    2. Ollama single-shot generation via the built-in REST API (port 11434).
-    3. Ollama streaming responses (typewriter effect, low first-token latency).
-    4. Reasoning-model output parsing: split `<think>` chain-of-thought from
-       the final answer (DeepSeek-R1 distilled models emit both).
-    5. FastAPI + CORS microservice wrapping a local model as an HTTP backend.
-
-Module 01: LLM Foundation — Local Model Deployment.
+Demonstrates what a local deployment has to handle that a hosted API does for you:
+    1. Check whether the model is already pulled and download it only if not.
+    2. Generate one reply through Ollama's REST API on port 11434.
+    3. Stream a longer reply token by token, as it is produced.
+    4. Split the <think> reasoning from the answer, since R1-distilled models emit both.
+    5. Define a FastAPI gateway around the model and print the command that serves it.
 """
 
 import json

@@ -1,14 +1,11 @@
-"""Universal Web Search Agent using OpenAI SDK format.
+"""Answer a question about recent news by searching Wikipedia, with a cap on how often.
 
-Demonstrates web-grounded generation via standard Function Calling (Tools):
-    1. Send user query + search tool definitions (`web_search_tool`).
-    2. Model identifies real-time query and requests tool call.
-    3. Execute live web search locally and return snippets as `role: "tool"`.
-    4. Bounded Agent loop (`max_iterations=3`) preventing runaway infinite tool calls.
-    5. Uses `tool_choice="none"` on forced exit to guarantee pure text summary.
-
-Supported Providers: DeepSeek, Google Gemini, OpenAI (Universal).
-Module 01: LLM Foundation — Web Search Grounding.
+Demonstrates how to stop a tool loop that could otherwise run forever:
+    1. Offer one search tool backed by the Wikipedia search API, returning three snippets.
+    2. Let the model search and read for at most three rounds.
+    3. When the cap is reached, call once more with tool_choice="none",
+       so the model has to answer from what it already has.
+    4. Return a readable message rather than an exception when the search request fails.
 """
 
 import json

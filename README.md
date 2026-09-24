@@ -15,7 +15,7 @@ libraries.
 
 | Module | Topics |
 |--------|--------|
-| [01-llm-foundation](01-llm-foundation/) | LLM fundamentals · prompt engineering · function calling · tool-loop agents · multimodal extraction · local deployment (Ollama, Transformers) |
+| [01-llm-foundation](01-llm-foundation/) | Chat protocol · prompt engineering · function calling · tool-loop agents · multimodal extraction · local deployment (Ollama, Transformers) |
 | [02-rag](02-rag/) | Embeddings · chunking · vector databases · RAG pipelines · rerank · query rewrite · multimodal RAG · knowledge-base curation & versioning · GraphRAG |
 | [03-text2sql](03-text2sql/) | Natural language to SQL · schema prompting · SQL agents · query safety · result evaluation |
 | [04-agents](04-agents/) | Prompt templates & memory · chain orchestration · ReAct agents · MCP / A2A · LangGraph architectures |
@@ -113,11 +113,11 @@ tables below list the scripts of each.
 | # | Script | Feature |
 |---|--------|---------|
 | 01 | `01_chat_sentiment_analysis.py` | Chat protocol & 3-way sentiment classification |
-| 02 | `02_weather_function_calling.py` | Standard tool calling — weather service |
+| 02 | `02_weather_function_calling.py` | Tool calling — a local weather function, called once per city |
 | 03 | `03_table_multimodal_extraction.py` | Multimodal vision — table image → JSON |
 | 04 | `04_ops_incident_handler.py` | AIOps agent tool loop — incident diagnosis |
 | 05 | `05_prompt_engineering.py` | Structured templates, JSON mode, CoT, meta-prompting |
-| 06 | `06_web_search_agent.py` | Bounded web-search agent with a `tool_choice` circuit breaker |
+| 06 | `06_web_search_agent.py` | Search agent over the Wikipedia API, capped at three rounds, with a `tool_choice` circuit breaker |
 | 07 | `07_ollama_local_chat.py` | Local deployment via Ollama — auto model pull, streaming, `<think>` split, FastAPI gateway |
 | 08 | `08_transformers_inference.py` | Raw-weight inference with Transformers — HF download, GPU placement, chat template, throughput |
 

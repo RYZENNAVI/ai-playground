@@ -1,9 +1,10 @@
-"""Chat completion & sentiment analysis using standard OpenAI SDK (DeepSeek / OpenAI).
+"""Send one chat request, then use the same call as a three-way sentiment classifier.
 
-Demonstrates universal chat completion:
-    - Environment-driven API key & base URL configuration (Primary: DeepSeek, Fallback: OpenAI).
-    - Standard system / user / assistant message protocol.
-    - Zero-shot NLP classification (sentiment analysis) via prompt engineering.
+Demonstrates that classification needs no special API, only a system message:
+    1. Read the key and base URL from the environment, preferring DeepSeek over OpenAI.
+    2. Send a plain user message and print the reply.
+    3. Put the labelling rule in a system message and classify three product reviews.
+    4. Keep the temperature at 0.1 so the same review gets the same label on every run.
 """
 
 import os

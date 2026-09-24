@@ -1,15 +1,9 @@
-"""Multimodal Vision extraction using OpenAI SDK format.
+"""Turn a photographed table into JSON with a single vision-language request.
 
-Extracts structured JSON data from a table image using Vision Language Models (VLM).
-Demonstrates the standard OpenAI Vision payload format:
-    content = [
-        {"type": "text", "text": "..."},
-        {"type": "image_url", "image_url": {"url": "..."}}
-    ]
-
-Supported Multimodal Providers:
-    1. Google Gemini (Primary / Free) : GEMINI_API_KEY -> gemini-2.5-flash
-    2. OpenAI Official (Universal)    : OPENAI_API_KEY -> gpt-4o-mini
+Demonstrates that an image travels inside an ordinary chat message:
+    1. Pick Gemini when its key is set, otherwise OpenAI.
+    2. Put a text part and an image_url part into the content of one user message.
+    3. Ask for the table as JSON and print what comes back, unchecked.
 """
 
 import os

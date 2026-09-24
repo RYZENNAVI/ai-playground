@@ -1,12 +1,10 @@
-"""Function Calling (Tools) using standard OpenAI SDK format.
+"""Answer a weather question the model cannot know, by letting it call a local function.
 
-Demonstrates the 4-step Tool Call lifecycle:
-    1. Send user query + tool definitions (OpenAI `tools` parameter format).
-    2. Model detects tool requirement and returns `tool_calls` with arguments.
-    3. Execute the function locally and get the result.
-    4. Pass the result back with `role: "tool"` to get the final grounded answer.
-
-Supported Providers: DeepSeek (`deepseek-chat`), OpenAI (`gpt-4o-mini`).
+Demonstrates the four messages a tool call takes:
+    1. Send the question together with the JSON schema of one weather function.
+    2. Read the tool calls the model returns instead of an answer, here one per city.
+    3. Run the function locally against a fixed table of temperatures.
+    4. Send each result back as a "tool" message and print the answer built from them.
 """
 
 import json

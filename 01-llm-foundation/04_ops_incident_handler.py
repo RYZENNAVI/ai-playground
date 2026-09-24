@@ -1,12 +1,12 @@
-"""AIOps Incident Handler — Multi-step tool loop for server alert diagnosis.
+"""Diagnose a database alert with a model that fetches the server metrics it needs.
 
-Demonstrates an Agentic Tool Loop in AIOps:
-    1. Parse incoming database alert (e.g. Connection count exceeded threshold).
-    2. Model decides to call `get_current_status` tool to fetch CPU/Memory/Connections.
-    3. Loop executes local monitoring function and feeds status back.
-    4. Model provides final diagnostic recommendations and action plan.
+Demonstrates a tool loop that stops only when the model stops asking:
+    1. Give the model an alert and a system message telling it to check the server first.
+    2. Offer one tool that returns connections, CPU and memory, drawn at random per call.
+    3. Keep calling the model and running the tools it asks for, with no limit on rounds.
+    4. Print the diagnosis once a reply arrives without a tool call.
 
-Module 01: LLM Foundation — AIOps Incident Handler.
+Script 06 adds the round limit this loop does not have.
 """
 
 import json

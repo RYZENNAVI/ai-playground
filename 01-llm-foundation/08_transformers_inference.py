@@ -1,13 +1,11 @@
-"""Direct weight loading and inference with Transformers (no Ollama runtime).
+"""Load model weights directly with Transformers and generate without any serving layer.
 
-Demonstrates full-control local inference on raw model weights:
-    1. Weight acquisition from HuggingFace Hub, skipped when already cached.
-    2. Loading a checkpoint with automatic device placement (CUDA or CPU).
-    3. Applying the model's chat template to build a prompt.
-    4. Tokenising, generating, and decoding only the newly produced tokens.
-    5. Reporting VRAM usage and throughput to size real deployments.
-
-Module 01: LLM Foundation — Transformers Inference.
+Demonstrates the steps Ollama hides:
+    1. Download the weights from the Hugging Face Hub, or reuse the local cache.
+    2. Load the checkpoint onto the GPU when there is one, and print the VRAM it takes.
+    3. Render the model's chat template and print the prompt it actually receives.
+    4. Generate, then decode only the new tokens so the prompt is not repeated.
+    5. Report tokens per second.
 """
 
 import os
