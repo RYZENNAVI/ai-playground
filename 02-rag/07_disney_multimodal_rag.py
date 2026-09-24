@@ -64,22 +64,18 @@ def pick_provider():
 
     One provider covers all three roles, which keeps a single key and a single
     quota to reason about. Gemini comes first because it is the only candidate
-    whose one model handles both chat and vision; DashScope and OpenAI follow so
-    a key of any kind still gets the script running.
+    whose one model handles both chat and vision; OpenAI follows so a key of
+    either kind still gets the script running.
     """
     if os.getenv("GEMINI_API_KEY"):
         return (os.getenv("GEMINI_API_KEY"),
                 "https://generativelanguage.googleapis.com/v1beta/openai/",
                 "gemini-embedding-001",
                 "gemini-3.1-flash-lite", "gemini-3.1-flash-lite")
-    if os.getenv("DASHSCOPE_API_KEY"):
-        return (os.getenv("DASHSCOPE_API_KEY"),
-                "https://dashscope.aliyuncs.com/compatible-mode/v1",
-                "text-embedding-v4", "qwen-plus", "qwen-vl-plus")
     if os.getenv("OPENAI_API_KEY"):
         return (os.getenv("OPENAI_API_KEY"), os.getenv("OPENAI_BASE_URL"),
                 "text-embedding-3-small", "gpt-4o-mini", "gpt-4o-mini")
-    raise SystemExit("Set GEMINI_API_KEY, DASHSCOPE_API_KEY, or OPENAI_API_KEY first.")
+    raise SystemExit("Set GEMINI_API_KEY or OPENAI_API_KEY first.")
 
 
 def parse_docx(path):

@@ -48,20 +48,16 @@ def pick_provider():
     Any OpenAI-compatible endpoint works. One provider covers both roles, so
     there is a single key and a single quota to reason about. Gemini is tried
     first because it also supplies the embedding model this script needs;
-    DashScope and OpenAI are checked after, so setting a single key is enough.
+    OpenAI is checked after, so setting a single key is enough.
     """
     if os.getenv("GEMINI_API_KEY"):
         return (os.getenv("GEMINI_API_KEY"),
                 "https://generativelanguage.googleapis.com/v1beta/openai/",
                 "gemini-embedding-001", "gemini-3.1-flash-lite")
-    if os.getenv("DASHSCOPE_API_KEY"):
-        return (os.getenv("DASHSCOPE_API_KEY"),
-                "https://dashscope.aliyuncs.com/compatible-mode/v1",
-                "text-embedding-v4", "deepseek-v3")
     if os.getenv("OPENAI_API_KEY"):
         return (os.getenv("OPENAI_API_KEY"), os.getenv("OPENAI_BASE_URL"),
                 "text-embedding-3-small", "gpt-4o-mini")
-    raise SystemExit("Set GEMINI_API_KEY, DASHSCOPE_API_KEY, or OPENAI_API_KEY first.")
+    raise SystemExit("Set GEMINI_API_KEY or OPENAI_API_KEY first.")
 
 
 def extract_text_with_pages(pdf_path):

@@ -1,36 +1,36 @@
 # ai-playground
 
-A personal learning playground for hands-on AI engineering — LLM fundamentals and
-prompting, retrieval-augmented generation, text-to-SQL, agents, fine-tuning, computer
-vision and multimodal models, classical machine learning and deep learning, time-series
-forecasting, low-code workflow platforms, and end-to-end projects. Every module is
-self-contained, documented, and runnable.
+A personal learning playground for hands-on AI engineering, from LLM applications and
+retrieval to vision, classical ML and time series. The ten modules below each hold flat,
+numbered scripts plus a topic write-up that explains the concepts behind them and records
+the numbers those scripts produced.
 
-Each module folder holds flat, numbered scripts plus a topic write-up that explains the
-concepts behind them and records the numbers the scripts actually produced. Scripts that
-call a hosted model do so through the OpenAI SDK protocol, so DeepSeek, Gemini and OpenAI
-are interchangeable by changing `base_url` and the key. The rest run entirely on your own
-machine: local models through Ollama or Transformers, PyTorch training on a GPU,
-scikit-learn and gradient boosting, and statistical forecasting. Where a script needs data,
-it either generates it with a fixed seed or reads a public dataset that the topic write-up
-links to instead of committing; only small source documents with no public download are
-kept in the repository. The figures and tables the scripts produce are kept
-in each module's `outputs/` folder, so every write-up can be read without running anything.
+Some scripts call a hosted model. Those all go through the OpenAI SDK, so you can move
+between DeepSeek, Gemini and OpenAI by changing `base_url` and the key. The rest need no
+API key at all: they run local models with Ollama or Transformers, train networks in
+PyTorch on your GPU, or fit models with scikit-learn, gradient boosting and forecasting
+libraries.
 
 ## Modules
 
 | Module | Topics |
 |--------|--------|
-| [01-llm-foundation](01-llm-foundation/) | LLM fundamentals · OpenAI SDK · prompt engineering · function calling · local deployment (Ollama, Transformers) |
-| [02-rag](02-rag/) | Embeddings · vector databases · RAG pipelines · rerank · query rewrite · GraphRAG |
+| [01-llm-foundation](01-llm-foundation/) | LLM fundamentals · prompt engineering · function calling · tool-loop agents · multimodal extraction · local deployment (Ollama, Transformers) |
+| [02-rag](02-rag/) | Embeddings · chunking · vector databases · RAG pipelines · rerank · query rewrite · multimodal RAG · knowledge-base curation & versioning · GraphRAG |
 | [03-text2sql](03-text2sql/) | Natural language to SQL · schema prompting · SQL agents · query safety · result evaluation |
-| [04-agents](04-agents/) | Chain orchestration · ReAct agents · MCP / A2A · LangGraph architectures |
-| [05-fine-tuning](05-fine-tuning/) | Low-rank adaptation · supervised fine-tuning · reward-driven training · vision adapters |
-| [06-multimodal-vision](06-multimodal-vision/) | Classical vision (colour, edges, Hough, HOG, Haar) · optical flow · detection, segmentation and pose · attention & self-supervision · vision-language auditing |
-| [07-ml-dl-foundation](07-ml-dl-foundation/) | Classical ML · gradient boosting · leakage & split discipline · ensembling · networks from scratch |
-| [08-time-series](08-time-series/) | Seasonal decomposition · stationarity · ARIMA / Prophet · periodic factors · rolling-origin backtesting |
+| [04-agents](04-agents/) | Prompt templates & memory · chain orchestration · ReAct agents · MCP / A2A · LangGraph architectures |
+| [05-fine-tuning](05-fine-tuning/) | Low-rank adaptation · supervised fine-tuning · reward-driven training · decode-time thinking budget · vision adapters |
+| [06-multimodal-vision](06-multimodal-vision/) | Classical vision (colour, edges, Hough, HOG, Haar) · optical flow · training mechanics & loss behaviour · detection, segmentation and pose · attention & self-supervision · vision-language auditing · split and submission audits |
+| [07-ml-dl-foundation](07-ml-dl-foundation/) | Classical ML · EDA pitfalls · gradient boosting · leakage & split discipline · thresholds · ensembling · networks from scratch up to frameworks |
+| [08-time-series](08-time-series/) | Seasonal decomposition · stationarity · ARIMA / Prophet · periodic factors · LSTM windowing · rolling-origin backtesting |
 | [09-lowcode-platforms](09-lowcode-platforms/) | Workflow engines from a declarative graph · node & plugin contracts · table knowledge bases · platform API protocol |
-| [10-projects](10-projects/) | Join grain & aggregation · reported columns and bands · tool return shapes · label leakage · sample units · retrieval backends · citation checks |
+| [10-projects](10-projects/) | Join grain & aggregation · reported columns and bands · tool return shapes · chart criteria & index alignment · control-chart rules · label leakage · sample units · cohort analysis · retrieval backends · citation checks |
+
+Where a script needs data, it either generates it with a fixed seed or reads a public
+dataset that the topic write-up links to instead of committing; only small source documents
+with no public download are kept in the repository. The figures and tables the scripts
+produce are kept in each module's `outputs/` folder, so every write-up can be read without
+running anything.
 
 ---
 
@@ -42,19 +42,34 @@ in each module's `outputs/` folder, so every write-up can be read without runnin
 pip install -r requirements.txt
 ```
 
+PyTorch is deliberately left out of that file, because the right build depends on your
+GPU. Modules 05 to 08 train on it, so install it before running those:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu128   # CUDA 12.8
+pip install torch                                                      # CPU only
+```
+
+`requirements.txt` says which module needs what, and which packages have to match your
+torch version.
+
 ### 2. Configure API keys
+
+Only the scripts that call a hosted model need a key. Modules 05 to 08 train and run
+locally and need none, so you can skip this step until you reach a module that asks.
 
 Copy `.env.example` to `.env` at the project root and fill in your keys:
 
 ```bash
-cp .env.example .env
+cp .env.example .env          # PowerShell: copy .env.example .env
 ```
 
-| Provider | Environment Variable | Best For |
-|----------|---------------------|----------|
-| DeepSeek | `DEEPSEEK_API_KEY` | Text / reasoning (primary) |
-| Google Gemini | `GEMINI_API_KEY` | Multimodal vision |
-| OpenAI | `OPENAI_API_KEY` | Universal fallback |
+| Variable | Purpose |
+|----------|---------|
+| `DEEPSEEK_API_KEY` | Text and reasoning, the primary provider |
+| `GEMINI_API_KEY` | Multimodal vision and long context |
+| `OPENAI_API_KEY` | Universal fallback |
+| `OPENAI_BASE_URL` | Where `OPENAI_API_KEY` is sent. Point it at another vendor's OpenAI-compatible endpoint to use that vendor's models instead |
 
 ### 3. Run any script
 
@@ -74,9 +89,6 @@ Install [Ollama](https://ollama.com/). Scripts pull the model themselves on firs
 python 01-llm-foundation/07_ollama_local_chat.py
 ```
 
-For raw-weight inference you also need PyTorch matching your GPU — see the notes in
-`requirements.txt`.
-
 ---
 
 ## Repository Layout
@@ -84,41 +96,15 @@ For raw-weight inference you also need PyTorch matching your GPU — see the not
 ```
 ai-playground/
 ├── README.md                     ← this index
-├── requirements.txt              ← unified dependencies for all modules
+├── requirements.txt              ← dependencies for all modules, torch excluded
 ├── .env.example                  ← template for API keys (never commit real keys)
 ├── .gitignore                    ← keeps data, secrets & model weights out of git
-│
-├── 01-llm-foundation/            LLM basics, prompt engineering, tool calling, local deployment
-│   ├── LLM-Foundation.md         topic write-up
-│   └── 01..08_*.py               scripts
-├── 02-rag/                       embeddings, vector DB, RAG pipelines, advanced recall
-│   ├── RAG-Retrieval-Augmented-Generation.md   topic write-up
-│   └── 01..13_*.py               scripts
-├── 03-text2sql/                  natural language to SQL, SQL agents, query safety
-│   ├── Text2SQL-Natural-Language-to-SQL.md     topic write-up
-│   └── 01..06_*.py               scripts
-├── 04-agents/                    chain orchestration, ReAct, MCP/A2A, LangGraph
-│   ├── Agent-Systems-Loops-Protocols-and-Topologies.md   topic write-up
-│   └── 01..07_*.py               scripts
-├── 05-fine-tuning/               low-rank adaptation, SFT, reward-driven training, vision adapters
-│   ├── Fine-Tuning-Low-Rank-Adaptation.md      topic write-up
-│   └── 01..07_*.py               scripts
-├── 06-multimodal-vision/         classical vision, optical flow, detection, segmentation, pose, VLM audits
-│   ├── Multimodal-Vision-From-Pixels-to-Models.md   topic write-up
-│   └── 01..14_*.py               scripts
-├── 07-ml-dl-foundation/          classical ML, gradient boosting, networks from scratch
-│   ├── Machine-Learning-and-Deep-Learning-Foundations.md   topic write-up
-│   └── 01..08_*.py               scripts
-├── 08-time-series/               stationarity, ARIMA/Prophet, seasonality, changepoints
-│   ├── Time-Series-Forecasting-Baselines-and-Backtests.md   topic write-up
-│   └── 01..07_*.py               scripts
-├── 09-lowcode-platforms/         workflow graphs, node & plugin contracts, table retrieval, platform APIs
-│   ├── Low-Code-Platforms-What-The-Canvas-Runs.md   topic write-up
-│   └── 01..05_*.py               scripts
-└── 10-projects/                  auditing what a finished pipeline actually computed
-    ├── Applied-Projects-The-Errors-That-Do-Not-Raise.md   topic write-up
-    └── 01..11_*.py               scripts
+└── 01-llm-foundation/ ... 10-projects/
 ```
+
+Every module folder has the same shape: one topic write-up and a set of flat, numbered
+scripts, plus an `outputs/` folder where the modules that produce figures keep them. The
+tables below list the scripts of each.
 
 ---
 
