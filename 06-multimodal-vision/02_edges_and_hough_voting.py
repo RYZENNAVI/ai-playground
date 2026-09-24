@@ -49,9 +49,7 @@ ROTATIONS = np.arange(-45, 46, 5)
 ANGLE_BIN = 5    # degrees per R-table bin, equal to the rotation step so a turn is a whole shift
 
 
-# ---------------------------------------------------------------------------
 # 1. The scene
-# ---------------------------------------------------------------------------
 
 def hesse_endpoints(rho, theta_deg, width=WIDTH, height=HEIGHT):
     """Two far-apart points on the line rho = x cos(theta) + y sin(theta).
@@ -90,9 +88,7 @@ def edge_scores(edges, boundary, tolerance=2.0):
     return precision, recall
 
 
-# ---------------------------------------------------------------------------
 # 2-5. Canny, stage by stage
-# ---------------------------------------------------------------------------
 
 def gaussian_kernel(size, sigma):
     """A size x size Gaussian sampled on integer offsets and normalised to sum to one."""
@@ -230,9 +226,7 @@ def scene_u8(image):
     return cv2.cvtColor(np.clip(image, 0, 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
 
 
-# ---------------------------------------------------------------------------
 # 6-7. Hough transforms for lines and circles
-# ---------------------------------------------------------------------------
 
 def hough_lines(edges, thetas_deg):
     """Accumulate votes in (rho, theta) space; every edge pixel votes once per angle.
@@ -327,9 +321,7 @@ def strongest_circles(accumulator, radii, count=10, centre_gap=10):
     return found
 
 
-# ---------------------------------------------------------------------------
 # 8-9. Generalised Hough transform
-# ---------------------------------------------------------------------------
 
 def match_circles(truths, found, centre_tol=3.0, radius_tol=2):
     """Pair each true circle with at most one detection, and each detection with at most one truth.
@@ -433,9 +425,7 @@ def ght_vote(table, points, angles, scale, rotation):
     return cv2.GaussianBlur(accumulator, (0, 0), 1.5)
 
 
-# ---------------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
 
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)

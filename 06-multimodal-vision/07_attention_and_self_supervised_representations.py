@@ -52,9 +52,7 @@ COMPARED = ("patch tokens", "convolutional tokens", "supervised ConvNet", "autoe
 LABELLED_PRETRAINING = ("patch tokens", "convolutional tokens", "supervised ConvNet")
 
 
-# ---------------------------------------------------------------------------
 # Data
-# ---------------------------------------------------------------------------
 
 def render_object(label, rng):
     """One 32x32 RGB image of the given class, on textured ground, in a random colour and pose."""
@@ -115,9 +113,7 @@ def load_cifar10(root, train_count, test_count, rng):
     return images[train], labels[train], images[test], labels[test]
 
 
-# ---------------------------------------------------------------------------
 # 1-2. Attention by hand
-# ---------------------------------------------------------------------------
 
 def attention_by_hand(q, k, v, heads):
     """Scaled dot-product attention, split across heads, written out in matrix form.
@@ -175,9 +171,7 @@ def build_blocks():
     return SelfAttention, EncoderBlock
 
 
-# ---------------------------------------------------------------------------
 # 3. Tokenisers and classifiers
-# ---------------------------------------------------------------------------
 
 def build_models(classes):
     """Every network this script trains, all reading 32x32x3 images."""
@@ -336,9 +330,7 @@ def build_models(classes):
             "contrastive without head": lambda: ContrastiveNet(False)}
 
 
-# ---------------------------------------------------------------------------
 # 4-7. Training objectives
-# ---------------------------------------------------------------------------
 
 def batches(count, batch, generator):
     """Shuffled index batches for one epoch."""
@@ -577,9 +569,7 @@ def fine_tune(encoder, x_train, y_train, x_test, y_test, classes, device, genera
     return time.perf_counter() - started, history, (predicted == y_test).float().mean().item(), width
 
 
-# ---------------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])

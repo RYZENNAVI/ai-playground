@@ -50,9 +50,7 @@ PCM_SIGMA, PAF_WIDTH, PEAK_THRESHOLD = 1.5, 1.0, 0.3
 POSE_SCENES = 200
 
 
-# ---------------------------------------------------------------------------
 # 1. Detection data and anchors
-# ---------------------------------------------------------------------------
 
 def box_iou(a, b):
     """IoU between every box in a (N, 4) and every box in b (M, 4), as (x1, y1, x2, y2)."""
@@ -129,9 +127,7 @@ def shape_iou(wh, anchors):
     return inter / (wh[0] * wh[1] + anchors[:, 0] * anchors[:, 1] - inter)
 
 
-# ---------------------------------------------------------------------------
 # 2. Encoding and decoding
-# ---------------------------------------------------------------------------
 
 def encode(boxes, labels, anchors, stride=STRIDE, grid=GRID):
     """Write each box into the (anchor, row, column) slot that is responsible for it.
@@ -167,9 +163,7 @@ def decode_targets(target, anchors, stride=STRIDE):
     return np.stack([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2], 1), t[:, 5:].argmax(1)
 
 
-# ---------------------------------------------------------------------------
 # 3-6. The detector
-# ---------------------------------------------------------------------------
 
 def build_detector():
     """Five 3x3 conv-BN-LeakyReLU blocks with four 2x2 pools (160 -> 10), then a 1x1 prediction head."""
@@ -310,9 +304,7 @@ def mean_average_precision(results, truth, iou_threshold=0.5):
     return per_class, curves
 
 
-# ---------------------------------------------------------------------------
 # 7. COCO as grid targets
-# ---------------------------------------------------------------------------
 
 def coco_boxes(annotation_file):
     """Non-crowd boxes per image, letterboxed to COCO_INPUT, with category names."""
@@ -335,9 +327,7 @@ def letterbox_boxes(image, boxes):
     return out, scale, (pad_x, pad_y)
 
 
-# ---------------------------------------------------------------------------
 # 8-9. Part confidence maps, part affinity fields and assembly
-# ---------------------------------------------------------------------------
 
 def synthetic_person(rng, x, y, height):
     """17 COCO-ordered keypoints of a standing figure with random arm and leg angles."""
@@ -562,9 +552,7 @@ def print_assembly(totals):
         print(f"  {name:<28}{made:>12}{correct:>9}{correct / max(made, 1):>11.1%}{correct / max(visible_limbs, 1):>9.1%}")
 
 
-# ---------------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])

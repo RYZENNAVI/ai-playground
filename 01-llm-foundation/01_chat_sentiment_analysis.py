@@ -45,9 +45,7 @@ else:
 client = OpenAI(api_key=api_key, base_url=base_url)
 
 
-# ---------------------------------------------------------------------------
 # 1. Plain question
-# ---------------------------------------------------------------------------
 
 def chat(user_prompt: str, system_prompt: str = "You are a helpful assistant", model: str = default_model) -> str:
     """Send one system message and one user message, and return the reply."""
@@ -62,9 +60,7 @@ def chat(user_prompt: str, system_prompt: str = "You are a helpful assistant", m
     return response.choices[0].message.content
 
 
-# ---------------------------------------------------------------------------
 # 2. Sentiment labels
-# ---------------------------------------------------------------------------
 
 def sentiment_analysis(review: str, model: str = default_model) -> str:
     """Ask the model to label a product review as positive, negative or neutral."""

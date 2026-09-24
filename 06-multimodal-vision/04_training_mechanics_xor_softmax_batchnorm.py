@@ -41,9 +41,7 @@ MLP_HIDDEN, MLP_EPOCHS, MLP_BATCH, MLP_LEARNING_RATE = 256, 5, 64, 0.1
 CNN_EPOCHS, CNN_BATCH, CNN_LEARNING_RATE, DROPOUT = 3, 64, 1e-3, 0.3
 
 
-# ---------------------------------------------------------------------------
 # 1-2. XOR
-# ---------------------------------------------------------------------------
 
 def sigmoid(x):
     """Squash into (0, 1); its derivative in terms of its own output is s * (1 - s)."""
@@ -104,9 +102,7 @@ def train_xor(seeds, hidden, scale, epochs=XOR_EPOCHS, learning_rate=XOR_LEARNIN
     return solved_at, history, p
 
 
-# ---------------------------------------------------------------------------
 # 3. Softmax and cross-entropy
-# ---------------------------------------------------------------------------
 
 def softmax_naive(z):
     """exp(z) / sum(exp(z)), exactly as written."""
@@ -132,9 +128,7 @@ def cross_entropy(z, y_onehot):
     return float(-(y_onehot * log_probs).sum(axis=-1).mean())
 
 
-# ---------------------------------------------------------------------------
 # Digit images
-# ---------------------------------------------------------------------------
 
 FONTS = (cv2.FONT_HERSHEY_SIMPLEX, cv2.FONT_HERSHEY_DUPLEX, cv2.FONT_HERSHEY_COMPLEX,
          cv2.FONT_HERSHEY_TRIPLEX, cv2.FONT_HERSHEY_SCRIPT_SIMPLEX)
@@ -188,9 +182,7 @@ def load_mnist(root):
             read_idx(folder / "t10k-images-idx3-ubyte"), read_idx(folder / "t10k-labels-idx1-ubyte"))
 
 
-# ---------------------------------------------------------------------------
 # 4. A numpy multilayer perceptron
-# ---------------------------------------------------------------------------
 
 def mlp_forward(p, x):
     """784 -> ReLU(256) -> 10 logits."""
@@ -228,9 +220,7 @@ def train_mlp(x_train, y_train, x_test, y_test, rng):
     return p, history
 
 
-# ---------------------------------------------------------------------------
 # 5-7. A convolutional network in PyTorch
-# ---------------------------------------------------------------------------
 
 def build_cnn():
     """Three convolution blocks and two fully connected layers."""
@@ -295,9 +285,7 @@ def predictions(model, x, batch=1000):
         return torch.cat([model(x[s:s + batch]).argmax(1) for s in range(0, len(x), batch)])
 
 
-# ---------------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])

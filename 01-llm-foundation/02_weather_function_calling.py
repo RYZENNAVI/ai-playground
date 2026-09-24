@@ -1,10 +1,14 @@
-"""Answer a weather question the model cannot know, by letting it call a local function.
+"""This script asks a chat model about the weather in two cities. The model has no live
+weather data, so it cannot answer on its own. Instead it asks the script to call a local
+function, get_current_weather, and the script sends the results back.
 
-Demonstrates the four messages a tool call takes:
-    1. Send the question together with the JSON schema of one weather function.
-    2. Read the tool calls the model returns instead of an answer, here one per city.
-    3. Run the function locally against a fixed table of temperatures.
-    4. Send each result back as a "tool" message and print the answer built from them.
+The script uses DeepSeek when DEEPSEEK_API_KEY is set, and OpenAI otherwise. The run
+prints three steps:
+    1. The question, sent together with the JSON schema of the weather function.
+    2. Each tool call the model returns instead of an answer, usually one per city, and
+       the result of running it. The function reads a fixed table of temperatures, so
+       the numbers are made up.
+    3. The final answer, which the model writes from those results.
 """
 
 import json
@@ -12,27 +16,24 @@ import os
 import sys
 from openai import OpenAI
 
-# Automatically load .env file if python-dotenv is installed
+# Read the keys from the .env file at the repository root, if python-dotenv is installed.
 try:
     from dotenv import load_dotenv
     load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 except ImportError:
     pass
 
-# Ensure UTF-8 output on Windows terminal (model replies may contain emoji)
+# Ensure UTF-8 output on the Windows terminal (model replies may contain emoji)
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
 
-# ---------------------------------------------------------------------------
-# Client Setup: DeepSeek (Primary) with OpenAI Fallback
-# ---------------------------------------------------------------------------
 api_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
 
 if not api_key:
-    raise RuntimeError("No API key found! Please set DEEPSEEK_API_KEY or OPENAI_API_KEY.")
+    raise SystemExit("Set DEEPSEEK_API_KEY or OPENAI_API_KEY in .env and retry.")
 
 if os.getenv("DEEPSEEK_API_KEY"):
     base_url = "https://api.deepseek.com"
@@ -46,11 +47,9 @@ else:
 client = OpenAI(api_key=api_key, base_url=base_url)
 
 
-# ---------------------------------------------------------------------------
-# Local Tool Implementation (Stub)
-# ---------------------------------------------------------------------------
-def get_current_weather(location: str, unit: str = "celsius") -> str:
-    """Mock weather service returning JSON string."""
+def get_current_weather(location: str) -> str:
+    """Return a made-up weather report for one city as a JSON string. Cities that are
+    not in the table get 20 degrees Celsius."""
     temperatures = {
         "Dalian": 10,
         "Shanghai": 36,
@@ -63,7 +62,7 @@ def get_current_weather(location: str, unit: str = "celsius") -> str:
         {
             "location": location,
             "temperature": temp,
-            "unit": unit,
+            "unit": "celsius",
             "forecast": ["Sunny", "Light breeze"],
         },
         ensure_ascii=False,
@@ -74,9 +73,6 @@ AVAILABLE_TOOLS = {
     "get_current_weather": get_current_weather
 }
 
-# ---------------------------------------------------------------------------
-# OpenAI Tools Specification
-# ---------------------------------------------------------------------------
 TOOLS_SCHEMA = [
     {
         "type": "function",
@@ -90,11 +86,6 @@ TOOLS_SCHEMA = [
                         "type": "string",
                         "description": "City name, e.g. Dalian, Shanghai, or San Francisco",
                     },
-                    "unit": {
-                        "type": "string",
-                        "enum": ["celsius", "fahrenheit"],
-                        "default": "celsius",
-                    },
                 },
                 "required": ["location"],
             },
@@ -104,11 +95,12 @@ TOOLS_SCHEMA = [
 
 
 def run_tool_conversation(query: str = "What is the weather like in Dalian right now?", model: str = default_model):
-    """Run a complete function calling loop."""
+    """Ask one question, run the tool calls the model requests, and return its final answer."""
+    # 1. Question
+    print("--- 1. Question ---")
     print(f"Query: {query!r}")
     messages = [{"role": "user", "content": query}]
 
-    # Step 1: Send request with tools schema
     response = client.chat.completions.create(
         model=model,
         messages=messages,
@@ -118,15 +110,15 @@ def run_tool_conversation(query: str = "What is the weather like in Dalian right
     response_message = response.choices[0].message
     tool_calls = response_message.tool_calls
 
-    # Step 2: Check if model wants to call a tool
+    # 2. Tool calls and results
+    print("\n--- 2. Tool calls and results ---")
     if not tool_calls:
         print("Model did not request any tool call.")
         return response_message.content
 
-    # Append assistant's response to message history
+    # The tool results must follow the assistant message that requested them.
     messages.append(response_message)
 
-    # Step 3: Execute tool calls locally
     for tool_call in tool_calls:
         fn_name = tool_call.function.name
         fn_args = json.loads(tool_call.function.arguments)
@@ -146,7 +138,7 @@ def run_tool_conversation(query: str = "What is the weather like in Dalian right
                 }
             )
 
-    # Step 4: Send tool results back to model for final natural answer
+    # 3. Final answer
     final_response = client.chat.completions.create(
         model=model,
         messages=messages,
@@ -155,6 +147,6 @@ def run_tool_conversation(query: str = "What is the weather like in Dalian right
 
 
 if __name__ == "__main__":
-    print(f"=== Universal Function Calling Demo ({default_model}) ===")
+    print(f"=== Weather function calling ({default_model}) ===")
     final_answer = run_tool_conversation("How is the weather in Shanghai and Shenzhen today?")
-    print(f"\nFinal Response:\n{final_answer}")
+    print(f"\n--- 3. Final answer ---\n{final_answer}")

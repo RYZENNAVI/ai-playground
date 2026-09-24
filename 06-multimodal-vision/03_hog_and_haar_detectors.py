@@ -42,9 +42,7 @@ TRAIN_PER_CLASS, TEST_PER_CLASS = 2000, 1000
 STRONG_THRESHOLDS = (0.3, 0.4, 0.5, 0.6, 0.7)
 
 
-# ---------------------------------------------------------------------------
 # 1. Synthetic windows
-# ---------------------------------------------------------------------------
 
 def clutter(rng, h, w):
     """Blurred texture with a few random strokes, the background every window starts from."""
@@ -138,9 +136,7 @@ def non_face_window(rng):
     return (img + rng.normal(0, 0.04, img.shape)).astype(np.float32)
 
 
-# ---------------------------------------------------------------------------
 # 2-4. Gradients, cell histograms and the HOG descriptor
-# ---------------------------------------------------------------------------
 
 def gradients(img):
     """Sobel magnitude and unsigned direction in degrees on [0, 180)."""
@@ -227,9 +223,7 @@ def hog_descriptor(img):
     return descriptor / np.linalg.norm(descriptor)
 
 
-# ---------------------------------------------------------------------------
 # 5-6. Haar features and the integral image
-# ---------------------------------------------------------------------------
 
 def enumerate_two_rect(size):
     """Every horizontal and vertical two-rectangle feature as (vertical, x, y, w, h).
@@ -301,9 +295,7 @@ def normalise_windows(windows):
     return ((windows - mean[:, None, None]) / std[:, None, None]).astype(np.float32)
 
 
-# ---------------------------------------------------------------------------
 # 7-8. AdaBoost
-# ---------------------------------------------------------------------------
 
 def best_stumps(values, order, sorted_values, weights, labels, chunk=2000):
     """For every feature, the threshold and polarity with the lowest weighted error.
@@ -459,9 +451,7 @@ def draw_features(face, features, stumps, scale=15):
     return canvas
 
 
-# ---------------------------------------------------------------------------
 # Drawing
-# ---------------------------------------------------------------------------
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -573,9 +563,7 @@ def score_histogram(scores, labels, name, height=260, width=640):
     return labelled(canvas, f"{name}: green faces, red non-faces; at 0.5, {found:.1%} found, {alarms:.1%} false alarms")
 
 
-# ---------------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])

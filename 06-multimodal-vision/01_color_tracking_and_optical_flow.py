@@ -59,9 +59,7 @@ LARGE_SHIFT = (11.3, 6.8)
 LK_WINDOW = 21
 
 
-# ---------------------------------------------------------------------------
 # 1. The clip
-# ---------------------------------------------------------------------------
 
 def object_state(t):
     """Return centre, semi-axes and angle of the ellipse in frame t."""
@@ -135,9 +133,7 @@ def iou(a, b):
     return float(np.logical_and(a, b).sum() / union) if union else 1.0
 
 
-# ---------------------------------------------------------------------------
 # 2-3. Colour thresholds and morphology
-# ---------------------------------------------------------------------------
 
 def bgr_box_mask(frame):
     """Keep pixels whose B, G and R each fall inside a fixed box in the colour cube.
@@ -185,9 +181,7 @@ def component_count(mask, connectivity=8):
     return cv2.connectedComponents(mask.astype(np.uint8), connectivity=connectivity)[0] - 1
 
 
-# ---------------------------------------------------------------------------
 # 4. Connected components by hand
-# ---------------------------------------------------------------------------
 
 def neighbour_offsets(connectivity, causal):
     """Neighbours already visited in raster order (causal) or all of them."""
@@ -301,9 +295,7 @@ def labelling_test_mask(frame):
     return mask > 0
 
 
-# ---------------------------------------------------------------------------
 # 6-8. Histogram back-projection, mean shift, CAMSHIFT
-# ---------------------------------------------------------------------------
 
 def saturation_gate(hsv):
     """Pixels saturated and bright enough for their hue to mean something."""
@@ -403,9 +395,7 @@ def coverage(mask, window):
     return float(mask[y:y + h, x:x + w].sum() / mask.sum())
 
 
-# ---------------------------------------------------------------------------
 # 9. Harris corners
-# ---------------------------------------------------------------------------
 
 def corner_scene():
     """A grey image with known polygon corners and a disk that has none."""
@@ -457,9 +447,7 @@ def match_points(truth, found, tolerance=4.0):
     return int((gaps.min(axis=1) <= tolerance).sum())
 
 
-# ---------------------------------------------------------------------------
 # 10-11. Block matching and Lucas-Kanade
-# ---------------------------------------------------------------------------
 
 def texture_scene(rng):
     """Blurred noise with a few bright squares: texture at every scale a block might see."""
@@ -549,9 +537,7 @@ def flow_error(flow, truth):
     return np.linalg.norm(flow - np.array(truth, np.float32), axis=1)
 
 
-# ---------------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
 
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)

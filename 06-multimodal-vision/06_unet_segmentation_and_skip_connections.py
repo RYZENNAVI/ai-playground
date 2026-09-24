@@ -36,9 +36,7 @@ VOC_CLASSES = ("background", "aeroplane", "bicycle", "bird", "boat", "bottle", "
                "train", "tvmonitor")
 
 
-# ---------------------------------------------------------------------------
 # 1-2. Data and the constant baseline
-# ---------------------------------------------------------------------------
 
 def render_segmentation(rng):
     """One image and its exact label map: shapes painted on texture, each with its own class."""
@@ -97,9 +95,7 @@ def boundary_band(labels, width=BOUNDARY_BAND):
     return cv2.dilate(edges.astype(np.uint8), kernel, iterations=width - 1) > 0
 
 
-# ---------------------------------------------------------------------------
 # 3. Three networks
-# ---------------------------------------------------------------------------
 
 def make_models(classes, in_channels=3):
     """A UNet, the same shape without skips, and a network that stays at full resolution."""
@@ -183,9 +179,7 @@ def receptive_field(halvings, blocks_per_level=2, kernel=3):
     return field
 
 
-# ---------------------------------------------------------------------------
 # 4-6. Training and scoring
-# ---------------------------------------------------------------------------
 
 def score_model(model, x_test, y_test, classes, device, ignore=None, with_boundary=True):
     """Confusion matrices over the test set, overall and within the boundary band."""
@@ -311,9 +305,7 @@ def tile_rows(rows):
     return np.vstack(stacked[:-1])
 
 
-# ---------------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])

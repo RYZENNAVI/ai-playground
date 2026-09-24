@@ -375,14 +375,14 @@ result = response.choices[0].message.content
 ### 12.2 Case: Function Calling (weather lookup)
 *   **Technical point**: the model has no real-time data and must borrow external tools.
 *   **The five-step workflow**:
-    1.  **Send the user query**: `query = "How is the weather in Shanghai and Shenzhen today?"`, build `messages` and make the request.
-    2.  **Check whether a function call is needed**: `if hasattr(message, 'function_call') and message.function_call:`, then obtain `tool_name` and `arguments` (parsed with `json.loads`).
-    3.  **Execute the function**: `tool_response = get_current_weather(location=..., unit=...)`
-    4.  **Add the result to the conversation**: `tool_info = {"role": "function", "name": tool_name, "content": tool_response}`, then append it.
-    5.  **Let the model produce the final answer**: make the request again.
-*   **Terminology**: **function call** refers to the act of invoking a tool, while **function** refers to the concrete tool you wrote — two phrasings of the same concept.
-*   **Debugging tip**: test the call flow with fixed values first and wire up the live interface later; Qwen-MAX is the recommended model.
-*   **Error handling**: watch for exceptions such as `KeyError`, and always check attribute existence with `hasattr`.
+    1.  **Send the user query**: `query = "How is the weather in Shanghai and Shenzhen today?"`, build `messages` and make the request with `tools=TOOLS_SCHEMA`.
+    2.  **Check whether a tool call is needed**: `tool_calls = response.choices[0].message.tool_calls`. If it is empty, the model answered directly. Otherwise each call carries a `name` and JSON `arguments` (parsed with `json.loads`). This run returns two calls, one per city.
+    3.  **Execute the function**: `tool_output = get_current_weather(**fn_args)`
+    4.  **Add the result to the conversation**: append the assistant message first, then one `{"role": "tool", "tool_call_id": tool_call.id, "name": fn_name, "content": tool_output}` per call.
+    5.  **Let the model produce the final answer**: make the request again with the whole history.
+*   **Terminology**: the older API called this *function calling* and used a `function_call` field with a `function` role. The current API calls it *tool calling* and uses `tool_calls` with a `tool` role. The script uses the current form.
+*   **Debugging tip**: test the call flow with fixed values first and wire up the live interface later. The script's `get_current_weather` is exactly that: a fixed table of temperatures.
+*   **Error handling**: every call in `tool_calls` needs its own `tool` message with the matching `tool_call_id`. If one is missing, the second request fails.
 
 ### 12.3 Case: Table Extraction (multimodal Qwen-VL)
 *   **Technical point**: pass an image URL plus an extraction instruction and let a vision-language model (VLM) perform complex OCR and document structure understanding, emitting JSON directly.
@@ -700,7 +700,7 @@ The 8 scripts under `ai-playground/01-llm-foundation/`, all verified by actually
 | # | Script | Knowledge covered |
 | :---: | :--- | :--- |
 | 01 | `01_chat_sentiment_analysis.py` | The chat protocol (system/user/assistant) + zero-shot sentiment classification |
-| 02 | `02_weather_function_calling.py` | The five-step function-calling loop, including parallel tool calls |
+| 02 | `02_weather_function_calling.py` | The five tool-calling steps, with one call per city in a single reply |
 | 03 | `03_table_multimodal_extraction.py` | Multimodal vision: table image → structured JSON |
 | 04 | `04_ops_incident_handler.py` | Agent tool loop — multi-step diagnosis of an operations alert |
 | 05 | `05_prompt_engineering.py` | Four paradigms: structured templates, JSON mode, CoT, meta-prompting |

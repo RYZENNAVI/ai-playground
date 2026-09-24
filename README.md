@@ -113,13 +113,13 @@ tables below list the scripts of each.
 | # | Script | Feature |
 |---|--------|---------|
 | 01 | `01_chat_sentiment_analysis.py` | Chat protocol & 3-way sentiment classification |
-| 02 | `02_weather_function_calling.py` | Tool calling — a local weather function, called once per city |
-| 03 | `03_table_multimodal_extraction.py` | Multimodal vision — table image → JSON |
-| 04 | `04_ops_incident_handler.py` | AIOps agent tool loop — incident diagnosis |
+| 02 | `02_weather_function_calling.py` | Tool calling: a local weather function, called once per city |
+| 03 | `03_table_multimodal_extraction.py` | Multimodal vision: table image → JSON |
+| 04 | `04_ops_incident_handler.py` | AIOps agent tool loop: incident diagnosis |
 | 05 | `05_prompt_engineering.py` | Structured templates, JSON mode, CoT, meta-prompting |
 | 06 | `06_web_search_agent.py` | Search agent over the Wikipedia API, capped at three rounds, with a `tool_choice` circuit breaker |
-| 07 | `07_ollama_local_chat.py` | Local deployment via Ollama — auto model pull, streaming, `<think>` split, FastAPI gateway |
-| 08 | `08_transformers_inference.py` | Raw-weight inference with Transformers — HF download, GPU placement, chat template, throughput |
+| 07 | `07_ollama_local_chat.py` | Local deployment via Ollama: auto model pull, streaming, `<think>` split, FastAPI gateway |
+| 08 | `08_transformers_inference.py` | Raw-weight inference with Transformers: HF download, GPU placement, chat template, throughput |
 
 See [LLM-Foundation.md](01-llm-foundation/LLM-Foundation.md) for the concepts behind these scripts.
 
@@ -129,16 +129,16 @@ See [LLM-Foundation.md](01-llm-foundation/LLM-Foundation.md) for the concepts be
 
 | # | Script | Feature |
 |---|--------|---------|
-| 01 | `01_tfidf_hotel_recommender.py` | TF-IDF + n-grams — content-based recommendation over hotel descriptions |
+| 01 | `01_tfidf_hotel_recommender.py` | TF-IDF + n-grams: content-based recommendation over hotel descriptions |
 | 02 | `02_word2vec_similarity.py` | Word2Vec training, persistence and vector arithmetic |
 | 03 | `03_embedding_faiss_metadata.py` | Embeddings into FAISS with metadata, Matryoshka dimensions, persistence |
-| 04 | `04_embedding_models_compare.py` | Two local models compared — pooling is a property of the model |
+| 04 | `04_embedding_models_compare.py` | Two local models compared: pooling is a property of the model |
 | 05 | `05_chunking_strategies.py` | Five chunking strategies scored side by side |
 | 06 | `06_chatpdf_langchain_faiss.py` | PDF question answering with LangChain, FAISS and page-level citations |
-| 07 | `07_disney_multimodal_rag.py` | Multimodal RAG by hand — dual indexes, CLIP, OCR, vision fallback |
+| 07 | `07_disney_multimodal_rag.py` | Multimodal RAG by hand: dual indexes, CLIP, OCR, vision fallback |
 | 08 | `08_query_rewriting.py` | Five rewrite types, single-prompt intent detection, search-engine rewriting |
-| 09 | `09_rerank_and_multiquery.py` | Two-stage retrieval — BM25 recall then cross-encoder rerank, with query expansion |
-| 10 | `10_kb_question_generation.py` | Doc2Query — generated questions as a second retrieval index |
+| 09 | `09_rerank_and_multiquery.py` | Two-stage retrieval: BM25 recall then cross-encoder rerank, with query expansion |
+| 10 | `10_kb_question_generation.py` | Doc2Query: generated questions as a second retrieval index |
 | 11 | `11_kb_curation.py` | Conversation distillation and knowledge-base health auditing |
 | 12 | `12_kb_version_management.py` | Version hashing, set-based diffing, A/B and regression testing |
 | 13 | `13_graphrag_vs_vector.py` | One multi-hop question asked of a vector index and of a knowledge graph |
@@ -151,12 +151,12 @@ See [RAG-Retrieval-Augmented-Generation.md](02-rag/RAG-Retrieval-Augmented-Gener
 
 | # | Script | Feature |
 |---|--------|---------|
-| 01 | `01_build_insurance_db.py` | Local SQLite from a fixed seed — five tables, commented DDL, idempotent rebuild |
+| 01 | `01_build_insurance_db.py` | Local SQLite from a fixed seed: five tables, commented DDL, idempotent rebuild |
 | 02 | `02_prompt_to_sql.py` | Three prompt styles scored on rows *and* on stored-literal use, then retrieval-augmented |
-| 03 | `03_langchain_sql_agent.py` | LangChain SQLDatabaseToolkit — what reflection gains, and the comments it drops |
-| 04 | `04_vanna_text2sql.py` | Vanna over a local vector store — DDL, documentation and verified pairs, with corrections |
+| 03 | `03_langchain_sql_agent.py` | LangChain SQLDatabaseToolkit: what reflection gains, and the comments it drops |
+| 04 | `04_vanna_text2sql.py` | Vanna over a local vector store: DDL, documentation and verified pairs, with corrections |
 | 05 | `05_sql_quality_gate.py` | Screening, static rules, second-opinion review, read-only execution, benchmark by join depth |
-| 06 | `06_sql_agent_with_tools.py` | Tool-calling agent — query, chart, linear fit and driver ranking in one loop |
+| 06 | `06_sql_agent_with_tools.py` | Tool-calling agent: query, chart, linear fit and driver ranking in one loop |
 
 See [Text2SQL-Natural-Language-to-SQL.md](03-text2sql/Text2SQL-Natural-Language-to-SQL.md) for the concepts behind these scripts.
 
@@ -167,12 +167,12 @@ See [Text2SQL-Natural-Language-to-SQL.md](03-text2sql/Text2SQL-Natural-Language-
 | # | Script | Feature |
 |---|--------|---------|
 | 01 | `01_prompt_templates_and_memory.py` | Templates, role-split messages, and a conversation that survives between calls |
-| 02 | `02_lcel_composition.py` | Pipe-operator composition — retries, local steps, parallel branches, routing, streaming |
-| 03 | `03_react_loop_from_scratch.py` | Reason-and-act by hand — no framework, plus the run where the tool list is withheld |
-| 04 | `04_tool_agent_diagnosis.py` | The same loop inside a framework — typed tools, step budget, and vague descriptions compared |
-| 05 | `05_mcp_client_and_server.py` | Both halves of the Model Context Protocol — stdio server, handshake, schema translation |
-| 06 | `06_a2a_agent_protocol.py` | Agent-to-agent delegation — capability card, task submission, schema and auth rejections |
-| 07 | `07_langgraph_topologies.py` | One state, five nodes, two topologies — fixed pipeline against a conditional router |
+| 02 | `02_lcel_composition.py` | Pipe-operator composition: retries, local steps, parallel branches, routing, streaming |
+| 03 | `03_react_loop_from_scratch.py` | Reason-and-act by hand: no framework, plus the run where the tool list is withheld |
+| 04 | `04_tool_agent_diagnosis.py` | The same loop inside a framework: typed tools, step budget, and vague descriptions compared |
+| 05 | `05_mcp_client_and_server.py` | Both halves of the Model Context Protocol: stdio server, handshake, schema translation |
+| 06 | `06_a2a_agent_protocol.py` | Agent-to-agent delegation: capability card, task submission, schema and auth rejections |
+| 07 | `07_langgraph_topologies.py` | One state, five nodes, two topologies: fixed pipeline against a conditional router |
 
 See [Agent-Systems-Loops-Protocols-and-Topologies.md](04-agents/Agent-Systems-Loops-Protocols-and-Topologies.md) for the concepts behind these scripts.
 
@@ -183,10 +183,10 @@ See [Agent-Systems-Loops-Protocols-and-Topologies.md](04-agents/Agent-Systems-Lo
 | # | Script | Feature |
 |---|--------|---------|
 | 01 | `01_svd_image_compression.py` | Rank-k reconstruction, paired sign flips, storage accounting, and why energy share flatters |
-| 02 | `02_als_low_rank_factorization.py` | Alternating least squares on a masked matrix — the penalised objective against the printed error |
+| 02 | `02_als_low_rank_factorization.py` | Alternating least squares on a masked matrix: the penalised objective against the printed error |
 | 03 | `03_lora_low_rank_hypothesis.py` | An unconstrained weight update, decomposed and compared against the frozen weight and noise, then re-measured as the task widens |
-| 04 | `04_lora_sft_instruction_tuning.py` | Supervised tuning end to end — rule-made labels, prompt masking, scored against a prompted-rule baseline, save, reload, merge |
-| 05 | `05_grpo_reward_shaping.py` | Group-relative policy optimisation by hand — five rewards, advantages, KL against the base |
+| 04 | `04_lora_sft_instruction_tuning.py` | Supervised tuning end to end: rule-made labels, prompt masking, scored against a prompted-rule baseline, save, reload, merge |
+| 05 | `05_grpo_reward_shaping.py` | Group-relative policy optimisation by hand: five rewards, advantages, KL against the base |
 | 06 | `06_thinking_budget_control.py` | Capping and extending a reasoning model's deliberation at decode time, without training |
 | 07 | `07_vision_lora_gauge_reading.py` | A vision-language adapter on rendered panels, scored field by field |
 
@@ -212,7 +212,7 @@ See [Fine-Tuning-Low-Rank-Adaptation.md](05-fine-tuning/Fine-Tuning-Low-Rank-Ada
 | 10 | `10_video_keyframe_understanding.py` | A synthesised clip read by keyframe sampling, with the localisation error the stride buys |
 | 11 | `11_document_layout_audit.py` | A PDF built from a known structure, parsed back, and its headings reconciled |
 | 12 | `12_conv_kernels_and_feature_maps.py` | One kernel checked against nn.Conv2d by hand, then convolution, activation and pooling |
-| 13 | `13_cnn_input_resolution_mismatch.py` | A 224-shaped stem on a 32x32 input — what the mismatch costs, and what it does not |
+| 13 | `13_cnn_input_resolution_mismatch.py` | A 224-shaped stem on a 32x32 input: what the mismatch costs, and what it does not |
 | 14 | `14_yolo_split_audit_and_submission.py` | A detection split audited before training, and two submission edits that move no box |
 
 See [Multimodal-Vision-From-Pixels-to-Models.md](06-multimodal-vision/Multimodal-Vision-From-Pixels-to-Models.md) for the concepts behind these scripts.
@@ -271,9 +271,9 @@ See [Low-Code-Platforms-What-The-Canvas-Runs.md](09-lowcode-platforms/Low-Code-P
 | # | Script | Feature |
 |---|--------|---------|
 | 01 | `01_build_project_datasets.py` | Five sources generated from an explicit specification, with the answer to every later claim printed alongside them |
-| 02 | `02_join_grain_and_aggregation_audit.py` | A join at the wrong grain, and the same year total three ways — one of them 197x the truth and ranking the districts differently |
+| 02 | `02_join_grain_and_aggregation_audit.py` | A join at the wrong grain, and the same year total three ways: one of them 197x the truth and ranking the districts differently |
 | 03 | `03_dashboard_metrics_and_cache.py` | A clamped ratio column, a band that drops 1,276 customers, and two cache-freshness rules that disagree once the source changes |
-| 04 | `04_tool_return_shapes.py` | One question, five return shapes, scored against a computed answer — the shape that answers it is the smallest one |
+| 04 | `04_tool_return_shapes.py` | One question, five return shapes, scored against a computed answer: the shape that answers it is the smallest one |
 | 05 | `05_chart_criterion_and_index_alignment.py` | A chart rule reading rows where the axis needs distinct values, and a column that arrives mostly populated and entirely misdated |
 | 06 | `06_bollinger_and_spc_rules.py` | A rolling band reported with the numbers behind each flag, and eight control rules, seven of them run-based, that catch different days rather than more |
 | 07 | `07_label_leakage_and_importance_views.py` | A label one column and one threshold reproduce, and four importance measures that disagree on eleven features out of twelve |
