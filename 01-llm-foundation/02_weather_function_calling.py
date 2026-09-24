@@ -8,7 +8,7 @@ prints three steps:
     2. Each tool call the model returns instead of an answer, usually one per city, and
        the result of running it. The function reads a fixed table of temperatures, so
        the numbers are made up.
-    3. The final answer, which the model writes from those results.
+    3. The final answer.
 """
 
 import json
