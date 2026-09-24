@@ -18,9 +18,7 @@ import requests
 # Automatically load .env file if python-dotenv is installed
 try:
     from dotenv import load_dotenv
-    load_dotenv()
     load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
-    load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 except ImportError:
     pass
 

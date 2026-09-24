@@ -1,53 +1,56 @@
-"""Send one chat request, then use the same call as a three-way sentiment classifier.
+"""This script sends two kinds of request to a chat model. The first is an ordinary
+question. The second asks the model to label a product review as positive, negative
+or neutral. Both use the same API call but different system messages.
 
-Demonstrates that classification needs no special API, only a system message:
-    1. Read the key and base URL from the environment, preferring DeepSeek over OpenAI.
-    2. Send a plain user message and print the reply.
-    3. Put the labelling rule in a system message and classify three product reviews.
-    4. Keep the temperature at 0.1 so the same review gets the same label on every run.
+The script uses DeepSeek when DEEPSEEK_API_KEY is set, and OpenAI otherwise. The run
+prints two parts:
+    1. A plain question and the model's reply.
+    2. Three product reviews and the label the model gives each one. The labelling rule
+       is in the system message, and the temperature is 0.1, so a review gets the same
+       label almost every time.
 """
 
 import os
 import sys
 from openai import OpenAI
 
-# Automatically load .env file if python-dotenv is installed
+# Read the keys from the .env file at the repository root, if python-dotenv is installed.
 try:
     from dotenv import load_dotenv
-    load_dotenv()
     load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
-    load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 except ImportError:
     pass
 
-# Ensure UTF-8 output on Windows terminal (model replies may contain emoji)
+# Ensure UTF-8 output on the Windows terminal (model replies may contain emoji)
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
 
-# ---------------------------------------------------------------------------
-# Client Setup: DeepSeek (Primary) with OpenAI Fallback
-# ---------------------------------------------------------------------------
 api_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
 
 if not api_key:
-    raise RuntimeError("No API key found! Please set DEEPSEEK_API_KEY or OPENAI_API_KEY in environment or .env file.")
+    raise SystemExit("Set DEEPSEEK_API_KEY or OPENAI_API_KEY in .env and retry.")
 
 if os.getenv("DEEPSEEK_API_KEY"):
-    default_base_url = "https://api.deepseek.com"
+    base_url = "https://api.deepseek.com"
     default_model = "deepseek-chat"
 else:
-    default_base_url = "https://api.openai.com/v1"
+    # OPENAI_BASE_URL belongs to OPENAI_API_KEY only, so a DeepSeek key is never
+    # sent to whatever endpoint that variable points at.
+    base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
     default_model = "gpt-4o-mini"
 
-base_url = os.getenv("OPENAI_BASE_URL", default_base_url)
 client = OpenAI(api_key=api_key, base_url=base_url)
 
 
+# ---------------------------------------------------------------------------
+# 1. Plain question
+# ---------------------------------------------------------------------------
+
 def chat(user_prompt: str, system_prompt: str = "You are a helpful assistant", model: str = default_model) -> str:
-    """One-shot chat completion using the universal OpenAI SDK."""
+    """Send one system message and one user message, and return the reply."""
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
@@ -59,8 +62,12 @@ def chat(user_prompt: str, system_prompt: str = "You are a helpful assistant", m
     return response.choices[0].message.content
 
 
+# ---------------------------------------------------------------------------
+# 2. Sentiment labels
+# ---------------------------------------------------------------------------
+
 def sentiment_analysis(review: str, model: str = default_model) -> str:
-    """Classify a product review as positive, negative, or neutral using a system prompt."""
+    """Ask the model to label a product review as positive, negative or neutral."""
     messages = [
         {
             "role": "system",
@@ -71,24 +78,24 @@ def sentiment_analysis(review: str, model: str = default_model) -> str:
     response = client.chat.completions.create(
         model=model,
         messages=messages,
-        temperature=0.1,  # Low temperature for deterministic classification
+        temperature=0.1,  # low, so a review usually gets the same label on every run
     )
     return response.choices[0].message.content.strip()
 
 
 if __name__ == "__main__":
-    print(f"=== Universal OpenAI SDK Demo ===")
+    print("=== Chat and sentiment classification ===")
     print(f"Using Endpoint: {base_url}")
     print(f"Default Model : {default_model}\n")
 
-    print("--- 1. Basic Chat ---")
+    print("--- 1. Plain question ---")
     print(chat("Hello, please introduce yourself in one sentence."))
 
-    print("\n--- 2. Sentiment Analysis ---")
+    print("\n--- 2. Sentiment labels ---")
     reviews = [
-        "The audio quality of this speaker is amazing, giving you unexpected sound!",
-        "Battery life is terrible, dies in half a day. Strongly not recommended.",
-        "Secure packaging, fast shipping, quality is average.",
+        "This speaker sounds far better than I expected.",
+        "The battery dies within half a day. I would not buy it again.",
+        "It arrived quickly and was well packed, but the quality is only average.",
     ]
     for r in reviews:
-        print(f"  Review: {r!r} -> Result: {sentiment_analysis(r)}")
+        print(f"  Review: {r!r} -> Label: {sentiment_analysis(r)}")

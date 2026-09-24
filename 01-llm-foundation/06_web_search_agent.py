@@ -18,9 +18,7 @@ from openai import OpenAI
 # Automatically load .env file if python-dotenv is installed
 try:
     from dotenv import load_dotenv
-    load_dotenv()
     load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
-    load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 except ImportError:
     pass
 
@@ -40,7 +38,7 @@ openai_key = os.getenv("OPENAI_API_KEY")
 
 if deepseek_key:
     api_key = deepseek_key
-    base_url = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com")
+    base_url = "https://api.deepseek.com"
     default_model = "deepseek-chat"
     provider = "DeepSeek"
 elif gemini_key:

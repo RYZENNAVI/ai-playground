@@ -20,10 +20,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 sys.stdout.reconfigure(encoding="utf-8")
-
-load_dotenv()
 load_dotenv(Path(__file__).parents[1] / ".env")
-load_dotenv(Path(__file__).parents[2] / ".env")
 
 CHUNK_SIZE = 800
 OVERLAP = 150

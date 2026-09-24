@@ -191,9 +191,7 @@ def main() -> None:
         return
 
     sys.stdout.reconfigure(encoding="utf-8")
-    load_dotenv()
     load_dotenv(Path(__file__).parents[1] / ".env")
-    load_dotenv(Path(__file__).parents[2] / ".env")
 
     print("--- 1. Tools this file publishes ---")
     for name in ["list_notes", "read_note", "count_words"]:

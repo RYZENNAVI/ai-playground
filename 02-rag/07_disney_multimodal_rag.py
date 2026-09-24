@@ -20,10 +20,7 @@ import numpy as np
 from dotenv import load_dotenv
 
 sys.stdout.reconfigure(encoding="utf-8")
-
-load_dotenv()
 load_dotenv(Path(__file__).parents[1] / ".env")
-load_dotenv(Path(__file__).parents[2] / ".env")
 
 DOCS_DIR = Path(__file__).parent / "data" / "disney_kb"
 IMG_DIR = DOCS_DIR / "images"

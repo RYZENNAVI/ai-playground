@@ -22,10 +22,7 @@ from openai import OpenAI
 from rank_bm25 import BM25Okapi
 
 sys.stdout.reconfigure(encoding="utf-8")
-
-load_dotenv()
 load_dotenv(Path(__file__).parents[1] / ".env")
-load_dotenv(Path(__file__).parents[2] / ".env")
 
 DATA_DIR = Path(__file__).parent / "data" / "disney_kb"
 CROSS_ENCODER = "cross-encoder/ms-marco-MiniLM-L-6-v2"

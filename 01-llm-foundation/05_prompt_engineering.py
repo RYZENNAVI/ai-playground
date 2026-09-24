@@ -14,9 +14,7 @@ from openai import OpenAI
 # Automatically load .env file if python-dotenv is installed
 try:
     from dotenv import load_dotenv
-    load_dotenv()
     load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
-    load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 except ImportError:
     pass
 
@@ -36,13 +34,14 @@ if not api_key:
     raise RuntimeError("No API key found! Please set DEEPSEEK_API_KEY or OPENAI_API_KEY.")
 
 if os.getenv("DEEPSEEK_API_KEY"):
-    default_base_url = "https://api.deepseek.com"
+    base_url = "https://api.deepseek.com"
     default_model = "deepseek-chat"
 else:
-    default_base_url = "https://api.openai.com/v1"
+    # OPENAI_BASE_URL belongs to OPENAI_API_KEY only, so a DeepSeek key is never
+    # sent to whatever endpoint that variable points at.
+    base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
     default_model = "gpt-4o-mini"
 
-base_url = os.getenv("OPENAI_BASE_URL", default_base_url)
 client = OpenAI(api_key=api_key, base_url=base_url)
 
 

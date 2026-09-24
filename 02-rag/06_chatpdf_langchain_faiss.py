@@ -22,10 +22,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 sys.stdout.reconfigure(encoding="utf-8")
-
-load_dotenv()
 load_dotenv(Path(__file__).parents[1] / ".env")
-load_dotenv(Path(__file__).parents[2] / ".env")
 
 PDF_FILE = Path(__file__).parent / "data" / "bank_kpi_policy.pdf"
 INDEX_DIR = Path(__file__).parent / "models" / "bank_kpi_faiss"

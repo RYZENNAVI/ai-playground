@@ -28,10 +28,7 @@ from importlib import import_module
 _db = import_module("01_build_insurance_db")
 
 sys.stdout.reconfigure(encoding="utf-8")
-
-load_dotenv()
 load_dotenv(Path(__file__).parents[1] / ".env")
-load_dotenv(Path(__file__).parents[2] / ".env")
 
 MODEL = "deepseek-chat"
 BASE_URL = "https://api.deepseek.com"

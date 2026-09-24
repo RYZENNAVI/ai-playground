@@ -27,10 +27,7 @@ from openai import OpenAI
 from rank_bm25 import BM25Okapi
 
 sys.stdout.reconfigure(encoding="utf-8")
-
-load_dotenv()
 load_dotenv(Path(__file__).parents[1] / ".env")
-load_dotenv(Path(__file__).parents[2] / ".env")
 
 CHUNK_WORDS = 60
 CHUNK_OVERLAP = 15

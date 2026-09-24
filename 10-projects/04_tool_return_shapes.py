@@ -25,10 +25,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 sys.stdout.reconfigure(encoding="utf-8")
-
-load_dotenv()
 load_dotenv(Path(__file__).parents[1] / ".env")
-load_dotenv(Path(__file__).parents[2] / ".env")
 
 DATA = Path(__file__).parent / "data"
 DB_PATH = DATA / "market.sqlite"

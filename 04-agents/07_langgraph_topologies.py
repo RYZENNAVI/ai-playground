@@ -26,10 +26,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 
 sys.stdout.reconfigure(encoding="utf-8")
-
-load_dotenv()
 load_dotenv(Path(__file__).parents[1] / ".env")
-load_dotenv(Path(__file__).parents[2] / ".env")
 
 MODEL = "deepseek-chat"
 BASE_URL = "https://api.deepseek.com"

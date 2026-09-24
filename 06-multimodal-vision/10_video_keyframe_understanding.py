@@ -24,10 +24,7 @@ from openai import OpenAI, RateLimitError
 from PIL import Image, ImageDraw, ImageFont
 
 sys.stdout.reconfigure(encoding="utf-8")
-
-load_dotenv()
 load_dotenv(Path(__file__).parents[1] / ".env")
-load_dotenv(Path(__file__).parents[2] / ".env")
 
 OUT_DIR = Path(__file__).parent / "outputs" / "clip"
 VIDEO_PATH = OUT_DIR / "approach.mp4"

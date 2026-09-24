@@ -17,10 +17,7 @@ import numpy as np
 from dotenv import load_dotenv
 
 sys.stdout.reconfigure(encoding="utf-8")
-
-load_dotenv()
 load_dotenv(Path(__file__).parents[1] / ".env")
-load_dotenv(Path(__file__).parents[2] / ".env")
 
 # Two small models, chosen because they pool differently. Pooling is a property of
 # the model, fixed when its authors trained it, so it lives here beside the name

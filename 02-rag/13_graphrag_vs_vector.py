@@ -24,10 +24,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 sys.stdout.reconfigure(encoding="utf-8")
-
-load_dotenv()
 load_dotenv(Path(__file__).parents[1] / ".env")
-load_dotenv(Path(__file__).parents[2] / ".env")
 
 HERE = Path(__file__).parent
 CORPUS = HERE / "data" / "graphrag_input" / "northgate_archive.txt"

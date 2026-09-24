@@ -25,10 +25,7 @@ from langchain_core.runnables import RunnableBranch, RunnableLambda, RunnablePar
 from langchain_openai import ChatOpenAI
 
 sys.stdout.reconfigure(encoding="utf-8")
-
-load_dotenv()
 load_dotenv(Path(__file__).parents[1] / ".env")
-load_dotenv(Path(__file__).parents[2] / ".env")
 
 MODEL = "deepseek-chat"
 BASE_URL = "https://api.deepseek.com"
