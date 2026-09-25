@@ -705,7 +705,7 @@ The 8 scripts under `ai-playground/01-llm-foundation/`, all verified by actually
 | 04 | `04_ops_incident_handler.py` | Agent tool loop — multi-step diagnosis of an operations alert |
 | 05 | `05_prompt_engineering.py` | Four paradigms: structured templates, JSON mode, CoT, meta-prompting |
 | 06 | `06_web_search_agent.py` | A search agent with a round cap and a `tool_choice` circuit breaker. Wikipedia stands in for web search. |
-| 07 | `07_ollama_local_chat.py` | Local deployment: automatic model pull, streaming, `<think>` splitting, FastAPI gateway |
+| 07 | `07_ollama_local_chat.py` | Local deployment: automatic model pull, streaming, reasoning read from the `thinking` field, FastAPI gateway |
 | 08 | `08_transformers_inference.py` | Raw-weight inference: download, GPU loading, chat template, throughput measurement |
 
 **Measured performance of 07 vs 08** (same RTX 5070 Ti, same model, 128 tokens, warmed up, mean of three runs):

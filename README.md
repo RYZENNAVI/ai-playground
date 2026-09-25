@@ -118,7 +118,7 @@ tables below list the scripts of each.
 | 04 | `04_ops_incident_handler.py` | AIOps agent tool loop: incident diagnosis |
 | 05 | `05_prompt_engineering.py` | Structured templates, JSON mode, CoT, meta-prompting |
 | 06 | `06_web_search_agent.py` | Search agent over the Wikipedia API, capped at three rounds, with a `tool_choice` circuit breaker |
-| 07 | `07_ollama_local_chat.py` | Local deployment via Ollama: auto model pull, streaming, `<think>` split, FastAPI gateway |
+| 07 | `07_ollama_local_chat.py` | Local deployment via Ollama: auto model pull, streaming, reasoning read from the `thinking` field, FastAPI gateway |
 | 08 | `08_transformers_inference.py` | Raw-weight inference with Transformers: HF download, GPU placement, chat template, throughput |
 
 See [LLM-Foundation.md](01-llm-foundation/LLM-Foundation.md) for the concepts behind these scripts.

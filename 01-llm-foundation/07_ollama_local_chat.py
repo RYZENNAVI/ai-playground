@@ -1,37 +1,44 @@
-"""Run a reasoning model on your own machine through Ollama, with no API key.
+"""This script runs a reasoning model on your own machine through Ollama, with no API
+key. It shows what a hosted API usually does for you: getting the model, streaming the
+reply, and serving it over HTTP.
 
-Demonstrates what a local deployment has to handle that a hosted API does for you:
-    1. Check whether the model is already pulled and download it only if not.
-    2. Generate one reply through Ollama's REST API on port 11434.
-    3. Stream a longer reply token by token, as it is produced.
-    4. Split the <think> reasoning from the answer, since R1-distilled models emit both.
-    5. Define a FastAPI gateway around the model and print the command that serves it.
+Set OLLAMA_HOST or OLLAMA_MODEL in .env to use another host or model. The run prints
+five parts:
+    1. Model download. The script checks whether the model is already pulled and
+       downloads it only if not.
+    2. One reply. One prompt goes to Ollama's REST API on port 11434, and the whole
+       reply comes back at once.
+    3. Streaming. A longer reply is printed piece by piece as the model writes it.
+    4. Reasoning and answer. Ollama returns the model's reasoning in its own thinking
+       field, apart from the answer. The script prints the length of each. Older
+       Ollama versions put the reasoning inside the answer, wrapped in <think> tags.
+       The script follows the newer behaviour of Ollama 0.34.2, the version it was
+       tested with.
+    5. FastAPI gateway. The script defines a FastAPI app around the model and prints
+       the command that serves it.
 """
 
 import json
 import os
-import re
 import sys
 
 import requests
 
-# Automatically load .env file if python-dotenv is installed
+# Read the keys from the .env file at the repository root, if python-dotenv is installed.
 try:
     from dotenv import load_dotenv
     load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 except ImportError:
     pass
 
-# Ensure UTF-8 output on Windows terminal
+# Ensure UTF-8 output on the Windows terminal (model replies may contain emoji)
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
 
-# ---------------------------------------------------------------------------
-# Configuration — override via .env if your Ollama host or model differs
-# ---------------------------------------------------------------------------
+# Set OLLAMA_HOST or OLLAMA_MODEL in .env to use another host or model.
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:1.5b")
 GENERATE_ENDPOINT = f"{OLLAMA_HOST}/api/generate"
@@ -39,9 +46,8 @@ TAGS_ENDPOINT = f"{OLLAMA_HOST}/api/tags"
 PULL_ENDPOINT = f"{OLLAMA_HOST}/api/pull"
 
 
-# ---------------------------------------------------------------------------
-# 1. Weight acquisition — pull only what is missing
-# ---------------------------------------------------------------------------
+# 1. Model download
+
 def list_local_models() -> list:
     """Return the model tags currently available on the Ollama host."""
     response = requests.get(TAGS_ENDPOINT, timeout=10)
@@ -50,26 +56,17 @@ def list_local_models() -> list:
 
 
 def is_model_available(model: str = OLLAMA_MODEL) -> bool:
-    """Check whether a model has already been pulled.
-
-    Ollama reports tags as "name:tag". An untagged request such as
-    "deepseek-r1" is satisfied by any tag of that name, which mirrors how
-    the `ollama run` command resolves models.
-    """
-    local = list_local_models()
-    if model in local:
-        return True
-    return ":" not in model and any(tag.split(":")[0] == model for tag in local)
+    """Check whether a model is pulled. A name without a tag means :latest, as in
+    ollama run."""
+    if ":" not in model:
+        model += ":latest"
+    return model in list_local_models()
 
 
 def pull_model(model: str = OLLAMA_MODEL) -> None:
-    """Download a model, printing progress as it streams.
-
-    /api/pull emits one JSON object per line; layer downloads carry
-    `completed` and `total` byte counts that we render as a percentage.
-    """
-    # A TTY can be redrawn with \r; piped output cannot, so there we print a
-    # sparse line-per-milestone log instead of thousands of redraw frames.
+    """Download a model and print the progress of each layer as a percentage."""
+    # A terminal can redraw one line with \r. Piped output cannot, so there the
+    # script prints one line per 20% step instead.
     interactive = sys.stdout.isatty()
     last_len = 0
     last_report = {}  # layer digest -> last percentage reported
@@ -114,14 +111,10 @@ def pull_model(model: str = OLLAMA_MODEL) -> None:
 
 
 def ensure_model(model: str = OLLAMA_MODEL) -> bool:
-    """Make sure `model` is available locally, downloading it only if missing.
-
-    Idempotent: re-running is a cheap no-op once the model is present.
-    Returns True when the model is ready, False when Ollama is unreachable.
-    """
+    """Download the model if it is missing. Return False when Ollama is unreachable."""
     try:
         if is_model_available(model):
-            print(f"[Model] {model} already present — skipping download.")
+            print(f"[Model] {model} is already here. Skipping the download.")
             return True
 
         print(f"[Model] {model} not found locally. Downloading (first run only)...")
@@ -135,28 +128,24 @@ def ensure_model(model: str = OLLAMA_MODEL) -> bool:
         return False
 
 
-# ---------------------------------------------------------------------------
-# 2. Single-shot generation
-# ---------------------------------------------------------------------------
-def query_ollama(prompt: str, model: str = OLLAMA_MODEL) -> str:
-    """Send one prompt to a local Ollama model and return the full response."""
+# 2. One reply
+
+def query_ollama(prompt: str, model: str = OLLAMA_MODEL) -> tuple:
+    """Return (reasoning, answer). Ollama 0.34.2 sends the reasoning in its own
+    thinking field."""
     payload = {"model": model, "prompt": prompt, "stream": False}
     response = requests.post(GENERATE_ENDPOINT, json=payload, timeout=120)
     response.raise_for_status()
-    return response.json()["response"]
+    data = response.json()
+    return data.get("thinking", "").strip(), data["response"].strip()
 
 
-# ---------------------------------------------------------------------------
-# 3. Streaming generation
-# ---------------------------------------------------------------------------
-def query_ollama_stream(prompt: str, model: str = OLLAMA_MODEL) -> str:
-    """Stream a response token by token, printing as it arrives.
+# 3. Streaming
 
-    Ollama emits one JSON object per line while generating, so the client can
-    render output immediately instead of waiting for the whole completion.
-    """
+def query_ollama_stream(prompt: str, model: str = OLLAMA_MODEL) -> tuple:
+    """Print the reply as it streams, reasoning first, and return (reasoning, answer)."""
     payload = {"model": model, "prompt": prompt, "stream": True}
-    chunks = []
+    thinking, chunks = [], []
 
     with requests.post(GENERATE_ENDPOINT, json=payload, stream=True, timeout=120) as response:
         response.raise_for_status()
@@ -166,47 +155,32 @@ def query_ollama_stream(prompt: str, model: str = OLLAMA_MODEL) -> str:
             try:
                 obj = json.loads(line)
             except json.JSONDecodeError as exc:
-                print(f"[Stream Notice] Failed to parse chunk: {exc}")
+                print(f"[Skipped] Unreadable line: {exc}")
                 continue
+
+            thought = obj.get("thinking", "")
+            if thought:
+                if not thinking:
+                    print("[Reasoning]")
+                thinking.append(thought)
+                print(thought, end="", flush=True)
+
             piece = obj.get("response", "")
-            chunks.append(piece)
-            print(piece, end="", flush=True)
+            if piece:
+                if not chunks:
+                    print("\n\n[Answer]")
+                chunks.append(piece)
+                print(piece, end="", flush=True)
 
-    print()  # newline after the stream completes
-    return "".join(chunks)
-
-
-# ---------------------------------------------------------------------------
-# 4. Reasoning-model output parsing
-# ---------------------------------------------------------------------------
-def split_reasoning(raw_output: str):
-    """Separate a reasoning model's `<think>` block from its final answer.
-
-    DeepSeek-R1 distilled models wrap their chain-of-thought in <think> tags.
-    Production systems usually log the reasoning but show users only the answer.
-
-    Returns:
-        (reasoning, answer) — reasoning is an empty string when no tag exists.
-    """
-    match = re.search(r"<think>(.*?)</think>", raw_output, flags=re.DOTALL)
-    if not match:
-        return "", raw_output.strip()
-
-    reasoning = match.group(1).strip()
-    answer = re.sub(r"<think>.*?</think>", "", raw_output, flags=re.DOTALL).strip()
-    return reasoning, answer
+    print()
+    return "".join(thinking).strip(), "".join(chunks).strip()
 
 
-# ---------------------------------------------------------------------------
-# 5. FastAPI microservice wrapper
-# ---------------------------------------------------------------------------
+# 5. FastAPI gateway
+
 def build_api_app():
-    """Build a FastAPI app exposing the local model at POST /api/chat.
-
-    Imports live inside the function so the demos above run without FastAPI
-    installed. Serve with:
-        uvicorn 07_ollama_local_chat:build_api_app --factory --port 8000
-    """
+    """Build a FastAPI app for POST /api/chat. The imports sit inside so the rest
+    runs without FastAPI."""
     from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
     from pydantic import BaseModel
@@ -228,7 +202,7 @@ def build_api_app():
     @app.post("/api/chat")
     async def chat(request: ChatRequest):
         try:
-            answer = query_ollama(request.prompt, model=request.model)
+            _, answer = query_ollama(request.prompt, model=request.model)
             return {"response": answer}
         except requests.RequestException as exc:
             return {"error": f"Failed to reach Ollama: {exc}"}
@@ -236,43 +210,38 @@ def build_api_app():
     return app
 
 
-def call_local_api(prompt: str, endpoint: str = "http://localhost:8000/api/chat") -> dict:
-    """Client helper for the FastAPI service above (run the server first)."""
-    response = requests.post(endpoint, json={"prompt": prompt}, timeout=120)
-    response.raise_for_status()
-    return response.json()
-
-
 if __name__ == "__main__":
-    print("=== Local Model Deployment via Ollama ===")
+    print("=== Local model via Ollama ===")
     print(f"Host  : {OLLAMA_HOST}")
     print(f"Model : {OLLAMA_MODEL}\n")
 
-    # Make sure the weights are there before anything else runs.
-    print("--- 1. Weight acquisition ---")
+    # 1. Model download
+    print("--- 1. Model download ---")
     if not ensure_model():
         sys.exit(1)
     print()
 
     try:
-        print("--- 2. Single-shot generation ---")
-        reply = query_ollama("Introduce yourself in one short paragraph.")
-        reasoning, answer = split_reasoning(reply)
+        # 2. One reply
+        print("--- 2. One reply ---")
+        reasoning, answer = query_ollama("Explain what a local LLM is in two sentences.")
         if reasoning:
-            print(f"[Reasoning trace, {len(reasoning)} chars — hidden from end users]")
+            print(f"[Reasoning: {len(reasoning)} chars, not shown to users]")
         print(f"Answer: {answer}\n")
 
-        print("--- 3. Streaming generation ---")
-        raw = query_ollama_stream("Write a binary search function in Python.")
+        # 3. Streaming
+        print("--- 3. Streaming ---")
+        reasoning, answer = query_ollama_stream("Write a binary search function in Python.")
 
-        print("\n--- 4. Reasoning / answer split ---")
-        reasoning, answer = split_reasoning(raw)
+        # 4. Reasoning and answer
+        print("\n--- 4. Reasoning and answer ---")
         print(f"Reasoning length: {len(reasoning)} chars")
         print(f"Answer length   : {len(answer)} chars")
 
-        print("\n--- 5. FastAPI service ---")
-        print("Start the gateway with:")
-        print("  uvicorn 07_ollama_local_chat:build_api_app --factory --port 8000")
+        # 5. FastAPI gateway
+        print("\n--- 5. FastAPI gateway ---")
+        print("Start the gateway from the repository root with:")
+        print("  uvicorn --app-dir 01-llm-foundation 07_ollama_local_chat:build_api_app --factory --port 8000")
         print("Then POST to http://localhost:8000/api/chat")
 
     except requests.RequestException as exc:
