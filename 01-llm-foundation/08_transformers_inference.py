@@ -1,65 +1,60 @@
-"""Load model weights directly with Transformers and generate without any serving layer.
+"""This script loads the model weights with Transformers and generates text without a
+serving layer. It shows the steps Ollama hides.
 
-Demonstrates the steps Ollama hides:
-    1. Download the weights from the Hugging Face Hub, or reuse the local cache.
-    2. Load the checkpoint onto the GPU when there is one, and print the VRAM it takes.
-    3. Render the model's chat template and print the prompt it actually receives.
-    4. Generate, then decode only the new tokens so the prompt is not repeated.
-    5. Report tokens per second.
+Set HF_MODEL_ID or HF_CACHE_DIR in .env to use another model or cache folder. The run
+prints five parts:
+    1. Model download. The weights come from the Hugging Face Hub, or from the local
+       cache after the first run.
+    2. Loading. The model goes onto the GPU when there is one, and the script prints
+       the VRAM it takes.
+    3. Chat template. The script prints the prompt string the model actually receives.
+       The template for this model ends with an opening <think> tag, so the reply
+       starts inside the reasoning and shows only the closing </think>.
+    4. Generation. Only the new tokens are decoded, so the prompt is not repeated.
+    5. Throughput in tokens per second.
 """
 
 import os
 import sys
 import time
 
-# Automatically load .env file if python-dotenv is installed
+# Read the keys from the .env file at the repository root, if python-dotenv is installed.
 try:
     from dotenv import load_dotenv
     load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 except ImportError:
     pass
 
-# Ensure UTF-8 output on Windows terminal
+# Ensure UTF-8 output on the Windows terminal (model replies may contain emoji)
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
 
-# ---------------------------------------------------------------------------
-# Configuration — override via .env
-# ---------------------------------------------------------------------------
-# Same model Ollama serves as `deepseek-r1:1.5b`, but in full-precision
-# safetensors (~3.5 GB) rather than quantised GGUF (~1.1 GB).
-#
-# Benchmarked on one RTX 5070 Ti Laptop, 128 tokens, warmed up, mean of 3 runs:
-#     Transformers bfloat16 ....   29 tok/s, 3.55 GB VRAM
-#     Ollama GGUF Q4_K_M ......   309 tok/s, ~1.1 GB VRAM
-# Clock state shifts both numbers together — throttled the pair read 10 and 91 —
-# so treat the ~10x ratio, not the absolute values, as the finding.
-# Quantisation plus llama.cpp's fused kernels win decisively on throughput, so
-# serve with Ollama/vLLM in production. Use this path when you need the raw
-# graph, custom generation logic, or a starting point for fine-tuning.
+# The same model Ollama serves as deepseek-r1:1.5b, here as unquantised bfloat16
+# safetensors (about 3.5 GB) instead of a quantised GGUF (about 1.1 GB).
+# On an RTX 5070 Ti Laptop (128 tokens, warmed up, mean of 3 runs), this path made
+# 29 tok/s in 3.55 GB of VRAM, and Ollama made 309 tok/s in about 1.1 GB. When the
+# GPU clocked down, the pair read 10 and 91, so the finding is the ratio of about 10x.
+# Serve a model with Ollama or vLLM. Use this path for custom generation logic or as
+# a starting point for fine-tuning. Set HF_ENDPOINT=https://hf-mirror.com for a mirror.
 MODEL_ID = os.getenv("HF_MODEL_ID", "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
 CACHE_DIR = os.getenv("HF_CACHE_DIR", os.path.join(os.path.dirname(__file__), "weights"))
 
 
-# ---------------------------------------------------------------------------
-# 1. Weight acquisition
-# ---------------------------------------------------------------------------
-def ensure_weights(model_id: str = MODEL_ID, cache_dir: str = CACHE_DIR) -> str:
-    """Download the checkpoint unless it is already cached, and return its path.
+# 1. Model download
 
-    `snapshot_download` verifies existing files by hash, so a second run costs
-    almost nothing. Set HF_ENDPOINT=https://hf-mirror.com to use a mirror.
-    """
+def ensure_weights(model_id: str = MODEL_ID, cache_dir: str = CACHE_DIR) -> str:
+    """Download the checkpoint unless it is cached, and return its path. A cached
+    checkpoint is only checked against the Hub."""
     from huggingface_hub import snapshot_download
 
     cached = os.path.isdir(cache_dir) and any(
         f.endswith(".safetensors") for _, _, files in os.walk(cache_dir) for f in files
     )
     print(f"[Weights] {model_id}")
-    print(f"[Weights] {'cached — verifying' if cached else 'downloading (first run only)'}")
+    print(f"[Weights] {'cached, checking with the Hub' if cached else 'downloading (first run only)'}")
 
     path = snapshot_download(
         repo_id=model_id,
@@ -70,9 +65,8 @@ def ensure_weights(model_id: str = MODEL_ID, cache_dir: str = CACHE_DIR) -> str:
     return path
 
 
-# ---------------------------------------------------------------------------
-# 2. Model loading
-# ---------------------------------------------------------------------------
+# 2. Loading
+
 def load_model(model_path: str):
     """Load weights and tokenizer, placing the model on GPU when one exists."""
     import torch
@@ -84,7 +78,7 @@ def load_model(model_path: str):
 
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        torch_dtype="auto",   # bfloat16/float16 on GPU, float32 on CPU
+        torch_dtype="auto",   # Use the dtype saved in the checkpoint (bfloat16 here)
         device_map=device,
     )
     tokenizer = AutoTokenizer.from_pretrained(model_path)
@@ -96,15 +90,11 @@ def load_model(model_path: str):
     return model, tokenizer
 
 
-# ---------------------------------------------------------------------------
 # 3. Chat template
-# ---------------------------------------------------------------------------
-def build_prompt(tokenizer, user_prompt: str, system_prompt: str = "You are a helpful assistant.") -> str:
-    """Turn plain messages into the exact string this model was trained on.
 
-    Every model family uses different role markers; the tokenizer ships the
-    correct template, so never hand-concatenate role tags yourself.
-    """
+def build_prompt(tokenizer, user_prompt: str, system_prompt: str = "You are a helpful assistant.") -> str:
+    """Render the messages with the tokenizer's chat template, since each model family
+    uses its own role markers."""
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
@@ -112,9 +102,8 @@ def build_prompt(tokenizer, user_prompt: str, system_prompt: str = "You are a he
     return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
 
-# ---------------------------------------------------------------------------
 # 4. Generation
-# ---------------------------------------------------------------------------
+
 def generate(model, tokenizer, prompt: str, max_new_tokens: int = 512) -> tuple:
     """Run one generation pass and return (text, tokens_generated, seconds)."""
     text = build_prompt(tokenizer, prompt)
@@ -130,28 +119,27 @@ def generate(model, tokenizer, prompt: str, max_new_tokens: int = 512) -> tuple:
     return answer, len(new_ids[0]), elapsed
 
 
-# ---------------------------------------------------------------------------
-# 5. Throughput reporting
-# ---------------------------------------------------------------------------
+# 5. Throughput
+
 def report(tokens: int, seconds: float) -> None:
-    """Print generation speed — the number that decides deployment sizing."""
+    """Print tokens per second."""
     print(f"\n[Perf] {tokens} tokens in {seconds:.1f}s = {tokens / seconds:.1f} tok/s")
 
 
 if __name__ == "__main__":
-    print("=== Transformers Direct Inference ===\n")
+    print("=== Direct inference with Transformers ===\n")
 
-    print("--- 1. Weight acquisition ---")
     try:
+        print("--- 1. Model download ---")
         path = ensure_weights()
-    except ImportError:
-        print("[Error] Run: pip install huggingface_hub transformers torch")
-        sys.exit(1)
-    print()
+        print()
 
-    print("--- 2. Model loading ---")
-    model, tokenizer = load_model(path)
-    print()
+        print("--- 2. Loading ---")
+        model, tokenizer = load_model(path)
+        print()
+    except ImportError:
+        print("[Error] Install the packages: pip install huggingface_hub transformers accelerate torch")
+        sys.exit(1)
 
     print("--- 3. Chat template ---")
     preview = build_prompt(tokenizer, "Hello!")
@@ -159,7 +147,7 @@ if __name__ == "__main__":
     print()
 
     print("--- 4. Generation ---")
-    question = "What is 17 * 23? Think step by step."
+    question = "What is 17 * 23?"
     print(f"Question: {question}\n")
     answer, tokens, elapsed = generate(model, tokenizer, question)
     print(answer)
