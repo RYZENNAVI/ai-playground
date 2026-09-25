@@ -1,13 +1,24 @@
-"""Answer a question about recent news by searching Wikipedia, with a cap on how often.
+"""This script asks a chat model what DeepSeek and OpenAI have announced recently. The
+model's knowledge stops at its training cutoff, so it gets a web search tool, and the
+script runs each search the model asks for. The search is simulated on purpose: the
+tool queries the Wikipedia search API, which needs no key, and the model is told it
+searches the web.
 
-Demonstrates how to stop a tool loop that could otherwise run forever:
-    1. Offer one search tool backed by the Wikipedia search API, returning three snippets.
-    2. Let the model search and read for at most three rounds.
-    3. When the cap is reached, call once more with tool_choice="none",
-       so the model has to answer from what it already has.
-    4. Return a readable message rather than an exception when the search request fails.
+Nothing in the tool loop itself stops the model from searching forever, so the script
+caps it at three rounds. After the third round it adds a message telling the model to
+stop, and calls it once more with tool_choice="none", which rules out another tool call.
+
+The script uses DeepSeek when DEEPSEEK_API_KEY is set, Gemini when GEMINI_API_KEY is
+set, and OpenAI otherwise. The run prints three parts:
+    1. The question.
+    2. Each search, round by round, and the start of its result. One round can hold
+       several searches. Each search returns up to three results. A failed request
+       gives the model an error message instead of raising. If the model is still
+       searching after three rounds, a notice says so.
+    3. The final answer.
 """
 
+import html
 import json
 import os
 import sys
@@ -15,26 +26,26 @@ import urllib.parse
 import urllib.request
 from openai import OpenAI
 
-# Automatically load .env file if python-dotenv is installed
+# Read the keys from the .env file at the repository root, if python-dotenv is installed.
 try:
     from dotenv import load_dotenv
     load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 except ImportError:
     pass
 
-# Ensure UTF-8 output on Windows terminal
+# Ensure UTF-8 output on the Windows terminal (model replies may contain emoji)
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
 
-# ---------------------------------------------------------------------------
-# Client Setup: DeepSeek (Primary) / Gemini / OpenAI Fallback
-# ---------------------------------------------------------------------------
 deepseek_key = os.getenv("DEEPSEEK_API_KEY")
 gemini_key = os.getenv("GEMINI_API_KEY")
 openai_key = os.getenv("OPENAI_API_KEY")
+
+if not (deepseek_key or gemini_key or openai_key):
+    raise SystemExit("Set DEEPSEEK_API_KEY, GEMINI_API_KEY or OPENAI_API_KEY in .env and retry.")
 
 if deepseek_key:
     api_key = deepseek_key
@@ -44,29 +55,25 @@ if deepseek_key:
 elif gemini_key:
     api_key = gemini_key
     base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
-    default_model = "gemini-2.5-flash"
+    default_model = "gemini-3.1-flash-lite"
     provider = "Google Gemini"
 else:
-    api_key = openai_key or "dummy"
+    api_key = openai_key
     base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
     default_model = "gpt-4o-mini"
     provider = "OpenAI"
 
-if not (deepseek_key or gemini_key or openai_key):
-    raise RuntimeError("No API key found! Please set DEEPSEEK_API_KEY, GEMINI_API_KEY, or OPENAI_API_KEY in .env file.")
-
 client = OpenAI(api_key=api_key, base_url=base_url)
 
 
-# ---------------------------------------------------------------------------
-# Universal Web Search Tool (No API Key Required)
-# ---------------------------------------------------------------------------
 def web_search_tool(query: str) -> str:
-    """Universal search tool querying live web/Wikipedia API."""
+    """Stand in for a web search by searching English Wikipedia. Return the top three
+    results as text. A failed request returns a message for the model instead of raising."""
     encoded = urllib.parse.quote(query)
+    # MediaWiki Action API: list=search runs a full-text search and returns titles and snippets as JSON.
     url = f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={encoded}&format=json"
 
-    # Wikimedia MediaWiki API requires a compliant User-Agent with project/contact info
+    # The Wikimedia API expects a User-Agent that names the project and a contact.
     headers = {"User-Agent": "AIPlaygroundAgent/1.0 (https://github.com/ryzennavi/ai-playground)"}
 
     try:
@@ -78,11 +85,11 @@ def web_search_tool(query: str) -> str:
             for r in results:
                 title = r.get("title", "")
                 snippet_text = r.get("snippet", "").replace("<span class='searchmatch'>", "").replace("</span>", "").replace('<span class="searchmatch">', "")
-                snippets.append(f"Title: {title}\nSnippet: {snippet_text}")
-            return "\n\n".join(snippets) if snippets else f"No relevant live search results found for: {query!r}."
+                snippets.append(f"Title: {title}\nSnippet: {html.unescape(snippet_text)}")
+            return "\n\n".join(snippets) if snippets else f"No results for {query!r}."
     except Exception as e:
-        print(f"[Search Engine Notice] Search API request failed: {e}")
-        return f"Live search engine request encountered an issue ({e}). Please answer based on available knowledge."
+        print(f"[Search failed] {e}")
+        return f"The search request failed ({e}). Answer from what you already know."
 
 
 SEARCH_TOOL_SCHEMA = [
@@ -106,24 +113,26 @@ SEARCH_TOOL_SCHEMA = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Universal Bounded Web Search Agent Loop
-# ---------------------------------------------------------------------------
-def universal_web_search(user_query: str, model: str = default_model, max_iterations: int = 3) -> str:
-    """Universal web search agent with bounded iterations (max_iterations) and a tool_choice='none' circuit breaker."""
-    print(f"=== Universal Bounded Web Search Agent ===")
-    print(f"Provider      : {provider}")
-    print(f"Model         : {model}")
-    print(f"Max Search Limit: {max_iterations} rounds\n")
+def search_agent(user_query: str, model: str = default_model, max_iterations: int = 3) -> str:
+    """Let the model search for at most max_iterations rounds, then force a text answer
+    with tool_choice="none". Return the answer."""
+    print("=== Wikipedia search agent ===")
+    print(f"Provider  : {provider}")
+    print(f"Model     : {model}")
+    print(f"Max rounds: {max_iterations}\n")
+
+    print("--- 1. Question ---")
+    print(f"Query: {user_query!r}\n")
 
     messages = [
         {
             "role": "system",
-            "content": "You are a helpful AI assistant that answers questions using live web search when necessary. Call web_search_tool if needed.",
+            "content": "You are a helpful assistant. Search the web when a question needs information you do not have.",
         },
         {"role": "user", "content": user_query},
     ]
 
+    print("--- 2. Searches ---")
     for iteration in range(max_iterations):
         response = client.chat.completions.create(
             model=model,
@@ -134,18 +143,17 @@ def universal_web_search(user_query: str, model: str = default_model, max_iterat
         msg = response.choices[0].message
         messages.append(msg)
 
-        # Exit loop early when model generates final text answer without tool calls
         if not msg.tool_calls:
             return msg.content
 
-        # Execute requested search tool calls
         for tool_call in msg.tool_calls:
             args = json.loads(tool_call.function.arguments)
             search_query = args.get("query", user_query)
-            fn_name = getattr(tool_call.function, "name", "web_search_tool")
-            print(f"[Round {iteration + 1}/{max_iterations}] Tool Request -> Searching: {search_query!r}")
+            fn_name = tool_call.function.name
+            print(f"[Round {iteration + 1}/{max_iterations}] Search: {search_query!r}")
             search_result = web_search_tool(search_query)
-            print(f"[Round {iteration + 1}/{max_iterations}] Snippet -> {search_result[:150]}...\n")
+            preview = search_result[:150] + ("..." if len(search_result) > 150 else "")
+            print(f"[Round {iteration + 1}/{max_iterations}] Result: {preview}\n")
             messages.append(
                 {
                     "tool_call_id": tool_call.id,
@@ -155,33 +163,25 @@ def universal_web_search(user_query: str, model: str = default_model, max_iterat
                 }
             )
 
-    # Hard stop protection with tool_choice="none": Guarantee pure text answer
-    print(f"[Notice] Maximum search limit ({max_iterations} rounds) reached. Force generating final summary...")
+    # tool_choice="none" rules out another tool call, so the reply is text.
+    print(f"[Cap reached] {max_iterations} rounds used. Asking for the final answer without tools.")
     messages.append({
         "role": "user",
-        "content": "Search iteration limit reached. Do not perform any more tool calls or searches. Please provide your best complete final answer now using all search information gathered so far."
+        "content": "You have used all your searches. Answer now from the results you have."
     })
 
-    try:
-        final_response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            tools=SEARCH_TOOL_SCHEMA,
-            tool_choice="none"
-        )
-    except Exception:
-        final_response = client.chat.completions.create(
-            model=model,
-            messages=messages
-        )
-
+    final_response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        tools=SEARCH_TOOL_SCHEMA,
+        tool_choice="none"
+    )
     return final_response.choices[0].message.content
 
 
 if __name__ == "__main__":
-    query = "What are the latest major news announcements from DeepSeek or OpenAI recently?"
-    print(f"Query: {query!r}\n")
+    query = "What have DeepSeek and OpenAI announced recently?"
 
-    # Set max_iterations=3 to keep execution fast and prevent runaway searches
-    answer = universal_web_search(query, max_iterations=3)
-    print(f"Final Answer:\n{answer}\n")
+    # Three rounds keep the run short.
+    answer = search_agent(query, max_iterations=3)
+    print(f"\n--- 3. Final answer ---\n{answer}")

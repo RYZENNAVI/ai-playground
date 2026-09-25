@@ -704,7 +704,7 @@ The 8 scripts under `ai-playground/01-llm-foundation/`, all verified by actually
 | 03 | `03_table_multimodal_extraction.py` | Multimodal vision: table image → structured JSON |
 | 04 | `04_ops_incident_handler.py` | Agent tool loop — multi-step diagnosis of an operations alert |
 | 05 | `05_prompt_engineering.py` | Four paradigms: structured templates, JSON mode, CoT, meta-prompting |
-| 06 | `06_web_search_agent.py` | A web-search agent with an iteration cap and a `tool_choice` circuit breaker |
+| 06 | `06_web_search_agent.py` | A search agent with a round cap and a `tool_choice` circuit breaker. Wikipedia stands in for web search. |
 | 07 | `07_ollama_local_chat.py` | Local deployment: automatic model pull, streaming, `<think>` splitting, FastAPI gateway |
 | 08 | `08_transformers_inference.py` | Raw-weight inference: download, GPU loading, chat template, throughput measurement |
 
