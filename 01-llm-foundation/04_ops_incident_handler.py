@@ -1,12 +1,16 @@
-"""Diagnose a database alert with a model that fetches the server metrics it needs.
+"""This script hands a database alert to a chat model. The system message tells the
+model to check the server first. The model cannot read the server itself, so it calls
+a local function, get_current_status, and the script sends the result back. The script
+keeps calling the model until a reply comes without a tool call. There is no limit on
+rounds; script 06 adds one.
 
-Demonstrates a tool loop that stops only when the model stops asking:
-    1. Give the model an alert and a system message telling it to check the server first.
-    2. Offer one tool that returns connections, CPU and memory, drawn at random per call.
-    3. Keep calling the model and running the tools it asks for, with no limit on rounds.
-    4. Print the diagnosis once a reply arrives without a tool call.
-
-Script 06 adds the round limit this loop does not have.
+The script uses DeepSeek when DEEPSEEK_API_KEY is set, and OpenAI otherwise. The run
+prints three parts:
+    1. The alert.
+    2. Each tool call and its result. The function draws connections, CPU and memory at
+       random on every call, so the numbers change from run to run. The connection
+       count always stays above the threshold of 80 in the alert.
+    3. The model's diagnosis and action plan.
 """
 
 import json
@@ -15,27 +19,24 @@ import random
 import sys
 from openai import OpenAI
 
-# Automatically load .env file if python-dotenv is installed
+# Read the keys from the .env file at the repository root, if python-dotenv is installed.
 try:
     from dotenv import load_dotenv
     load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 except ImportError:
     pass
 
-# Ensure UTF-8 output on Windows terminal (model replies may contain emoji)
+# Ensure UTF-8 output on the Windows terminal (model replies may contain emoji)
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
 
-# ---------------------------------------------------------------------------
-# Client Setup: DeepSeek (Primary) with OpenAI Fallback
-# ---------------------------------------------------------------------------
 api_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
 
 if not api_key:
-    raise RuntimeError("No API key found! Please set DEEPSEEK_API_KEY or OPENAI_API_KEY.")
+    raise SystemExit("Set DEEPSEEK_API_KEY or OPENAI_API_KEY in .env and retry.")
 
 if os.getenv("DEEPSEEK_API_KEY"):
     base_url = "https://api.deepseek.com"
@@ -49,13 +50,11 @@ else:
 client = OpenAI(api_key=api_key, base_url=base_url)
 
 
-# ---------------------------------------------------------------------------
-# Mock Infrastructure Monitoring API
-# ---------------------------------------------------------------------------
 def get_current_status() -> str:
-    """Mock monitoring system retrieving database server metrics."""
+    """Return made-up metrics for the database server as a JSON string. Each call draws
+    new random values."""
     status_info = {
-        "connections": random.randint(50, 150),
+        "connections": random.randint(81, 150),
         "cpu_usage": f"{round(random.uniform(50, 98), 1)}%",
         "memory_usage": f"{round(random.uniform(60, 95), 1)}%",
     }
@@ -75,18 +74,21 @@ TOOLS_SCHEMA = [
 
 
 def handle_ops_alert(alert_text: str, model: str = default_model):
-    """Run AIOps multi-step agent loop."""
-    print(f"=== AIOps Incident Handler ===")
-    print(f"Alert: {alert_text}\n")
+    """Call the model until it answers without a tool call, run each tool it asks for,
+    and print the diagnosis."""
+    print("=== Database alert diagnosis ===")
+    print("--- 1. Alert ---")
+    print(f"{alert_text}\n")
 
     messages = [
         {
             "role": "system",
-            "content": "You are a senior AIOps engineer. Upon receiving a database alert, call get_current_status first to fetch real-time server performance metrics, then provide root-cause analysis and action plan.",
+            "content": "You are a senior AIOps engineer. Upon receiving a database alert, call get_current_status first to fetch real-time server performance metrics, then give a root-cause analysis and an action plan.",
         },
         {"role": "user", "content": alert_text},
     ]
 
+    print("--- 2. Tool calls and results ---")
     while True:
         response = client.chat.completions.create(
             model=model,
@@ -98,16 +100,16 @@ def handle_ops_alert(alert_text: str, model: str = default_model):
         messages.append(message)
 
         if not message.tool_calls:
-            print("--- Final Diagnosis & Action Plan ---")
+            print("--- 3. Diagnosis ---")
             print(message.content)
             break
 
         for tool_call in message.tool_calls:
             fn_name = tool_call.function.name
-            print(f"[AIOps Tool Request] Calling {fn_name}()")
+            print(f"[Tool Requested] {fn_name}()")
             if fn_name == "get_current_status":
                 status_result = get_current_status()
-                print(f"[AIOps Tool Response] {status_result}\n")
+                print(f"[Tool Result   ] {status_result}\n")
                 messages.append(
                     {
                         "tool_call_id": tool_call.id,
@@ -119,5 +121,5 @@ def handle_ops_alert(alert_text: str, model: str = default_model):
 
 
 if __name__ == "__main__":
-    alert = "[CRITICAL ALERT] Database connection count exceeded threshold (Current limit: 80). Time: 2026-08-06 15:30:00"
+    alert = "[CRITICAL] Database connections above the threshold of 80. Time: 2026-08-06 15:30:00"
     handle_ops_alert(alert)

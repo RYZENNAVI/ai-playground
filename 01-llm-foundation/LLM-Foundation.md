@@ -403,17 +403,17 @@ result = response.choices[0].message.content
 *   **The core loop**:
     ```python
     while True:
-        response = get_response(messages)
-        message = response.output.choices[0].message
+        response = client.chat.completions.create(model=model, messages=messages, tools=TOOLS_SCHEMA)
+        message = response.choices[0].message
         messages.append(message)
-        if response.output.choices[0].finish_reason == 'stop':
+        if not message.tool_calls:
+            print(message.content)
             break
-        if message.tool_calls:
-            fn_name = message.tool_calls[0]['function']['name']
-            arguments_json = json.loads(message.tool_calls[0]['function']['arguments'])
-            tool_response = current_locals[fn_name](**arguments_json)
-            messages.append({"name": fn_name, "role": "tool", "content": tool_response})
+        for tool_call in message.tool_calls:
+            result = get_current_status()
+            messages.append({"tool_call_id": tool_call.id, "role": "tool", "content": result})
     ```
+    The loop ends when a reply comes without a tool call. Nothing else stops it; script 06 adds a round limit.
 *   **Business value**: less manual judgement time, standardised handling procedures, and further gains when combined with a knowledge base.
 
 ---
