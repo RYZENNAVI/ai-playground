@@ -384,7 +384,7 @@ result = response.choices[0].message.content
 *   **Debugging tip**: test the call flow with fixed values first and wire up the live interface later. The script's `get_current_weather` is exactly that: a fixed table of temperatures.
 *   **Error handling**: every call in `tool_calls` needs its own `tool` message with the matching `tool_call_id`. If one is missing, the second request fails.
 
-### 12.3 Case: Table Extraction (multimodal Qwen-VL)
+### 12.3 Case: Table Extraction (multimodal)
 *   **Technical point**: pass an image URL plus an extraction instruction and let a vision-language model (VLM) perform complex OCR and document structure understanding, emitting JSON directly.
 *   **The Qwen-VL model family**:
     *   **Qwen-VL (base)**: image captioning, visual question answering (VQA), OCR, document understanding, visual grounding.
