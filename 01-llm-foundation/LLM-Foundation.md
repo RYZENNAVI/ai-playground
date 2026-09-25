@@ -544,7 +544,7 @@ path = snapshot_download(
 ---
 
 ## 17. Prompt Engineering in Practice (four cases)
-All cases use the wrapper `get_completion(prompt, model="deepseek-v3")` with `temperature=0` for stable output.
+All cases go through `get_completion(prompt, ...)`, which sends one system message and one user message to `deepseek-chat` (or `gpt-4o-mini` with an OpenAI key). Cases 1 and 2 use `temperature=0`, case 3 uses 0.1 and case 4 uses 0.7.
 
 ### 17.1 Case: Completing a Task with a Prompt
 *   **Scenario**: have the AI act as a telecom agent and identify the user's requirements for a mobile data plan (three attributes: name / monthly fee / monthly data).
@@ -552,17 +552,17 @@ All cases use the wrapper `get_completion(prompt, model="deepseek-v3")` with `te
 *   **Result**: the input "Help me subscribe to a 100GB plan with a budget under $30/month." yields monthly data = 100GB and a price ceiling of $30, with the plan name unspecified.
 
 ### 17.2 Case: Returning JSON
-*   Add `# Output format {output_format}` to the template, set to "output as JSON".
+*   Add `# Output Format {output_format}` to the template, asking for a JSON object with the keys `name`, `price_limit` and `data_gb`, and turn on JSON mode with `response_format={"type": "json_object"}`.
 *   **Result**: the output collapses to a JSON object with keys `name`, `price_limit`, `data_gb`, containing only the fields the user actually specified.
 
 ### 17.3 Case: Step-by-Step Reasoning with CoT
-*   **Scenario**: judge whether a support reply meets the standard (must be polite, use an official register, accurately mention all three plan attributes, and not be a conversation-ender).
-*   **The key**: adding `cot = "please analyse the dialogue step by step"` markedly improves reasoning. The dimensions checked are politeness → official register → completeness of information.
-*   **Example verdict**: a reply opening with "Hun, we're currently promoting the Unlimited Plan…" is judged **non-compliant** — all three attributes are present, but the over-familiar address is not an official register.
+*   **Scenario**: judge whether a support reply follows three rules: it must be polite, it must state the plan name, price and data allowance correctly, and it must not end the conversation too early.
+*   **The key**: `cot=True` adds a `# Thinking Requirement` section ("Please analyze the conversation details step by step."), so the model walks through the rules one at a time before it gives a verdict.
+*   **Example verdict**: the reply "Hi! We recommend our Unlimited Plan ($40/mo for 1000GB)." is judged **Non-Compliant**. It is polite and keeps the conversation open, but the Unlimited Plan costs $50/mo, so rule 2 fails.
 
 ### 17.4 Case: Using a Prompt to Tune a Prompt
-*   Cast the AI as a "professional prompt author" and have it output three parts: the improved prompt, critical improvement suggestions, and at most 3 clarifying questions.
-*   **Effect**: the improved support prompt includes a warm introduction, a clear scope of service and proactive needs discovery, and generates follow-up questions such as "roughly how much data do you use per month?" and "what is your budget range?"
+*   Cast the AI as a senior prompt engineer and ask it to make a weak system prompt more rigorous and effective: "You are a mobile plan support agent named Melon. Help users pick plans ($10 for 10GB, $30 for 100GB)."
+*   **Effect**: the rewritten prompt comes back in sections (role, available plans, responsibilities, rules, tone), limits the agent to the two listed plans, and tells it to ask about data usage and budget before recommending. The model also explains each change.
 *   **The core trick**: let the AI role-play an expert and iterate on the prompt automatically.
 
 ---

@@ -1,37 +1,41 @@
-"""Four ways to write the same request, and what each one changes in the reply.
+"""This script runs four prompts about mobile data plans and prints each reply. Parts 1
+and 2 send the same request. Part 2 adds an output format and turns on JSON mode. Parts
+3 and 4 are separate tasks that show two more techniques.
 
-Demonstrates prompt structure on one mobile-plan task:
-    1. Split the prompt into objective, output format and user input under headings.
-    2. Ask for JSON and switch on JSON mode, so the reply parses without cleanup.
-    3. Ask for step-by-step reasoning before a verdict on whether a support reply follows three rules.
-    4. Hand the model a weak system prompt and ask it to rewrite that prompt.
+The script uses DeepSeek when DEEPSEEK_API_KEY is set, and OpenAI otherwise. The run
+prints four parts:
+    1. Structured template. The prompt has an objective and the user input, each under a
+       Markdown heading. The model reports the plan preferences it finds.
+    2. JSON mode. The same prompt gets an output format, and the reply is a JSON object
+       that parses without cleanup.
+    3. Chain of thought. The model checks a support reply against three rules step by
+       step, then gives a verdict. The reply quotes the wrong price, so the right verdict
+       is Non-Compliant.
+    4. Meta-prompting. The model rewrites a weak system prompt for a support agent.
 """
 
 import os
 import sys
 from openai import OpenAI
 
-# Automatically load .env file if python-dotenv is installed
+# Read the keys from the .env file at the repository root, if python-dotenv is installed.
 try:
     from dotenv import load_dotenv
     load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 except ImportError:
     pass
 
-# Ensure UTF-8 output on Windows terminal (model replies may contain emoji)
+# Ensure UTF-8 output on the Windows terminal (model replies may contain emoji)
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
 
-# ---------------------------------------------------------------------------
-# Client Setup: DeepSeek (Primary) with OpenAI Fallback
-# ---------------------------------------------------------------------------
 api_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
 
 if not api_key:
-    raise RuntimeError("No API key found! Please set DEEPSEEK_API_KEY or OPENAI_API_KEY.")
+    raise SystemExit("Set DEEPSEEK_API_KEY or OPENAI_API_KEY in .env and retry.")
 
 if os.getenv("DEEPSEEK_API_KEY"):
     base_url = "https://api.deepseek.com"
@@ -52,7 +56,8 @@ def get_completion(
     temperature: float = 0.0,
     json_mode: bool = False,
 ) -> str:
-    """Generate completion with optional JSON mode."""
+    """Send one system message and one user message, and return the reply. With
+    json_mode, the API is asked for a JSON object."""
     kwargs = {
         "model": model,
         "messages": [
@@ -68,7 +73,7 @@ def get_completion(
     return response.choices[0].message.content
 
 
-# --- Shared Example Domain: Mobile Plan Extraction ---------------------------
+# Parts 1 and 2 use this instruction and input.
 INSTRUCTION = """
 Your task is to identify user preferences for mobile data plans.
 Each plan has three attributes: Plan Name, Monthly Price, and Monthly Data.
@@ -79,7 +84,8 @@ INPUT_TEXT = "Help me subscribe to a 100GB plan with a budget under $30/month."
 
 
 def compose_prompt(instruction: str, user_input: str, output_format: str = None, cot: bool = False) -> str:
-    """Compose structured prompt components."""
+    """Join the prompt sections under Markdown headings: the objective, a thinking
+    requirement when cot is set, the output format when one is given, and the user input."""
     blocks = [f"# Objective\n{instruction}"]
     if cot:
         blocks.append("# Thinking Requirement\nPlease analyze the conversation details step by step.")
@@ -90,13 +96,13 @@ def compose_prompt(instruction: str, user_input: str, output_format: str = None,
 
 
 if __name__ == "__main__":
-    print(f"=== Prompt Engineering Demo ({default_model}) ===\n")
+    print(f"=== Prompt engineering ({default_model}) ===\n")
 
-    print("--- 1. Structured Template ---")
+    print("--- 1. Structured template ---")
     prompt1 = compose_prompt(INSTRUCTION, INPUT_TEXT)
     print(get_completion(prompt1))
 
-    print("\n--- 2. JSON Mode ---")
+    print("\n--- 2. JSON mode ---")
     prompt2 = compose_prompt(
         INSTRUCTION,
         INPUT_TEXT,
@@ -104,9 +110,9 @@ if __name__ == "__main__":
     )
     print(get_completion(prompt2, json_mode=True))
 
-    print("\n--- 3. Chain of Thought (Rule Compliance Evaluation) ---")
+    print("\n--- 3. Chain of thought ---")
     rulebook = """
-Evaluate whether customer support reply complies with rules:
+Check whether the support reply follows these rules:
 1. Must be polite.
 2. Must accurately mention plan name, price, and data allowance.
 3. Must not end the conversation prematurely.
@@ -118,12 +124,12 @@ Available plans:
 """
     conversation = """
 Customer: What high-data plans do you have?
-Support: Hi! We recommend our Unlimited Plan ($50/mo for 1000GB). Would you like to subscribe?
+Support: Hi! We recommend our Unlimited Plan ($40/mo for 1000GB). Would you like to subscribe?
 """
-    prompt3 = compose_prompt(rulebook, conversation, output_format="Reason step by step, then output verdict: Compliant or Non-Compliant", cot=True)
+    prompt3 = compose_prompt(rulebook, conversation, output_format="Give the verdict at the end: Compliant or Non-Compliant", cot=True)
     print(get_completion(prompt3, temperature=0.1))
 
-    print("\n--- 4. Meta-Prompting (Prompt Self-Tuning) ---")
+    print("\n--- 4. Meta-prompting ---")
     meta_instruction = "You are a senior Prompt Engineer. Help me optimize the following system prompt to be more rigorous and effective."
     raw_prompt = "You are a mobile plan support agent named Melon. Help users pick plans ($10 for 10GB, $30 for 100GB)."
     prompt = compose_prompt(meta_instruction, raw_prompt)
