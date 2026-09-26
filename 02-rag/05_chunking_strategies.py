@@ -1,14 +1,24 @@
-"""Split one document five different ways and compare what each strategy produces.
+"""This script splits one short document five ways and compares the chunk sizes.
+The document is a theme park ticket guide in three paragraphs: ticket types, buying
+a ticket, and discounts. It is about 1,300 characters long, and the target chunk
+size is 800. Only sizes are measured. The script does not test retrieval.
 
-Demonstrates the trade-offs behind chunking, the step that decides retrieval quality:
-    1. Fixed-length splitting that backs off to a sentence boundary.
-    2. Semantic splitting on sentence units, no overlap.
-    3. LLM-driven splitting that picks its own break points.
-    4. Hierarchical splitting that follows heading structure.
-    5. Sliding window splitting with deliberate overlap.
-    6. Score every strategy side by side on the same text.
-
-Module 02: RAG - Chunking Strategies.
+The run prints six parts:
+    1. Fixed length. The guide cut every 800 characters and moved back to the last
+       sentence end. The next chunk starts 150 characters earlier, so it can begin
+       in the middle of a sentence.
+    2. Sentence packing. Whole sentences packed into chunks of up to 800
+       characters. No sentence is cut, but paragraph breaks are ignored.
+    3. LLM. A chat model chooses the break points, and the run counts how many of
+       its chunks appear word for word in the guide. Without an API key, or when
+       the call fails, part 2 runs in its place and the row is marked.
+    4. Hierarchical. The same paragraphs under headings, with a new chunk at every
+       heading. It only splits at headings: no chunk keeps its parent heading, and
+       the title, followed directly by a subheading, becomes a chunk of its own.
+    5. Sliding window. An 800-character window moved 450 characters at a time, so
+       neighbouring chunks share 350 characters. Chunks start and end mid-word.
+    6. Side by side. Count, average, minimum, maximum and spread (maximum minus
+       minimum) for every strategy.
 """
 
 import json
@@ -37,9 +47,8 @@ Discounts have to be registered before the visit. A birthday visitor who registe
 
 SAMPLE_TEXT = "\n\n".join(SAMPLE_PARAGRAPHS)
 
-# The same three paragraphs under headings. Keeping the prose identical is what
-# makes the final table a fair comparison: only the headings differ, so a row
-# measured on this variant can still be read against the rows above it.
+# The same three paragraphs under headings, so only the headings differ from
+# SAMPLE_TEXT.
 STRUCTURED_TEXT = "\n\n".join([
     "# Ticket Guide",
     "## Ticket Types",
@@ -52,11 +61,8 @@ STRUCTURED_TEXT = "\n\n".join([
 
 
 def pick_provider():
-    """Return (api_key, base_url, model) for whichever key is configured.
-
-    Only chat completion is needed here, so DeepSeek comes first; Gemini and
-    OpenAI follow, which means a single key of any kind is enough to run step 3.
-    """
+    """Return (api_key, base_url, model) for the first key found, DeepSeek first.
+    Any one key is enough for part 3."""
     if os.getenv("DEEPSEEK_API_KEY"):
         return (os.getenv("DEEPSEEK_API_KEY"),
                 "https://api.deepseek.com", "deepseek-chat")
@@ -71,27 +77,22 @@ def pick_provider():
 
 
 def fixed_length_chunks(text, chunk_size=CHUNK_SIZE, overlap=OVERLAP):
-    """Strategy 1: cut at chunk_size, but rewind to the nearest sentence end.
-
-    Plain fixed-length slicing severs sentences mid-word. Scanning backwards for
-    punctuation keeps chunks readable while staying near the target size; the
-    overlap carries a little context across the seam.
-    """
+    """Strategy 1: cut at chunk_size, then move back to a sentence end within
+    SENTENCE_LOOKBACK. The next chunk starts overlap earlier, often mid-sentence."""
     chunks = []
     start = 0
     while start < len(text):
         end = min(start + chunk_size, len(text))
         if end < len(text):
-            for i in range(end, max(start, end - SENTENCE_LOOKBACK), -1):
+            for i in range(end - 1, max(start, end - 1 - SENTENCE_LOOKBACK), -1):
                 if text[i] in TERMINATORS:
                     end = i + 1
                     break
         chunk = text[start:end].strip()
         if chunk:
             chunks.append(chunk)
-        # Once the window reaches the end there is nothing left to overlap into;
-        # without this the loop crawls forward one character at a time and emits
-        # a long tail of single-character chunks.
+        # Stop at the end of the text. Otherwise the overlap keeps pulling start
+        # back, and the loop emits 150 more chunks, each one character shorter.
         if end >= len(text):
             break
         # Step back by the overlap, but never far enough to stall or move backwards.
@@ -100,26 +101,20 @@ def fixed_length_chunks(text, chunk_size=CHUNK_SIZE, overlap=OVERLAP):
 
 
 def split_sentences(text):
-    """Split into sentences while keeping the terminating punctuation.
-
-    A plain re.split on the terminators drops them, which silently strips every
-    full stop from the output; matching a sentence body together with its
-    terminator keeps the chunks quotable.
-    """
+    """Split into sentences and keep each terminator.
+    re.split would drop every full stop."""
     pattern = rf"[^{re.escape(TERMINATORS)}\n]+[{re.escape(TERMINATORS)}]*"
     return [s.strip() for s in re.findall(pattern, text) if s.strip()]
 
 
 def semantic_chunks(text, max_size=CHUNK_SIZE):
-    """Strategy 2: group whole sentences, never splitting one.
-
-    Every chunk is a complete thought, which is what makes retrieval accurate.
-    The cost is uneven length: a trailing sentence can end up alone in a tiny chunk.
-    """
+    """Strategy 2: pack whole sentences into chunks of up to max_size characters.
+    Line breaks are dropped, so a chunk can span two paragraphs."""
     chunks = []
     current = ""
     for sentence in split_sentences(text):
-        if current and len(current) + len(sentence) > max_size:
+        # The + 1 counts the space that joins the sentence to the chunk.
+        if current and len(current) + 1 + len(sentence) > max_size:
             chunks.append(current.strip())
             current = sentence
         else:
@@ -130,18 +125,14 @@ def semantic_chunks(text, max_size=CHUNK_SIZE):
 
 
 def llm_chunks(text, max_size=CHUNK_SIZE):
-    """Strategy 3: hand the job to an LLM and let it choose the break points.
-
-    Produces the most even, most semantically clean chunks, but costs an API call
-    per document. Falls back to the semantic splitter when no key is configured or
-    the model returns something unparseable, so the comparison can still run.
-    """
+    """Strategy 3: let a chat model choose the break points, one API call per text.
+    Returns None without a key or when the call fails, so the caller can fall back."""
     from openai import OpenAI
 
     provider = pick_provider()
     if not provider:
-        print("  (no API key configured, falling back to semantic splitting)")
-        return semantic_chunks(text, max_size)
+        print("  (no API key configured, falling back to sentence packing)")
+        return None
     api_key, base_url, model = provider
     print(f"  (splitting with {model})")
 
@@ -163,24 +154,25 @@ def llm_chunks(text, max_size=CHUNK_SIZE):
             ],
         )
         raw = response.choices[0].message.content.strip()
-        # Models add ```json fences even when told not to; strip them before parsing.
+        # Some models wrap the JSON in fences even when told not to.
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
         chunks = json.loads(raw).get("chunks", [])
         if chunks:
+            # A model can reword the text while splitting it.
+            verbatim = sum(chunk in text for chunk in chunks)
+            print(f"  {verbatim} of {len(chunks)} chunks appear word for word "
+                  "in the text")
             return chunks
-        print("  (empty chunk list, falling back to semantic splitting)")
+        print("  (empty chunk list, falling back to sentence packing)")
     except Exception as exc:
-        print(f"  (LLM split failed: {exc}, falling back to semantic splitting)")
-    return semantic_chunks(text, max_size)
+        print(f"  (LLM split failed: {exc}, falling back to sentence packing)")
+    return None
 
 
 def hierarchical_chunks(text, target_size=CHUNK_SIZE):
-    """Strategy 4: start a new chunk whenever a heading appears.
-
-    Ideal for manuals and specs, where a section is the natural unit of meaning.
-    The weakness shows up as size control: a lone heading becomes its own tiny chunk.
-    """
+    """Strategy 4: start a new chunk at every heading or past target_size. All
+    heading levels are treated alike, so no chunk keeps its parent heading."""
     heading = ("# ", "## ", "### ")
     chunks = []
     current = ""
@@ -199,12 +191,8 @@ def hierarchical_chunks(text, target_size=CHUNK_SIZE):
 
 
 def sliding_window_chunks(text, window=CHUNK_SIZE, step=OVERLAP * 3):
-    """Strategy 5: slide a fixed window forward in fixed steps.
-
-    Because step < window, consecutive chunks share text, so a fact sitting on a
-    boundary still appears whole somewhere. The price is duplicated content in the
-    index, and a stub chunk at the tail.
-    """
+    """Strategy 5: move a fixed window forward by step characters. Neighbouring
+    chunks share window minus step characters, so the index holds repeated text."""
     chunks = []
     for i in range(0, len(text), step):
         chunk = text[i:i + window].strip()
@@ -213,16 +201,14 @@ def sliding_window_chunks(text, window=CHUNK_SIZE, step=OVERLAP * 3):
     return chunks
 
 
-def describe(name, produce, preview=60):
-    """Print size statistics plus a short preview of every chunk.
-
-    The producer is a callable rather than a ready list because Python evaluates
-    arguments before the call: passing chunks directly would run the strategy
-    first, so any message it prints while working would land under the previous
-    strategy's heading instead of its own.
-    """
+def describe(name, produce, fallback=None, preview=60):
+    """Print size statistics and a preview of every chunk. Takes a callable so a
+    strategy's own messages print under its heading."""
     print(f"\n--- {name} ---")
     chunks = produce()
+    if chunks is None and fallback:
+        chunks = fallback()
+        name = f"{name} (fell back)"
     if not chunks:
         print("  no chunks produced")
         return None
@@ -245,15 +231,14 @@ def describe(name, produce, preview=60):
 
 
 def summarise(all_stats):
-    """Step 6: put every strategy on one line so the trade-offs are visible."""
-    print("\n=== Side-by-side comparison ===")
+    """Part 6: one row per strategy."""
+    print("\n--- 6. Side by side ---")
     print(f"  {'strategy':<22}{'chunks':>8}{'avg':>8}{'min':>8}{'max':>8}{'spread':>9}")
     for s in (s for s in all_stats if s):
         print(f"  {s['name']:<22}{s['count']:>8}{s['avg']:>8.0f}"
               f"{s['min']:>8}{s['max']:>8}{s['max'] - s['min']:>9}")
-    print("\n  Lower spread means more even chunks. Even chunks embed more")
-    print("  predictably, which is why LLM splitting usually wins on quality")
-    print("  and loses on cost.")
+    print("\n  Spread is max minus min, so lower means more even sizes.")
+    print("  Size is all this script measures. It does not test retrieval.")
 
 
 def main():
@@ -261,13 +246,16 @@ def main():
           f"({len(STRUCTURED_TEXT)} with headings), target chunk size {CHUNK_SIZE}")
 
     stats = [
-        describe("1. fixed length", lambda: fixed_length_chunks(SAMPLE_TEXT)),
-        describe("2. semantic", lambda: semantic_chunks(SAMPLE_TEXT)),
-        describe("3. llm", lambda: llm_chunks(SAMPLE_TEXT)),
+        describe("1. Fixed length", lambda: fixed_length_chunks(SAMPLE_TEXT)),
+        describe("2. Sentence packing", lambda: semantic_chunks(SAMPLE_TEXT)),
+        describe("3. LLM", lambda: llm_chunks(SAMPLE_TEXT),
+                 fallback=lambda: semantic_chunks(SAMPLE_TEXT)),
         # Hierarchical needs headings, so it gets the structured variant.
-        describe("4. hierarchical", lambda: hierarchical_chunks(STRUCTURED_TEXT)),
-        describe("5. sliding window", lambda: sliding_window_chunks(SAMPLE_TEXT)),
+        describe("4. Hierarchical", lambda: hierarchical_chunks(STRUCTURED_TEXT)),
+        describe("5. Sliding window", lambda: sliding_window_chunks(SAMPLE_TEXT)),
     ]
+
+    # 6. Side by side
     summarise(stats)
 
 

@@ -696,55 +696,47 @@ There is nothing more mysterious to it.
 
 ### 5.1 Five chunking strategies
 
-Chunking decides retrieval quality directly: too fine and meaning is severed, too coarse and noise
-drowns the point.
+`05_chunking_strategies.py` splits one theme park ticket guide five ways. The guide has three
+paragraphs (ticket types, buying a ticket, discounts) and is 1299 characters long, or 1366 in the
+copy with headings. The target chunk size is 800. The script measures chunk sizes only. It does
+not test which strategy retrieves better.
 
-| Strategy | How it works | Trade-offs and fit |
+| Strategy | What the code does | What the run shows |
 | :--- | :--- | :--- |
-| **1 Improved fixed length** | Fixed size, but **backing off to a sentence boundary**, with overlap for continuity | Simple, fast, uniform. Fits: bulk processing |
-| **2 Semantic** | Split on sentences and paragraphs, **no overlap** | Meaning intact, but **lengths can be wildly uneven** |
-| **3 LLM-driven** | The model picks its own break points, balancing meaning and length | Intelligent breaks, **slow and expensive** |
-| **4 Hierarchical** | Follow the document structure (headings, sections, paragraphs) | Preserves structure, **depends on the format** |
-| **5 Sliding window** | A fixed window advances in fixed steps, producing overlap | Keeps context, improves recall, **redundant** |
+| 1 Fixed length | Cuts every 800 characters, moves back to the last sentence end within 200 characters, and starts the next chunk 150 characters earlier | The second chunk starts at `resellers also sell them`, in the middle of a sentence |
+| 2 Sentence packing | Packs whole sentences into chunks of up to 800 characters | No sentence is cut, but the first chunk runs from paragraph 1 into the middle of paragraph 2 |
+| 3 LLM | A chat model picks the break points and replies with JSON | DeepSeek returned the three paragraphs unchanged: 414, 428 and 453 characters |
+| 4 Hierarchical | Starts a new chunk at every heading (on the copy with headings) | The title `# Ticket Guide` becomes a chunk of 14 characters |
+| 5 Sliding window | Moves an 800-character window forward 450 characters at a time | Neighbouring chunks share 350 characters, chunks start mid-word (`ficial channels`), and 1999 characters are indexed for 1299 |
 
-The LLM prompt asks for three things: ① preserve semantic completeness ② break at natural points
-③ return the chunks as JSON.
+- Strategy 2 is called sentence packing because it only counts characters. No embedding is
+  involved, so it is not semantic chunking.
+- Strategy 4 only splits at headings. A chunk does not carry its parent heading, so the
+  `## Discounts` chunk does not say it belongs to the ticket guide.
+- The LLM prompt asks for chunks of at most 800 characters that are semantically complete and
+  break at natural boundaries, returned as `{"chunks": [...]}`. The run counts how many chunks
+  appear word for word in the guide, because a model can reword text while splitting it. Here it
+  was 3 of 3.
 
-**Side by side**:
+### 5.2 The side-by-side table
 
-| Strategy | Meaning | Length control | Complexity | Speed | Fits |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| Improved fixed length | Medium | Excellent | Simple | Fast | Technical docs, specifications |
-| Semantic | Excellent | Medium | Medium | Medium | Natural prose |
-| LLM-driven | Excellent | Excellent | Complex | Slow | High quality requirements |
-| Hierarchical | Excellent | Poor | Medium | Medium | Structured documents |
-| Sliding window | Medium | Excellent | Simple | Fast | Long documents |
+```
+  strategy                chunks     avg     min     max   spread
+  1. Fixed length              2     724     684     765       81
+  2. Sentence packing          2     648     613     683       70
+  3. LLM                       3     432     414     453       39
+  4. Hierarchical              4     339      14     466      452
+  5. Sliding window            3     666     399     800      401
+```
 
-### 5.2 Practice seven: five strategies over one text
-
-See `05_chunking_strategies.py`. Six steps: five implement one strategy each, and the sixth scores
-them side by side on the same text.
-
-**Parameters**: `CHUNK_SIZE=800`, `OVERLAP=150`.
-**Measured**: on 1299 characters of text, the spread of chunk lengths (longest minus shortest) is
-**81 / 70 / 39 / 452 / 401** respectively.
-
-**Three things to read out of those numbers**:
-
-1.  **LLM splitting has the smallest spread at 39** — it is genuinely the most even, because it is
-    the only strategy **looking at meaning and length at the same time**.
-2.  **Hierarchical has the largest at 452, and that is not a defect** — it is faithful to the
-    document's structure, where headings are short and bodies are long. A large spread is
-    **what the structure looks like**, not a bad split.
-3.  **The two test texts have to be comparable**: they share the same paragraphs and differ only by
-    67 characters of headings. Otherwise the columns could not be read across.
-
-> **⚠️ A silent failure worth remembering**: strategy 3 (LLM splitting) **never actually ran** for a
-> while — after an authentication failure the code fell back silently to semantic splitting, so
-> rows 2 and 3 of the comparison held identical numbers and looked perfectly reasonable. Only after
-> switching to a working provider did it produce results of its own.
-> **A silent fallback is the hardest kind of bug: it raises nothing and simply shows you a false
-> conclusion.**
+- Spread is the longest chunk minus the shortest.
+- The LLM has the smallest spread, but only because it split at the blank lines. Splitting on
+  blank lines gives the same three chunks without an API call.
+- Hierarchical has the largest spread because of the 14-character title chunk. Without it the
+  spread would be 36 (466 minus 430).
+- Without an API key, or when the call fails, part 2 runs in place of part 3 and the row reads
+  `3. LLM (fell back)`. An earlier version fell back silently, so rows 2 and 3 held the same
+  numbers and nothing showed that the model had never run.
 
 ### 5.3 Chunking and vectorisation are two separate steps
 

@@ -133,7 +133,7 @@ See [LLM-Foundation.md](01-llm-foundation/LLM-Foundation.md) for the concepts be
 | 02 | `02_word2vec_similarity.py` | Word2Vec training, persistence and vector arithmetic |
 | 03 | `03_embedding_faiss_metadata.py` | Embeddings into FAISS with metadata, Matryoshka dimensions, persistence |
 | 04 | `04_embedding_models_compare.py` | Three local models compared: CLS, mean and last-token pooling, rebuilt by hand and checked against the wrapper |
-| 05 | `05_chunking_strategies.py` | Five chunking strategies scored side by side |
+| 05 | `05_chunking_strategies.py` | Five chunking strategies compared by chunk size on one ticket guide |
 | 06 | `06_chatpdf_langchain_faiss.py` | PDF question answering with LangChain, FAISS and page-level citations |
 | 07 | `07_disney_multimodal_rag.py` | Multimodal RAG by hand: dual indexes, CLIP, OCR, vision fallback |
 | 08 | `08_query_rewriting.py` | Five rewrite types, single-prompt intent detection, search-engine rewriting |
