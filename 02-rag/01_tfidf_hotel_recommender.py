@@ -1,15 +1,21 @@
-"""Recommend similar hotels from their descriptions using TF-IDF and cosine similarity.
+"""This script recommends hotels with similar descriptions. It turns each of 152 Seattle
+hotel descriptions into a TF-IDF vector and ranks the other hotels by cosine similarity.
+No neural model is involved: the features are word counts, weighted down for words that
+many descriptions share.
 
-Demonstrates classical statistical text features before neural embeddings:
-    1. Load the Seattle hotel dataset.
-    2. Inspect a single hotel description.
-    3. Rank the most frequent n-grams after removing stop words.
-    4. Clean the raw descriptions into a normalized bag of words.
-    5. Build a TF-IDF matrix over the cleaned descriptions.
-    6. Score every hotel pair with cosine similarity.
-    7. Recommend the ten closest hotels for a given hotel name.
-
-Module 02: RAG - TF-IDF Content-Based Recommendation.
+The run prints six parts:
+    1. Dataset. The number of hotels and the columns.
+    2. One description, to show what the raw text looks like.
+    3. Frequent phrases. The 20 most common three-word phrases, with stop words removed.
+       Raw counts rank a phrase like "pike place market" first, whether or not it tells
+       hotels apart.
+    4. Cleaning. One description before and after lowercasing and removing punctuation
+       and stop words.
+    5. TF-IDF and cosine similarity. TF-IDF weights each word down by how many
+       descriptions contain it, so words that most hotels use count less. The vectors
+       have unit length, so their dot product (the linear kernel) is the cosine
+       similarity. The script prints the vocabulary size and the matrix shapes.
+    6. Recommendations. The ten hotels closest to each of two hotels, with their scores.
 """
 
 import re
@@ -20,6 +26,7 @@ import pandas as pd
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.metrics.pairwise import linear_kernel
 
+# Print UTF-8 even when the output is piped or redirected on Windows.
 sys.stdout.reconfigure(encoding="utf-8")
 
 DATA_FILE = Path(__file__).parent / "data" / "Seattle_Hotels.csv"
@@ -47,21 +54,20 @@ PUNCTUATION_RE = re.compile(r"[/(){}\[\]\|@,;]")
 NON_ALPHANUMERIC_RE = re.compile(r"[^0-9a-z #+_]")
 
 
+# 1. Dataset
+
 def load_hotels(path):
-    """Read the hotel CSV and report how many rows it holds."""
+    """Read the hotel CSV and print its size and columns."""
     frame = pd.read_csv(path, encoding="latin-1")
     print(f"Hotels in dataset: {len(frame)}")
     print(f"Columns: {list(frame.columns)}")
     return frame
 
 
-def top_n_grams(corpus, n, k):
-    """Return the k most frequent n-grams across the corpus.
+# 3. Frequent phrases
 
-    A raw count over n-grams is the simplest possible text feature: it captures
-    which phrases appear often, but treats every occurrence as equally important
-    no matter how common the phrase is across the whole collection.
-    """
+def top_n_grams(corpus, n, k):
+    """Return the k most frequent n-grams across the corpus."""
     vectorizer = CountVectorizer(ngram_range=(n, n), stop_words=list(STOP_WORDS))
     counts = vectorizer.fit_transform(corpus)
     totals = counts.sum(axis=0)
@@ -69,6 +75,8 @@ def top_n_grams(corpus, n, k):
     frequencies.sort(key=lambda pair: pair[1], reverse=True)
     return frequencies[:k]
 
+
+# 4. Cleaning
 
 def clean_text(text):
     """Lowercase the text, drop punctuation and stop words."""
@@ -78,14 +86,11 @@ def clean_text(text):
     return " ".join(word for word in text.split() if word not in STOP_WORDS)
 
 
-def build_similarity_matrix(descriptions):
-    """Turn cleaned descriptions into TF-IDF vectors and score every pair.
+# 5. TF-IDF and cosine similarity
 
-    TF-IDF fixes the weakness of raw counts by dividing each term's frequency by
-    how many documents contain it, so words that appear in every hotel blurb
-    ("seattle", "hotel") stop dominating the vector. Because the vectors are
-    L2-normalized, a linear kernel is exactly the cosine similarity.
-    """
+def build_similarity_matrix(descriptions):
+    """Turn the cleaned descriptions into TF-IDF vectors and return the cosine
+    similarity of every pair."""
     vectorizer = TfidfVectorizer(analyzer="word", ngram_range=(1, 3), min_df=0.01,
                                  stop_words=list(STOP_WORDS))
     matrix = vectorizer.fit_transform(descriptions)
@@ -95,6 +100,8 @@ def build_similarity_matrix(descriptions):
     print(f"Similarity matrix shape: {similarities.shape}")
     return similarities
 
+
+# 6. Recommendations
 
 def recommend(name, names, similarities, top_k=10):
     """Return the top_k hotels closest to the given hotel, excluding itself."""
@@ -107,44 +114,29 @@ def recommend(name, names, similarities, top_k=10):
     return [(names[i], float(similarities[index][i])) for i in neighbours]
 
 
-def require_data_file(path, origin):
-    """Fail early with a usable message when a required data file is absent.
-
-    The data directory is git-ignored, so a fresh clone has the scripts but not
-    the corpora. The message names where the file is expected.
-    """
-    if not path.exists():
-        raise SystemExit(
-            f"Missing data file: {path}\n"
-            f"Expected source: {origin}"
-        )
-    return path
-
 def main():
-    print("--- 1. Load the Seattle hotel dataset ---")
-    require_data_file(DATA_FILE, "4-Embeddings/hotel_recommendation/Seattle_Hotels.csv")
+    print("--- 1. Dataset ---")
     frame = load_hotels(DATA_FILE)
 
-    print("\n--- 2. Inspect a single hotel description ---")
+    print("\n--- 2. One description ---")
     sample = frame.iloc[10]
     print(f"Name: {sample['name']}")
     print(f"Description: {sample['desc'][:300]}...")
 
-    print("\n--- 3. Rank the most frequent n-grams ---")
+    print("\n--- 3. Frequent phrases ---")
     for phrase, count in top_n_grams(frame["desc"], n=3, k=20):
         print(f"  {count:4d}  {phrase}")
 
-    print("\n--- 4. Clean the raw descriptions ---")
+    print("\n--- 4. Cleaning ---")
     frame["desc_clean"] = frame["desc"].apply(clean_text)
     print(f"Before: {frame['desc'].iloc[10][:120]}...")
     print(f"After : {frame['desc_clean'].iloc[10][:120]}...")
 
-    print("\n--- 5. Build a TF-IDF matrix ---")
-    print("--- 6. Score cosine similarity between every hotel pair ---")
+    print("\n--- 5. TF-IDF and cosine similarity ---")
     similarities = build_similarity_matrix(frame["desc_clean"])
     names = pd.Series(frame["name"])
 
-    print("\n--- 7. Recommend the ten closest hotels ---")
+    print("\n--- 6. Recommendations ---")
     for query in ["Hilton Seattle Airport & Conference Center",
                   "The Bacon Mansion Bed and Breakfast"]:
         print(f"\nHotels similar to: {query}")

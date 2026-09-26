@@ -25,6 +25,7 @@ import pandas as pd
 import torch
 from torch import nn
 
+# Print UTF-8 even when the output is piped or redirected on Windows.
 sys.stdout.reconfigure(encoding="utf-8")
 
 DATA_DIR = Path(__file__).resolve().parent / "data"

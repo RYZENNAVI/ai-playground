@@ -1,15 +1,25 @@
-"""Train Word2Vec on a Chinese novel and explore the geometry of its word vectors.
+"""This script trains Word2Vec on Journey to the West and tests what the word vectors
+have learned. Chinese has no spaces between words, so jieba first cuts the text into
+words. Word2Vec then learns one vector per word by predicting which words appear near
+each other.
 
-Demonstrates the jump from counting words to learning dense vectors:
-    1. Segment the raw Chinese text into words with jieba.
-    2. Train a baseline Word2Vec model on the segmented corpus.
-    3. Measure similarity between character names.
-    4. Solve analogies with vector arithmetic.
-    5. Retrain with tuned hyper-parameters and save the model to disk.
-    6. Reload the saved model and confirm it answers the same way.
-    7. Reproduce the textbook king/queen analogy on a large English corpus.
-
-Module 02: RAG - Word2Vec Word Embeddings.
+The run prints seven parts:
+    1. Segmentation. The raw text is GB18030, and the segmented copy is cached.
+    2. Baseline model. 100-dimensional vectors, a window of 3, every word kept.
+    3. Name similarity. Cosine similarity between character names.
+    4. Analogy. Sun Wukong is to Pilgrim Sun (his alias) as Tang Seng is to what? The
+       top answer is 长老 (elder), the way other characters address Tang Seng.
+    5. Second model. 128-dimensional vectors, a window of 5, and words seen fewer than
+       five times dropped, which shrinks the vocabulary from about 46,000 to 7,700.
+       The model is saved to models/.
+    6. Reload. The reloaded model scores the same as before it was saved. Its analogy
+       answer can change between runs, because the second model trains on several
+       threads (长老 and 菩萨 have both come first). Every pair scores above 0.8, even
+       Sun Wukong and "monster". A single novel is small and repetitive, so the names
+       share the same contexts and their vectors crowd together.
+    7. English corpus. The same recipe on text8, 17 million words of cleaned
+       Wikipedia. king - man + woman gives queen, and king vs banana scores near 0.
+       text8 downloads once (about 31 MB), and the trained model is cached.
 """
 
 import io
@@ -22,6 +32,7 @@ import jieba
 from gensim.models import Word2Vec
 from gensim.models.word2vec import LineSentence
 
+# Print UTF-8 even when the output is piped or redirected on Windows.
 sys.stdout.reconfigure(encoding="utf-8")
 
 BASE_DIR = Path(__file__).parent
@@ -54,11 +65,8 @@ def label(word):
 
 
 def detect_encoding(path):
-    """Guess the text encoding of a Chinese corpus file.
-
-    Public-domain Chinese texts are still commonly distributed as GB18030 rather
-    than UTF-8, and decoding one as the other fails on the very first character.
-    """
+    """Return "utf-8" or "gb18030", whichever decodes the start of the file. Many
+    Chinese text files still use GB18030."""
     for encoding in ("utf-8", "gb18030"):
         try:
             with open(path, encoding=encoding) as handle:
@@ -70,18 +78,14 @@ def detect_encoding(path):
 
 
 def segment_corpus(source, target):
-    """Cut the raw text into space-separated words, one output line per input line.
-
-    Chinese has no spaces between words, so every downstream tool that expects
-    tokens needs this step first. The result is cached because segmenting the
-    whole novel takes a while and never changes.
-    """
+    """Cut the text into space-separated words, one line per input line, and cache
+    the result."""
     if target.exists():
         print(f"Reusing cached segmentation: {target.name}")
         return target
 
     encoding = detect_encoding(source)
-    print(f"Segmenting {source.name} ({encoding}) with jieba, this takes a moment...")
+    print(f"Segmenting {source.name} ({encoding}) with jieba. This takes a moment...")
     started = time.time()
     words = 0
     # Write to a temporary file first: a crash midway must not leave behind a
@@ -102,12 +106,7 @@ def segment_corpus(source, target):
 
 
 def train(sentences_path, vector_size, window, min_count, workers=1):
-    """Train a Word2Vec model and report its vocabulary size.
-
-    Word2Vec never stores a sentence: it learns one vector per word by predicting
-    which words share a context window. The trained model is therefore just a
-    lookup table from token to vector, which is why inference is instant.
-    """
+    """Train a Word2Vec model and print its vocabulary size and training time."""
     started = time.time()
     model = Word2Vec(LineSentence(str(sentences_path)), vector_size=vector_size,
                      window=window, min_count=min_count, workers=workers)
@@ -139,28 +138,8 @@ def report_analogy(model, positive, negative, top_k=5):
         print(f"    [{score:.4f}] {label(word)}")
 
 
-def require_data_file(path, origin):
-    """Fail early with a usable message when a required data file is absent.
-
-    The data directory is git-ignored, so a fresh clone has the scripts but not
-    the corpora. The message names where the file is expected.
-    """
-    if not path.exists():
-        raise SystemExit(
-            f"Missing data file: {path}\n"
-            f"Expected source: {origin}"
-        )
-    return path
-
 def train_text8_model():
-    """Train, or reload, a Word2Vec model on the English text8 corpus.
-
-    A single novel is a small corpus: nearly every word ends up similar to every
-    other one. text8 is a cleaned 17-million-token Wikipedia dump, large enough to
-    reproduce the analogy Word2Vec is famous for. It downloads about 31 MB on
-    first use, caches under ~/gensim-data, and the trained model is saved here so
-    later runs skip both the download and the training.
-    """
+    """Train a Word2Vec model on text8, or reload the cached one."""
     if TEXT8_MODEL_FILE.exists():
         print("  Reusing cached text8 model")
         return Word2Vec.load(str(TEXT8_MODEL_FILE))
@@ -171,11 +150,9 @@ def train_text8_model():
 
     print("  Downloading text8 (about 31 MB on first run) and training...")
     started = time.time()
-    # Ask for the path instead of the corpus object: gensim-data ships a loader
-    # shim that still does "from smart_open import smart_open", which no longer
-    # exists in smart_open 2+. Reading the archive with Text8Corpus avoids it.
-    # The downloader also writes a carriage-return progress bar, which floods the
-    # log with thousands of lines when stdout is a pipe rather than a terminal.
+    # Ask for the path only: the gensim-data loader imports smart_open.smart_open,
+    # which smart_open 2 removed. Hide the downloader's \r progress bar on a pipe,
+    # where it floods the log.
     if sys.stdout.isatty():
         corpus_path = gensim.downloader.load("text8", return_path=True)
     else:
@@ -190,15 +167,16 @@ def train_text8_model():
 
 
 def main():
-    print("--- 1. Segment the raw Chinese text ---")
-    require_data_file(SOURCE_FILE,
-                      "4-Embeddings/word2vec/journey_to_the_west/source/journey_to_the_west.txt")
+    # 1. Segmentation
+    print("--- 1. Segmentation ---")
     segmented = segment_corpus(SOURCE_FILE, SEGMENTED_FILE)
 
-    print("\n--- 2. Train a baseline Word2Vec model ---")
+    # 2. Baseline model
+    print("\n--- 2. Baseline model ---")
     baseline = train(segmented, vector_size=100, window=3, min_count=1)
 
-    print("\n--- 3. Measure similarity between character names ---")
+    # 3. Name similarity
+    print("\n--- 3. Name similarity ---")
     report_similarity(baseline, [
         (MONKEY_KING, PIGSY),
         (MONKEY_KING, PILGRIM_SUN),
@@ -207,10 +185,12 @@ def main():
     print(f"  Vector for {label(MONKEY_KING)}: shape={baseline.wv[MONKEY_KING].shape}, "
           f"first values={baseline.wv[MONKEY_KING][:5]}")
 
-    print("\n--- 4. Solve analogies with vector arithmetic ---")
+    # 4. Analogy
+    print("\n--- 4. Analogy ---")
     report_analogy(baseline, positive=[MONKEY_KING, MONK], negative=[PILGRIM_SUN])
 
-    print("\n--- 5. Retrain with tuned hyper-parameters and save ---")
+    # 5. Second model
+    print("\n--- 5. Second model ---")
     tuned = train(segmented, vector_size=128, window=5, min_count=5,
                   workers=multiprocessing.cpu_count())
     MODEL_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -222,19 +202,17 @@ def main():
         (MONK, SANDY),
     ])
 
-    print("\n--- 6. Reload the saved model and confirm ---")
+    # 6. Reload
+    print("\n--- 6. Reload ---")
     reloaded = Word2Vec.load(str(MODEL_FILE))
     print(f"  Reloaded vocab size: {len(reloaded.wv):d}")
     report_similarity(reloaded, [(MONKEY_KING, PIGSY)])
     report_analogy(reloaded, positive=[MONKEY_KING, MONK], negative=[PILGRIM_SUN])
-    print("  Note: every pair above scores above 0.9. That is not a sign the model")
-    print("  is working unusually well -- a single novel is a small, stylistically")
-    print("  repetitive corpus, so most character names end up in near-identical")
-    print("  local contexts (the same dialogue tags and narrative patterns) and")
-    print("  get pushed toward the same region of the vector space. Step 7 repeats")
-    print("  the same recipe on a bigger, more varied corpus for contrast.")
+    print('  Note: every pair scores above 0.8, even Sun Wukong and "monster".')
+    print("  A single novel is too small and repetitive to separate the names.")
 
-    print("\n--- 7. Reproduce the textbook analogy on an English corpus ---")
+    # 7. English corpus
+    print("\n--- 7. English corpus ---")
     english = train_text8_model()
     report_analogy(english, positive=["king", "woman"], negative=["man"])
     report_analogy(english, positive=["paris", "italy"], negative=["france"])

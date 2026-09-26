@@ -23,6 +23,7 @@ import pandas as pd
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
+# Print UTF-8 even when the output is piped or redirected on Windows.
 sys.stdout.reconfigure(encoding="utf-8")
 
 DATA = Path(__file__).parent / "data"

@@ -23,6 +23,7 @@ from pathlib import Path
 import torch
 from PIL import Image, ImageDraw, ImageFont
 
+# Print UTF-8 even when the output is piped or redirected on Windows.
 sys.stdout.reconfigure(encoding="utf-8")
 
 MODEL_ID = os.getenv("VLM_MODEL_ID", "HuggingFaceTB/SmolVLM-256M-Instruct")

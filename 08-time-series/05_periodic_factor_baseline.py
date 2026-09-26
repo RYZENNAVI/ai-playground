@@ -21,6 +21,7 @@ import pandas as pd
 import statsmodels.formula.api as smf
 from statsmodels.tsa.arima.model import ARIMA
 
+# Print UTF-8 even when the output is piped or redirected on Windows.
 sys.stdout.reconfigure(encoding="utf-8")
 warnings.filterwarnings("ignore")
 

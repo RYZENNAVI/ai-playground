@@ -22,6 +22,7 @@ import torch.nn as nn
 import torchvision
 from PIL import Image, ImageDraw
 
+# Print UTF-8 even when the output is piped or redirected on Windows.
 sys.stdout.reconfigure(encoding="utf-8")
 
 SEED = 3407

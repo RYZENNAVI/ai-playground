@@ -19,6 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
+# Print UTF-8 even when the output is piped or redirected on Windows.
 sys.stdout.reconfigure(encoding="utf-8")
 
 MODULE_DIR = Path(__file__).resolve().parent

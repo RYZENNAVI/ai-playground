@@ -22,6 +22,7 @@ import pandas as pd
 import statsmodels.api as sm
 from prophet import Prophet
 
+# Print UTF-8 even when the output is piped or redirected on Windows.
 sys.stdout.reconfigure(encoding="utf-8")
 warnings.filterwarnings("ignore")
 

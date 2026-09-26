@@ -17,6 +17,7 @@ import sys
 import numpy as np
 from scipy.linalg import svd
 
+# Print UTF-8 even when the output is piped or redirected on Windows.
 sys.stdout.reconfigure(encoding="utf-8")
 
 RANK = 3

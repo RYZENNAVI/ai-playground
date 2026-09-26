@@ -26,6 +26,7 @@ from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.arima_process import ArmaProcess
 from statsmodels.tools.sm_exceptions import ConvergenceWarning
 
+# Print UTF-8 even when the output is piped or redirected on Windows.
 sys.stdout.reconfigure(encoding="utf-8")
 
 # Two warning classes are silenced, both deliberately and both narrowly.

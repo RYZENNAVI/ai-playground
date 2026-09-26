@@ -25,12 +25,8 @@ try:
 except ImportError:
     pass
 
-# Ensure UTF-8 output on the Windows terminal
-if hasattr(sys.stdout, "reconfigure"):
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
+# Print UTF-8 even when the output is piped or redirected on Windows.
+sys.stdout.reconfigure(encoding="utf-8")
 
 gemini_key = os.getenv("GEMINI_API_KEY")
 openai_key = os.getenv("OPENAI_API_KEY")

@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pymupdf
 
+# Print UTF-8 even when the output is piped or redirected on Windows.
 sys.stdout.reconfigure(encoding="utf-8")
 
 OUT_DIR = Path(__file__).parent / "outputs" / "layout_audit"

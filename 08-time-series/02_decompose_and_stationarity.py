@@ -22,6 +22,7 @@ from statsmodels.tsa.seasonal import STL, seasonal_decompose
 from statsmodels.tools.sm_exceptions import InterpolationWarning
 from statsmodels.tsa.stattools import adfuller, kpss
 
+# Print UTF-8 even when the output is piped or redirected on Windows.
 sys.stdout.reconfigure(encoding="utf-8")
 
 DATA_DIR = Path(__file__).resolve().parent / "data"

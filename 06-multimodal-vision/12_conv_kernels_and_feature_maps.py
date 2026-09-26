@@ -20,6 +20,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image, ImageDraw
 
+# Print UTF-8 even when the output is piped or redirected on Windows.
 sys.stdout.reconfigure(encoding="utf-8")
 
 OUT_DIR = Path(__file__).parent / "outputs" / "feature_maps"

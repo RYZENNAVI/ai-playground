@@ -21,6 +21,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+# Print UTF-8 even when the output is piped or redirected on Windows.
 sys.stdout.reconfigure(encoding="utf-8")
 
 OUT_BASE = Path(__file__).parent / "outputs" / "training_mechanics"

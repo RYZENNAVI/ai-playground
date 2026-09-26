@@ -27,6 +27,7 @@ from importlib import import_module
 
 _db = import_module("01_build_insurance_db")
 
+# Print UTF-8 even when the output is piped or redirected on Windows.
 sys.stdout.reconfigure(encoding="utf-8")
 load_dotenv(Path(__file__).parents[1] / ".env")
 

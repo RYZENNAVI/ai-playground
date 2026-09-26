@@ -190,6 +190,7 @@ def main() -> None:
         serve()
         return
 
+    # Print UTF-8 even when the output is piped or redirected on Windows.
     sys.stdout.reconfigure(encoding="utf-8")
     load_dotenv(Path(__file__).parents[1] / ".env")
 

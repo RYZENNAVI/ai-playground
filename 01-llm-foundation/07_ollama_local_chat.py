@@ -31,12 +31,8 @@ try:
 except ImportError:
     pass
 
-# Ensure UTF-8 output on the Windows terminal (model replies may contain emoji)
-if hasattr(sys.stdout, "reconfigure"):
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
+# Print UTF-8 even when the output is piped or redirected on Windows.
+sys.stdout.reconfigure(encoding="utf-8")
 
 # Set OLLAMA_HOST or OLLAMA_MODEL in .env to use another host or model.
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")

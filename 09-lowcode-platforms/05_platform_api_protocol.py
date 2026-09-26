@@ -23,6 +23,7 @@ import urllib.request
 from pathlib import Path
 from textwrap import dedent
 
+# Print UTF-8 even when the output is piped or redirected on Windows.
 sys.stdout.reconfigure(encoding="utf-8")
 
 HOST = "127.0.0.1"

@@ -17,6 +17,7 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
+# Print UTF-8 even when the output is piped or redirected on Windows.
 sys.stdout.reconfigure(encoding="utf-8")
 
 DATA_DIR = Path(__file__).parent / "data"

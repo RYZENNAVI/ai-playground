@@ -22,6 +22,7 @@ from copy import deepcopy
 from itertools import permutations
 from pathlib import Path
 
+# Print UTF-8 even when the output is piped or redirected on Windows.
 sys.stdout.reconfigure(encoding="utf-8")
 
 SPEC_DIR = Path(__file__).resolve().parent / "data" / "workflows"

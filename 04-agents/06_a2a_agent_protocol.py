@@ -20,6 +20,7 @@ import urllib.request
 import uuid
 from json import dumps, loads
 
+# Print UTF-8 even when the output is piped or redirected on Windows.
 sys.stdout.reconfigure(encoding="utf-8")
 
 HOST = "127.0.0.1"
