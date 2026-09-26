@@ -61,6 +61,10 @@ meaning has reversed**. The cause is that a unigram model counts occurrences onl
     A word appearing in **fewer** documents discriminates better and gets a higher IDF. Words like
     "the" and "is", which appear everywhere, are pushed towards 0.
 *   **Final feature value** = TF × IDF; words that never appear score 0.
+*   **What sklearn computes**: `TfidfVectorizer` uses the smoothed form
+    `idf = ln((1 + n) / (1 + df)) + 1`, where n is the number of documents and df the number that
+    contain the term, multiplies it by the term count, and scales every vector to length 1. That is
+    why the dot product (`linear_kernel`) of two vectors is their cosine similarity.
 
 ### 1.6 Practice one: content-based recommendation with TF-IDF
 
@@ -69,18 +73,18 @@ meaning has reversed**. The cause is that a unigram model counts occurrences onl
 **Method**: turn each description into a TF-IDF vector, compute the cosine similarity between the
 target hotel and every other one, and take the top k.
 
-**Seven steps** (see `01_tfidf_hotel_recommender.py`):
+**Six parts** (see `01_tfidf_hotel_recommender.py`):
 
-1.  Load the dataset and confirm its row count and columns.
-2.  Inspect one description to see what the raw text looks like.
-3.  Rank the most frequent n-grams after removing stop words.
-4.  Clean: lowercase everything and drop stop words, so casing and filler words stop creating
-    differences that are not real.
-5.  Build the TF-IDF matrix over the cleaned descriptions (1-to-3-gram combinations, giving a
-    measured vocabulary of **3348** dimensions and a matrix of shape `152 × 3348`).
-6.  Compute cosine similarity into a symmetric `152 × 152` matrix whose diagonal is 1 (each hotel
-    against itself).
-7.  Sort by similarity and return the top 10 — **excluding the hotel itself**, via `iloc[1:11]`.
+1.  Dataset. The number of hotels and the three columns.
+2.  One description. The raw description of W Seattle, before any processing.
+3.  Frequent phrases. The 20 most common three-word phrases across all 152 descriptions, with stop
+    words removed. "pike place market" comes first, whether or not it tells hotels apart.
+4.  Cleaning. Every description is lowercased and stripped of punctuation and stop words.
+5.  TF-IDF and cosine similarity. TF-IDF vectors over terms of one to three words (a measured
+    vocabulary of **3348**, a matrix of shape `152 × 3348`), then the cosine similarity of every
+    pair of hotels in a symmetric `152 × 152` matrix whose diagonal is 1.
+6.  Recommendations. For two hotels, their rows are sorted and the ten most similar other hotels
+    are printed, **excluding the hotel itself** via `iloc[1:11]`.
 
 **Key components**: `CountVectorizer` (n-gram extraction), `TfidfVectorizer` (TF-IDF transform),
 `linear_kernel` (fast cosine similarity), `pandas.Series` (sorting and indexing).
@@ -88,10 +92,11 @@ target hotel and every other one, and take the top k.
 **Engineering detail**: nearly all of those 3348 features are zero, so **the matrix is extremely
 sparse**; this is also why methods of this kind are memory-hungry.
 
-**Measured**: querying `Hilton Seattle Airport & Conference Center` returns a top 10 made entirely
-of airport-area hotels (first place `Embassy Suites ... Seattle Tacoma International Airport`,
-0.2266); querying `The Bacon Mansion Bed and Breakfast` returns five B&Bs and inns at the top
-(first place 0.2801).
+**Measured**: querying `Hilton Seattle Airport & Conference Center` returns mostly airport-area
+hotels (first place `Embassy Suites ... Seattle Tacoma International Airport`, 0.2266), though not
+only: fourth is `Four Points by Sheraton Downtown Seattle Center` and ninth is `Hotel Hotel`.
+Querying `The Bacon Mansion Bed and Breakfast` returns five B&Bs and inns at the top (first place
+0.2801).
 
 > **Uniformly low scores (0.1–0.3) are normal in a sparse high-dimensional space** and do not mean
 > the recommendations are poor — two hotels only have to word their descriptions differently for
@@ -154,20 +159,24 @@ model.save(fname) / model.load(fname)
 
 **Practice two: training word vectors on a Chinese novel** (see `02_word2vec_similarity.py`):
 
-1.  Segment the raw Chinese text into words with jieba, writing to a segmented corpus.
-2.  Train a baseline Word2Vec model on it.
-3.  Measure similarity between character names.
-4.  Solve analogies with vector arithmetic.
-5.  Retrain with tuned hyper-parameters and save the model to disk.
-6.  Reload it and confirm the answers are unchanged (verifying nothing was lost in persistence).
-7.  Reproduce the king/queen analogy on a large English corpus.
+1.  Segmentation. The novel, stored as GB18030 text, is cut into words with jieba.
+2.  Baseline model. 100-dimensional vectors, a window of 3, every word kept (vocabulary **46005**).
+3.  Name similarity. The baseline model's cosine similarity between Sun Wukong and Zhu Bajie,
+    Pilgrim Sun (his other name) and "monster".
+4.  Analogy. Sun Wukong is to Pilgrim Sun as Tang Seng is to what? The baseline model's top answer
+    is **长老** (elder, 0.9805), the way other characters address Tang Seng.
+5.  Second model. 128-dimensional vectors, a window of 5, and words seen fewer than five times
+    dropped, which shrinks the vocabulary to **7735**. It is saved to disk.
+6.  Reload. The reloaded model scores exactly as before saving, so persistence lost nothing.
+7.  English corpus. The same recipe on text8 for contrast.
 
-**Measured**: after tuning, `vector_size=128 / window=5 / min_count=5` gives a vocabulary of
-**7735** and trains in 1.2 seconds; after saving and reloading, vocabulary and similarities are
-**identical** (`孙悟空 vs 猪八戒` is 0.9369 both times), so persistence lost nothing.
+**Measured, with a caveat**: the baseline trains on one thread and gives the same numbers every
+run. The second model trains on several threads, so its numbers move between runs: `孙悟空 vs
+猪八戒` has ranged from 0.9265 to 0.9369, `唐僧 vs 沙僧` from 0.8277 to 0.8603, and its analogy has
+put 长老 or 菩萨 first.
 
 > **⚠️ Those scores are not evidence the model is good.** Every pair of characters in this corpus
-> scores **above 0.9** (`孙悟空 vs 妖怪` reaches 0.9602). The reason is not model quality but that
+> scores **above 0.8** (`孙悟空 vs 妖怪` reaches 0.9602). The reason is not model quality but that
 > **a single novel is a small, stylistically repetitive corpus** — character names appear in nearly
 > the same dialogue tags and narrative patterns, which pushes them into the same small region of
 > the vector space.
@@ -282,7 +291,7 @@ Taking Jina Embedding V4 as the example:
 
 **Measured**: embedding one sentence at 3072 / 1536 / 768 dimensions returns **identical leading
 values** (all three start `-0.014099, -0.0218, -0.000503`) — truncation cuts the tail rather than
-recomputing. Comparing retrieval over real documents at all three sizes, the **top-3 ordering is
+recomputing. Comparing retrieval over the four FAQ entries at all three sizes, the **top-3 ordering is
 identical**, with only small movements in the distances (doc3 scores 0.3139 / 0.3354 / 0.3142).
 
 > **⚠️ A real trap in truncation**: some models **only emit unit vectors at full width**. After
@@ -300,23 +309,54 @@ pooling. Three common choices:
 
 *   **CLS pooling**: take the vector of the leading `[CLS]` token.
 *   **Mean pooling**: average all valid token vectors (using the attention mask to exclude padding).
-*   **Last-token pooling**: take the last valid token, common in instruction-driven models, with
-    left and right padding handled separately.
+*   **Last-token pooling**: take the last valid token. Decoder models such as Qwen3-Embedding use
+    it, with left and right padding handled separately.
 
 **Each model fixes its pooling strategy during training. Getting it wrong raises no error; it just
 quietly degrades the result.**
 
-**Practice three: comparing two local models** (see `04_embedding_models_compare.py`):
+**Practice three: comparing three local models** (see `04_embedding_models_compare.py`). Two
+questions, one about a ticket refund and one about annual pass perks, are scored against two
+passages that answer them:
 
-1.  Score query-document pairs with a **CLS pooling** model.
-2.  Score the same pairs with a **mean pooling** model.
-3.  **Rebuild one of those scores by hand** from the model's raw outputs — take the hidden states,
-    pool them, normalise them yourself.
-4.  Check the hand-built vectors against the wrapper's.
-5.  Deliberately use the wrong pooling strategy and see what happens.
+| Model | Structure | Pooling |
+| :--- | :--- | :--- |
+| BAAI/bge-small-en-v1.5 (BAAI General Embedding) | encoder, BERT-style | CLS |
+| GTE small (General Text Embeddings, Alibaba) | encoder, BERT-style | mean |
+| Qwen3-Embedding-0.6B | decoder | last token |
 
-**Measured**: the hand-written implementation deviates from the official wrapper by
-**0.000000**; the wrong pooling deviates by **0.069623**.
+1.  CLS pooling. bge through the SentenceTransformer wrapper: each question scores highest against
+    its own passage (0.87 and 0.72).
+2.  Mean pooling. GTE through the wrapper, with the same result (0.92 and 0.85).
+3.  Last-token pooling. Qwen3 through the wrapper, with the same result (0.72 and 0.72).
+4.  By hand. Tokenising, pooling and normalising written out for each model, and the largest
+    difference from the wrapper's scores. Qwen3 runs with right and with left padding, because the
+    last real token sits in a different place.
+5.  Wrong pooling. bge with mean pooling.
+
+**Measured, step 4**:
+
+| Hand-built | Largest difference from the wrapper |
+| :--- | ---: |
+| bge, cls, right padding | 0.000000 |
+| GTE, mean, right padding | 0.000505 |
+| Qwen3, last, right padding | 0.002961 |
+| Qwen3, last, left padding | 0.002961 |
+
+**Measured, step 5**:
+
+| | Deviation from the wrapper | Margin (right passage over wrong, mean of both questions) |
+| :--- | ---: | ---: |
+| cls (right) | 0.000000 | +0.2198 |
+| mean (wrong) | 0.069623 | +0.2548 |
+
+The wrong pooling raises nothing and still ranks each question's own passage first, and its margin
+is even larger. Only the deviation shows the mistake.
+
+**Why last-token pooling works for a decoder**: after many attention layers a token's output
+carries what that token could see. An encoder attends both ways, so every position has seen the
+whole text and CLS or mean both make sense. A decoder attends only to earlier tokens, so only the
+last one has seen the whole text.
 
 > **The criterion was changed once here, and it is worth recording.** The first version used the
 > margin (the gap between matching and non-matching pairs) to argue that wrong pooling degrades
@@ -374,24 +414,33 @@ model; images use CLIP, ResNet, DINOv2 and similar.
 
 ### 3.3 Practice four: embeddings + FAISS + metadata
 
-See `03_embedding_faiss_metadata.py`, in eight steps:
+See `03_embedding_faiss_metadata.py`. Four Disney FAQ entries (two about ticket refunds, one
+about the annual pass, one about a ride closed for maintenance) and the question "I want to
+understand the refund process for Disney tickets" are embedded with `gemini-embedding-001` at 768
+dimensions. Seven parts:
 
-1.  Embed one sentence and inspect the dimensionality and the shape of the values (signed floats
-    reflecting many semantic features).
-2.  Compare **Matryoshka truncation** at different output dimensions on the same input.
-3.  Compare the **retrieval ranking** those dimensions produce on real documents.
-4.  Embed the whole document set together with its metadata.
-5.  Build a FAISS index mapping each vector to a custom id.
-6.  Search the index with an embedded query.
-7.  Resolve the returned ids back to documents and metadata.
-8.  Persist the index to disk and reload it.
+1.  One embedding. The refund question as a 768-value vector of length 1.
+2.  Matryoshka dimensions. The same question at 3072, 1536 and 768 dimensions; the first values
+    match.
+3.  Ranking per dimension. The whole search at each size, and whether the top three stay the same.
+4.  Document embeddings. The four entries at 768 dimensions.
+5.  FAISS index. A flat L2 index wrapped in `IndexIDMap`, so each vector carries its entry's own id
+    (doc3 as 3) instead of its position.
+6.  Search. The three nearest entries with squared L2 distance, and their text and metadata looked
+    up by id. The two refund entries come first.
+7.  Save and reload. The reloaded index returns the same ranking. The metadata lives outside the
+    index and has to be saved with it.
 
 **Key points**:
 
 *   **Index type**: `IndexFlatL2` is an **exact index** (brute-force comparison), wrapped in
     `IndexIDMap` so it can carry custom ids.
-*   **What comes back is a distance, not a similarity**: `IndexFlatL2` returns L2 distance, where
-    **smaller is closer**. To convert to "higher is better", use `similarity = 1 / (1 + distance)`.
+*   **What comes back is a distance, not a similarity**: `IndexFlatL2` returns the **squared** L2
+    distance, where **smaller is closer**. To convert to "higher is better", use
+    `similarity = 1 / (1 + distance)`. For unit vectors, squared L2 = 2 - 2 x cosine, so both rank
+    the same way: doc3 at 0.3142 is a cosine of 0.84, doc2 at 0.8528 a cosine of 0.57.
+*   **Why `IndexIDMap`**: FAISS alone returns positions. With the wrapper each vector keeps an id of
+    your choosing, so deleting or reordering entries cannot shift which document a hit points to.
 *   **A query must use the same model and dimensionality as the index**, or the vectors are not in
     the same space at all.
 *   **Invalid results**: FAISS can return the id `-1`, meaning no valid result, and loops must
@@ -1828,10 +1877,10 @@ checks / version management and performance comparison, and implement it against
 
 | Script | Knowledge covered |
 | :--- | :--- |
-| `01_tfidf_hotel_recommender.py` | TF-IDF and n-gram features, cosine similarity, content-based recommendation (1.5 / 1.6) |
-| `02_word2vec_similarity.py` | Segmentation, Word2Vec training and persistence, vector arithmetic (1.8) |
-| `03_embedding_faiss_metadata.py` | Embedding calls, Matryoshka dimensions, FAISS indexing with metadata, persistence (2.5 / 3.2 / 3.3) |
-| `04_embedding_models_compare.py` | Hand-written pooling vs a wrapper, CLS against mean pooling (2.6) |
+| `01_tfidf_hotel_recommender.py` | TF-IDF and n-gram features, cosine similarity, recommendations for two hotels (1.5 / 1.6) |
+| `02_word2vec_similarity.py` | Segmentation, two Word2Vec models and persistence, the 长老 analogy, text8 for contrast (1.8) |
+| `03_embedding_faiss_metadata.py` | Embedding calls, Matryoshka dimensions, FAISS with document ids and metadata, squared L2, persistence (2.5 / 3.2 / 3.3) |
+| `04_embedding_models_compare.py` | Hand-written pooling vs a wrapper for CLS, mean and last-token pooling, right and left padding (2.6) |
 | `05_chunking_strategies.py` | Five chunking strategies compared side by side (5.1 / 5.2) |
 | `06_chatpdf_langchain_faiss.py` | End-to-end QA with LangChain and FAISS, per-character page citation, rechecking TOP_K (4.5) |
 | `07_disney_multimodal_rag.py` | Multimodal RAG without a framework, two indexes, CLIP cross-modal search, OCR, vision description (4.6) |
