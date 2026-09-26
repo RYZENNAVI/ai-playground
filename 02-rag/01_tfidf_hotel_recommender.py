@@ -1,21 +1,29 @@
-"""This script recommends hotels with similar descriptions. It turns each of 152 Seattle
-hotel descriptions into a TF-IDF vector and ranks the other hotels by cosine similarity.
-No neural model is involved: the features are word counts, weighted down for words that
-many descriptions share.
+"""This script recommends hotels by comparing their descriptions. The data is 152
+Seattle hotels, each with a name, an address and a marketing description. Every
+description becomes a TF-IDF vector, and hotels whose vectors point in similar
+directions count as similar. No neural model is involved: the features are word
+counts, weighted down for words that many descriptions share.
 
 The run prints six parts:
-    1. Dataset. The number of hotels and the columns.
-    2. One description, to show what the raw text looks like.
-    3. Frequent phrases. The 20 most common three-word phrases, with stop words removed.
-       Raw counts rank a phrase like "pike place market" first, whether or not it tells
-       hotels apart.
-    4. Cleaning. One description before and after lowercasing and removing punctuation
-       and stop words.
-    5. TF-IDF and cosine similarity. TF-IDF weights each word down by how many
-       descriptions contain it, so words that most hotels use count less. The vectors
-       have unit length, so their dot product (the linear kernel) is the cosine
-       similarity. The script prints the vocabulary size and the matrix shapes.
-    6. Recommendations. The ten hotels closest to each of two hotels, with their scores.
+    1. Dataset. The number of hotels and the three columns: name, address and desc.
+    2. One description. The raw description of one hotel, W Seattle, to show what the
+       text looks like before any processing.
+    3. Frequent phrases. The 20 most common three-word phrases across all 152
+       descriptions, with stop words removed. "pike place market" comes first. Raw
+       counts rank a phrase high whether or not it tells hotels apart, which is the
+       problem TF-IDF addresses in part 5.
+    4. Cleaning. Every description is lowercased and stripped of punctuation and stop
+       words. W Seattle's description is shown before and after.
+    5. TF-IDF and cosine similarity. The cleaned descriptions become TF-IDF vectors
+       over terms of one to three words (3348 terms). TF-IDF weights each term down by
+       how many descriptions contain it, so terms that most hotels use count less. The
+       vectors have unit length, so their dot product (the linear kernel) is the
+       cosine similarity. The result is a 152 x 152 matrix holding the similarity of
+       every pair of hotels.
+    6. Recommendations. For two hotels, Hilton Seattle Airport & Conference Center and
+       The Bacon Mansion Bed and Breakfast, the script sorts their rows of the matrix
+       and prints the ten most similar other hotels with their scores. The Hilton gets
+       mostly airport hotels, and the Bacon Mansion mostly bed and breakfasts.
 """
 
 import re

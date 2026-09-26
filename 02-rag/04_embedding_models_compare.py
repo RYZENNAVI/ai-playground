@@ -1,13 +1,27 @@
-"""Run two embedding models locally and show why pooling choice matters.
+"""This script scores two questions, one about a ticket refund and one about annual
+pass perks, against two passages that answer them, using three embedding models that
+pool differently. A transformer returns one vector per token, and pooling turns
+them into one vector per text. Each model is trained with its own pooling. CLS pooling
+takes the first token, and mean pooling averages the real tokens. Last-token pooling
+takes the final real token: in a decoder-only model each token sees only the tokens
+before it, so only the last one has seen the whole text. The wrong pooling raises no
+error, so the script rebuilds every score by hand and checks it against the
+SentenceTransformer wrapper.
 
-Demonstrates what a wrapper hides when you encode text yourself:
-    1. Score queries against documents with a CLS-pooling model.
-    2. Score the same pairs with a mean-pooling model.
-    3. Rebuild one of those scores by hand, from raw model outputs.
-    4. Check the hand-built vectors match the wrapper's.
-    5. Show what happens when the pooling strategy is wrong.
-
-Module 02: RAG - Embedding Model Comparison.
+The run prints five parts:
+    1. CLS pooling. BAAI/bge-small-en-v1.5 through the wrapper. Each question scores
+       highest against its own passage.
+    2. Mean pooling. A small GTE model through the wrapper, with the same result.
+    3. Last-token pooling. Qwen3-Embedding-0.6B, a decoder-only model, through the
+       wrapper, with the same result.
+    4. By hand. Tokenising, pooling and normalising written out for each model, and
+       the largest difference from the wrapper's scores. Qwen3 runs with right and
+       with left padding, because the last real token sits in a different place.
+       Every difference stays below 0.01.
+    5. Wrong pooling. bge with mean pooling. The scores move away from the wrapper's,
+       yet the gap between the right and wrong passage grows, so the scores alone
+       cannot show the mistake. Judging retrieval quality takes hundreds of labelled
+       pairs and metrics such as Recall@K, MRR or NDCG.
 """
 
 import sys
@@ -20,16 +34,16 @@ from dotenv import load_dotenv
 sys.stdout.reconfigure(encoding="utf-8")
 load_dotenv(Path(__file__).parents[1] / ".env")
 
-# Two small models, chosen because they pool differently. Pooling is a property of
-# the model, fixed when its authors trained it, so it lives here beside the name
-# rather than being passed in at the call site.
-PRIMARY, PRIMARY_POOLING = "BAAI/bge-small-en-v1.5", "cls"                    # 255 MB
-SECONDARY, SECONDARY_POOLING = "iic/nlp_gte_sentence-embedding_english-small", "mean"  # 64 MB
+# Three models that pool differently. Pooling is fixed when a model is trained, so
+# it sits beside the model name.
+PRIMARY, PRIMARY_POOLING = "BAAI/bge-small-en-v1.5", "cls"
+SECONDARY, SECONDARY_POOLING = "iic/nlp_gte_sentence-embedding_english-small", "mean"
+DECODER, DECODER_POOLING = "Qwen/Qwen3-Embedding-0.6B", "last"
 
 MAX_LENGTH = 512
 
-# Two questions and two passages, deliberately crossed: query 1 belongs to
-# document 1, query 2 to document 2. Every step below is judged against that.
+# Query 1 belongs to document 1 and query 2 to document 2. Every step is judged
+# against that.
 QUERIES = [
     "can I get a refund on a theme park ticket",
     "what perks does the annual pass include",
@@ -46,18 +60,14 @@ DOCUMENTS = [
 
 
 def ensure_model(model_id):
-    """Return a local path for the weights, downloading them only if missing.
-
-    Kept in the module's own weights/ directory so repeated runs are free and
-    the download never lands in a global cache you forget about.
-    """
+    """Return a local path to the weights in weights/, downloading them from
+    ModelScope only if missing."""
     import logging
 
     from modelscope import snapshot_download
 
-    # The downloader logs a progress bar on every call, even when the files are
-    # already present and nothing is transferred. Quiet it so the actual results
-    # stay readable.
+    # Hide the INFO line the downloader logs on every call, even when every file is
+    # cached. Its tqdm progress bar still shows.
     logging.getLogger("modelscope_hub.download").setLevel(logging.WARNING)
 
     weights = Path(__file__).parent / "weights"
@@ -75,11 +85,8 @@ def show_scores(title, scores):
 
 
 def encode_with_wrapper(model_id):
-    """Steps 1-2: let SentenceTransformer handle tokenising, pooling, normalising.
-
-    The wrapper reads each model's own config to pick the right pooling, which is
-    exactly the detail step 3 has to reproduce by hand.
-    """
+    """Score every query against every document with SentenceTransformer, which
+    reads the pooling from the model's config."""
     from sentence_transformers import SentenceTransformer
 
     model = SentenceTransformer(ensure_model(model_id), trust_remote_code=True)
@@ -90,16 +97,8 @@ def encode_with_wrapper(model_id):
 
 
 def pool(hidden, mask, how):
-    """Reduce per-token states to one vector per text.
-
-    A transformer emits one vector per token; a sentence embedding needs exactly
-    one per text, and how you collapse them is model-specific:
-      cls   - take token 0, the [CLS] slot the model was trained to summarise into
-      mean  - average the real tokens, ignoring padding
-      last  - take the final real token, used by decoder-only embedding models
-    Using the wrong one still returns a plausible-looking vector, which is what
-    makes this failure so easy to miss. Step 5 shows the damage.
-    """
+    """Reduce per-token states to one vector per text with CLS, mean or last-token
+    pooling."""
     import torch
 
     if how == "cls":
@@ -118,30 +117,31 @@ def pool(hidden, mask, how):
 _LOADED = {}
 
 
-def load_model(model_id):
-    """Load a tokenizer and model once, then hand out the same pair every time.
-
-    encode_by_hand() runs three times (step 3, and twice in step 5), and without
-    this each call would re-read the weights from disk. Harmless for a 255 MB
-    model, painful for a multi-gigabyte one.
-    """
+def load_model(model_id, padding_side="right"):
+    """Return a tokenizer that pads on the given side, and the model, which is loaded
+    only once since encode_by_hand runs several times."""
+    import torch
     from modelscope import AutoModel, AutoTokenizer
 
     if model_id not in _LOADED:
         model_dir = ensure_model(model_id)
-        tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
-        model = AutoModel.from_pretrained(model_dir, trust_remote_code=True)
+        # float32, because numpy cannot read the bfloat16 that Qwen3 is stored in.
+        model = AutoModel.from_pretrained(model_dir, trust_remote_code=True,
+                                          dtype=torch.float32)
         model.eval()
-        _LOADED[model_id] = (tokenizer, model)
-    return _LOADED[model_id]
+        _LOADED[model_id] = (model_dir, model)
+    model_dir, model = _LOADED[model_id]
+    tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True,
+                                              padding_side=padding_side)
+    return tokenizer, model
 
 
-def encode_by_hand(model_id, how):
-    """Step 3: tokenise, run the model, pool, and normalise, with nothing hidden."""
+def encode_by_hand(model_id, how, padding_side="right"):
+    """Tokenise, run the model, pool and normalise by hand, and return the score grid."""
     import torch
     import torch.nn.functional as F
 
-    tokenizer, model = load_model(model_id)
+    tokenizer, model = load_model(model_id, padding_side)
 
     batch = tokenizer(QUERIES + DOCUMENTS, max_length=MAX_LENGTH, padding=True,
                       truncation=True, return_tensors="pt")
@@ -155,42 +155,17 @@ def encode_by_hand(model_id, how):
     return vectors[:n] @ vectors[n:].T
 
 
-def compare(wrapper_scores, manual_scores):
-    """Step 4: confirm the hand-built pipeline reproduces the wrapper.
-
-    Agreement here is the proof that the pooling choice was right. If these
-    diverge, the pooling strategy is the first thing to suspect.
-    """
-    print("\n--- 4. Does the hand-built pipeline match the wrapper? ---")
+def compare(label, wrapper_scores, manual_scores):
+    """Print the largest difference between the wrapper's scores and the hand-built ones."""
     largest = float(np.abs(np.array(wrapper_scores) - np.array(manual_scores)).max())
-    print(f"  Largest absolute difference: {largest:.6f}")
-    if largest < 0.01:
-        print("  Match. The wrapper only saved us the tokenising and pooling code.")
-    else:
-        print("  Mismatch. Check the pooling strategy and the normalisation step.")
+    verdict = "match" if largest < 0.01 else "mismatch, check the pooling and normalisation"
+    print(f"  {label}: largest difference {largest:.6f} ({verdict})")
 
 
 def show_wrong_pooling(model_id, right, wrong, reference):
-    """Step 5: pool the same model the wrong way and see what actually changes.
-
-    Nothing crashes, and the scores stay in a believable range. On a small sample
-    the wrong pooling can even look better, which is the whole danger: the output
-    alone cannot tell you it is wrong. The only dependable signal is the one from
-    step 4, agreement with the model's own configuration.
-
-    The two printed numbers serve opposite purposes:
-      deviation - a correctness check against a trusted reference. It answers
-                  "did I pool this model correctly", and nothing else.
-      margin    - looks like a quality score but is not one: two samples is far
-                  too few to be stable, and the scale differs from model to
-                  model. Printed only to show that a familiar-looking number can
-                  point the wrong way.
-
-    Neither measures retrieval quality. That takes a few hundred labelled
-    query-document pairs scored with Recall@K, MRR, or NDCG - or the published
-    results at https://huggingface.co/spaces/mteb/leaderboard.
-    """
-    print("\n--- 5. What if the pooling is wrong? ---")
+    """Score the same model with the right and the wrong pooling, and print how far
+    each moves from the wrapper (deviation) and how well it separates the passages
+    (margin)."""
     correct_scores = encode_by_hand(model_id, right)
     wrong_scores = encode_by_hand(model_id, wrong)
 
@@ -206,25 +181,36 @@ def show_wrong_pooling(model_id, right, wrong, reference):
           f"margin {margin(correct_scores):+.4f}")
     print(f"  {wrong:<4} pooling: deviation {deviation(wrong_scores):.6f}, "
           f"margin {margin(wrong_scores):+.4f}")
-    print("  Deviation is the reliable tell: the wrong pooling always drifts from")
-    print("  the reference. Margin is not - it can go either way on a few samples,")
-    print("  so a plausible-looking score is no evidence the pooling was right.")
+    print("  Deviation shows the mistake: the wrong pooling moves away from the wrapper.")
+    print("  Margin does not: here the wrong pooling even looks better.")
 
 
 def main():
-    print(f"  primary  : {PRIMARY} ({PRIMARY_POOLING} pooling)")
-    print(f"  secondary: {SECONDARY} ({SECONDARY_POOLING} pooling)")
-
+    # 1. CLS pooling
     cls_scores = encode_with_wrapper(PRIMARY)
-    show_scores(f"--- 1. {PRIMARY} ({PRIMARY_POOLING} pooling) ---", cls_scores)
+    show_scores(f"--- 1. CLS pooling ({PRIMARY}) ---", cls_scores)
 
+    # 2. Mean pooling
     mean_scores = encode_with_wrapper(SECONDARY)
-    show_scores(f"--- 2. {SECONDARY} ({SECONDARY_POOLING} pooling) ---", mean_scores)
+    show_scores(f"--- 2. Mean pooling ({SECONDARY}) ---", mean_scores)
 
-    manual = encode_by_hand(PRIMARY, PRIMARY_POOLING)
-    show_scores("--- 3. Same model, encoded by hand ---", manual)
+    # 3. Last-token pooling
+    last_scores = encode_with_wrapper(DECODER)
+    show_scores(f"--- 3. Last-token pooling ({DECODER}) ---", last_scores)
 
-    compare(cls_scores, manual)
+    # 4. By hand
+    print("\n--- 4. By hand ---")
+    for model_id, how, side, reference in [
+        (PRIMARY, PRIMARY_POOLING, "right", cls_scores),
+        (SECONDARY, SECONDARY_POOLING, "right", mean_scores),
+        (DECODER, DECODER_POOLING, "right", last_scores),
+        (DECODER, DECODER_POOLING, "left", last_scores),
+    ]:
+        manual = encode_by_hand(model_id, how, side)
+        compare(f"{model_id} ({how}, {side} padding)", reference, manual)
+
+    # 5. Wrong pooling
+    print("\n--- 5. Wrong pooling ---")
     other = "mean" if PRIMARY_POOLING != "mean" else "cls"
     show_wrong_pooling(PRIMARY, PRIMARY_POOLING, other, cls_scores)
 

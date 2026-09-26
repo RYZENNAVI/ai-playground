@@ -1,25 +1,32 @@
-"""This script trains Word2Vec on Journey to the West and tests what the word vectors
-have learned. Chinese has no spaces between words, so jieba first cuts the text into
-words. Word2Vec then learns one vector per word by predicting which words appear near
-each other.
+"""This script trains Word2Vec on the Chinese novel Journey to the West and tests what
+the word vectors have learned about its characters. Chinese has no spaces between
+words, so jieba first cuts the text into words. Word2Vec then learns one vector per
+word by predicting which words appear near each other, so words used in similar
+contexts end up with similar vectors.
 
 The run prints seven parts:
-    1. Segmentation. The raw text is GB18030, and the segmented copy is cached.
-    2. Baseline model. 100-dimensional vectors, a window of 3, every word kept.
-    3. Name similarity. Cosine similarity between character names.
-    4. Analogy. Sun Wukong is to Pilgrim Sun (his alias) as Tang Seng is to what? The
-       top answer is 长老 (elder), the way other characters address Tang Seng.
-    5. Second model. 128-dimensional vectors, a window of 5, and words seen fewer than
-       five times dropped, which shrinks the vocabulary from about 46,000 to 7,700.
-       The model is saved to models/.
-    6. Reload. The reloaded model scores the same as before it was saved. Its analogy
-       answer can change between runs, because the second model trains on several
-       threads (长老 and 菩萨 have both come first). Every pair scores above 0.8, even
-       Sun Wukong and "monster". A single novel is small and repetitive, so the names
-       share the same contexts and their vectors crowd together.
-    7. English corpus. The same recipe on text8, 17 million words of cleaned
-       Wikipedia. king - man + woman gives queen, and king vs banana scores near 0.
-       text8 downloads once (about 31 MB), and the trained model is cached.
+    1. Segmentation. The novel, stored as GB18030 text, is cut into words with jieba.
+    2. Baseline model. A first Word2Vec model on the segmented novel: 100-dimensional
+       vectors, a window of 3 words on each side, and every word kept.
+    3. Name similarity. The baseline model's cosine similarity between Sun Wukong and
+       three other words: Zhu Bajie, Pilgrim Sun (Sun Wukong's other name) and
+       "monster". The first values of Sun Wukong's vector are printed too.
+    4. Analogy. The baseline model is asked: Sun Wukong is to Pilgrim Sun as Tang Seng
+       is to what? The top answer is 长老 (elder), the way other characters address
+       Tang Seng.
+    5. Second model. A second model on the same novel, with 128-dimensional vectors, a
+       window of 5, and words seen fewer than five times dropped. That shrinks the
+       vocabulary from about 46,000 words to 7,700. The model is scored on three name
+       pairs and saved to models/.
+    6. Reload. The saved second model is loaded back and gives the same similarity as
+       before saving. Its analogy answer can change between runs, because the second
+       model trains on several threads (长老 and 菩萨 have both come first). In both
+       models every name pair scores above 0.8, even Sun Wukong and "monster". One
+       novel is small and repetitive, so the names share the same contexts and their
+       vectors crowd together.
+    7. English corpus. For contrast, the same recipe on text8, 17 million words of
+       cleaned Wikipedia. king - man + woman gives queen, and king vs banana scores
+       near 0: a larger, more varied corpus separates words that one novel cannot.
 """
 
 import io

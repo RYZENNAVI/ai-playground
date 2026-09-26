@@ -132,7 +132,7 @@ See [LLM-Foundation.md](01-llm-foundation/LLM-Foundation.md) for the concepts be
 | 01 | `01_tfidf_hotel_recommender.py` | TF-IDF + n-grams: content-based recommendation over hotel descriptions |
 | 02 | `02_word2vec_similarity.py` | Word2Vec training, persistence and vector arithmetic |
 | 03 | `03_embedding_faiss_metadata.py` | Embeddings into FAISS with metadata, Matryoshka dimensions, persistence |
-| 04 | `04_embedding_models_compare.py` | Two local models compared: pooling is a property of the model |
+| 04 | `04_embedding_models_compare.py` | Three local models compared: CLS, mean and last-token pooling, rebuilt by hand and checked against the wrapper |
 | 05 | `05_chunking_strategies.py` | Five chunking strategies scored side by side |
 | 06 | `06_chatpdf_langchain_faiss.py` | PDF question answering with LangChain, FAISS and page-level citations |
 | 07 | `07_disney_multimodal_rag.py` | Multimodal RAG by hand: dual indexes, CLIP, OCR, vision fallback |
