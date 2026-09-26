@@ -4,7 +4,7 @@ Demonstrates reinforcement learning from rules rather than from labelled outputs
     1. Generate arithmetic problems whose answers can be checked automatically.
     2. Define five reward functions, from tag counting up to answer correctness.
     3. Sample a group of answers per problem so the group can grade itself.
-    4. Turn raw rewards into advantages by centring them inside each group.
+    4. Turn raw rewards into advantages by standardising them inside each group.
     5. Hold the policy near the frozen base with a penalty on the log ratio.
     6. Update the adapter from sampled text, and watch each reward term move.
     7. Score format compliance and accuracy before and after on unseen problems.

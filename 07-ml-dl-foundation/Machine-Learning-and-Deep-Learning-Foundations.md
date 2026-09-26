@@ -1494,6 +1494,20 @@ Two numbers carry the section:
 
 ### 10.3 Which models care about scale
 
+Two scalings are common, and the scripts use both:
+
+```
+min-max scaling    x' = (x - min) / (max - min)    lands in [0, 1]
+standardisation    z  = (x - mean) / sd            mean 0, sd 1, no fixed range
+```
+
+**Min-max** is what `MinMaxScaler` does in scripts 04, 05 and 06. One extreme value sets
+the max, and every other row gets squeezed into a narrow band near zero.
+**Standardisation** is what `StandardScaler` does in 10.8, and what the networks in 07 and
+08 are fed. An outlier still shifts the mean and sd, but it does not pin the other rows
+against zero, and a z of 2 reads as "two standard deviations above average" in any column.
+Either way, fit the scaler on the training rows only; script 04 shows what leaks otherwise.
+
 Min-max scaled, same split, same models:
 
 | Model | Raw AUC | Scaled AUC | Change |

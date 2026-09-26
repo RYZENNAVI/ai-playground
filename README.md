@@ -113,7 +113,7 @@ tables below list the scripts of each.
 | # | Script | Feature |
 |---|--------|---------|
 | 01 | `01_chat_sentiment_analysis.py` | Chat protocol & 3-way sentiment classification |
-| 02 | `02_weather_function_calling.py` | Tool calling: a local weather function, called once per city |
+| 02 | `02_weather_function_calling.py` | Function calling (tool calling): a local weather function, called once per city |
 | 03 | `03_table_multimodal_extraction.py` | Multimodal vision: table image → JSON |
 | 04 | `04_ops_incident_handler.py` | AIOps agent tool loop: incident diagnosis |
 | 05 | `05_prompt_engineering.py` | Structured templates, JSON mode, CoT, meta-prompting |

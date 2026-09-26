@@ -1066,7 +1066,74 @@ def advantages_from_rewards(rewards):
 **The guard on the standard deviation is not defensive coding — it is the failure mode.** When every
 sample in a group scores the same, the advantages are zero, and the step is correctly a no-op.
 
-### 9.2 Five Rewards, Weighted Deliberately
+### 9.2 What GRPO drops from PPO
+
+PPO is the algorithm behind the RLHF step in module 01. A dog learning to fetch shows what GRPO
+changes about it.
+
+**PPO compares one attempt with a prediction.** Under the old policy the dog, told to fetch, runs
+for the ball half the time and sits still the other half. This time it brings the ball back and
+earns R = 10. PPO also trains a **critic** (value network) that predicts what the dog should
+score at its current level, say V(s) = 6. The advantage is the difference, A = 10 - 6 = 4: the
+dog did four points better than expected, so fetching should become more likely.
+
+**GRPO drops the critic and compares attempts with each other.** The dog tries the same command
+four times:
+
+| Attempt | What the dog does | Reward | R - mean | (R - mean) / sd |
+| :--- | :--- | ---: | ---: | ---: |
+| A | Does not move | 0 | -5 | -1.14 |
+| B | Runs out, comes back without the ball | 3 | -2 | -0.45 |
+| C | Brings the ball back slowly | 7 | +2 | +0.45 |
+| D | Brings the ball back at once | 10 | +5 | +1.14 |
+
+The mean is 5, and `tensor.std()`, which divides by n - 1, gives 4.40. D gets the largest
+advantage and A the most negative, and no network had to predict anything. That is the name:
+a **group** of answers to one question, each judged **relative** to the others.
+
+```
+PPO     A = R - V(s)            reward minus the critic's prediction
+GRPO    A = (R - mean) / sd     reward against the rest of its group
+```
+
+**No critic does not mean no reward.** Something still scores every attempt. Here it is the five
+rule-based rewards in 9.3; for open-ended chat it would be a reward model trained on human
+rankings. The reward says how good this attempt is. The critic predicts how good an attempt
+usually is.
+
+**Why divide by the sd.** One question may pay [0, 1, 2, 3] and another [0, 100, 200, 300].
+Without the division the second would push the gradient a hundred times harder. With it, both
+give [-1.16, -0.39, +0.39, +1.16], so a question counts for how its answers rank, not for the
+size of its rewards.
+
+**The clip.** PPO reuses one batch of samples for several updates, and it limits how far those
+updates move with a ratio between the new and the old probability of the same action. Say one
+update lifts fetching from 50% to 90%:
+
+```
+r = p_new(fetch) / p_old(fetch) = 0.9 / 0.5 = 1.8
+L = min(r * A, clip(r, 1 - ε, 1 + ε) * A)      ε is usually 0.2, so the range is [0.8, 1.2]
+```
+
+r is a different number from A. A says whether fetching deserves more probability; r says how
+much its probability has already changed. With A = 4, the plain term is 1.8 x 4 = 7.2 and the
+clipped one is 1.2 x 4 = 4.8. Taking the minimum, 4.8, removes the payoff for pushing fetching
+any higher. **The clip does not forbid r above 1.2; it stops paying for it.**
+
+| | PPO | GRPO |
+| :--- | :--- | :--- |
+| Advantage | Reward minus the critic's prediction | Reward against the group, divided by its sd |
+| Critic | Trained alongside the policy | None |
+| Samples per question | One or more | A group, six in this script |
+| Clip | Yes | Yes as published; not needed here (below) |
+
+**What this script keeps.** Each of the 24 steps samples fresh answers and takes one optimiser
+step on them, so the policy that sampled is the policy being updated, and r is 1 when the update
+happens. The clip would never act, and the script leaves it out. What remains is the group
+advantage (9.1) and the KL penalty toward the frozen base (9.4), which does the clip's other job
+of keeping the policy from drifting.
+
+### 9.3 Five Rewards, Weighted Deliberately
 
 | Reward | Test | Maximum |
 | :--- | :--- | ---: |
@@ -1092,7 +1159,7 @@ reason:
 > identically on every sample, the advantages inside the group would all be zero, and there would
 > be no gradient to learn from.
 
-### 9.3 Staying Near the Base Without Loading It Twice
+### 9.4 Staying Near the Base Without Loading It Twice
 
 The KL term needs the frozen policy's log probabilities. Rather than keeping a second copy of the
 model in memory, **switching the adapter off turns the same weights back into the original**:
@@ -1107,7 +1174,7 @@ with torch.no_grad():
 Without that term the policy is free to collapse onto whatever the reward functions happen to
 reward, **and fluency is not among the things they check**.
 
-### 9.4 A Flat Zero Reward Curve, and the Fix
+### 9.5 A Flat Zero Reward Curve, and the Fix
 
 The first run produced this, for ten steps:
 
@@ -1132,7 +1199,7 @@ PREFILL = "<reasoning>\n"
 condition under which a group-relative method can start, and prefilling one tag is the cheapest way
 to create that difference.
 
-### 9.5 What 24 Steps Bought
+### 9.6 What 24 Steps Bought
 
 ```
  step  reward  spread       kl    tags     soft   strict  integer  correct
@@ -1168,7 +1235,7 @@ Correct integer 0.0% -> 58.3%
    all decoded token by token. **Reward-driven training is slow because it must generate as it
    trains**, and no configuration change removes that.
 
-### 9.6 A Memory Trap Specific to Large Vocabularies
+### 9.7 A Memory Trap Specific to Large Vocabularies
 
 The first implementation took a full log-softmax over the logits to gather the chosen tokens'
 probabilities. On a 151,936-entry vocabulary that allocates **a second array the size of the
@@ -1510,7 +1577,7 @@ representations. Tokenisation and embedding are untouched.
 
 **Why is reward-driven training so much slower than supervised training?**
 Because it generates while it trains: 24 steps took 751 seconds against 120 supervised steps in
-26.6 seconds. **Sampling six answers per question dominates everything else** (9.5).
+26.6 seconds. **Sampling six answers per question dominates everything else** (9.6).
 
 **Does more data always help?**
 Only when quality holds. Below that bar more data can hurt, and the cheapest experiment is a
