@@ -603,74 +603,65 @@ shows whether the extra phrasings found anything that mattered.
 
 ### 4.6 Practice six: a multimodal RAG assistant built by hand
 
-See `07_disney_multimodal_rag.py`. The same job again without LangChain, in order to see
-**what a framework actually does for you**.
+`07_disney_multimodal_rag.py` builds a small assistant for a Disney park without LangChain. The
+knowledge base is four Word files (ticket rules, senior tickets, a visit guide, hotel and
+membership services) and two event posters. The run prints three parts: indexing, retrieval and
+answers, and the vision model.
 
-**Goal**: a round-the-clock assistant for a theme park — answering the common questions about
-tickets, entry rules and membership; every answer coming from the official knowledge base; and
-**handling questions about images**.
+- Each Word file is walked element by element. A paragraph gets the heading above it as a prefix,
+  and a table becomes Markdown (header row, separator row, one row per table row). The four files
+  give 26 text blocks.
+- Headings are never indexed alone. When they were, a five-word block such as `Ticket Rules`
+  ranked near the top for any ticket question and pushed the refund clause out of the top k.
+  Prefixing them dropped the blocks from 30 to 26, and the refund question was answered.
+- Text is embedded with `gemini-embedding-001` at 1024 dimensions and normalised, because a
+  vector truncated to 1024 dimensions comes back with a length of about 0.6.
+- The posters are embedded with CLIP (`openai/clip-vit-base-patch32`, 512 dimensions). CLIP puts
+  pictures and text in one space, so a question encoded by CLIP's text encoder can find a picture.
+  The 1024-dimension text vectors and the 512-dimension CLIP text vectors are both text vectors,
+  but they are in different spaces.
+- CLIP vectors are normalised too. CLIP is trained on cosine similarity, so only the direction
+  means anything. Before normalising, the two posters had lengths of 8.56 and 9.59, and a query
+  describing the Halloween artwork (`a purple night sky with a yellow moon and bats`) picked the
+  Lunar New Year poster on L2 (108.12 against 115.06) although its cosine favoured Halloween
+  (0.222 against 0.155). Normalised, it picks Halloween (1.5566 against 1.6899).
 
-**The challenges**: knowledge arrives in many formats (Word, PDF, web pages, event files with
-charts); **unstructured processing** (extracting and understanding tables and images, which decides
-whether RAG works at all); **organising the knowledge** (how to chunk and index a mass of scattered
-facts); **answer validity** (staying strictly inside the retrieved content).
+An image can reach a text-only prompt in three ways, and the script shows all three.
 
-**Seven steps**:
+| Route | What it gives | Where it goes |
+| :--- | :--- | :--- |
+| CLIP | A vector, so a text question can find the picture | The image index |
+| OCR (`rapidocr-onnxruntime`, pip only) | The words printed on the picture | The image's record, and the prompt when the image is found |
+| Vision model | A description of the picture itself | Printed for comparison, not used in the answers |
 
-1.  Parse `.docx`, **keeping headings as context** and converting tables to Markdown.
-2.  Read images, optionally lifting their text with OCR.
-3.  Embed text with a text model and images with CLIP.
-4.  Index the two modalities into **two separate FAISS indexes**.
-5.  Retrieve text always, and images **only when the question asks for one**.
-6.  Describe an image with a vision model as a third, text-only route.
-7.  Assemble a grounded prompt and generate the answer.
+Every question searches the text index for the 3 nearest blocks. The image index is searched only
+when the question contains a word such as `poster`, `picture` or `look like`, and then it returns
+the single nearest image. The two sets of hits are not merged by distance. Both are squared L2
+between unit vectors (2 minus 2 times the cosine), so the numbers look alike, but the models spread
+their scores differently: a strong CLIP match sits near cosine 0.3.
 
-**Format handling: three file types, three approaches**
+| Question | Text hits (squared L2) | Image hit |
+| :--- | :--- | :--- |
+| Refund process | ticket rules blocks 3, 9, 11 (0.5385 to 0.6558) | not searched |
+| What the Halloween poster looks like | blocks 11, 20, 25 (0.9827 to 1.0563): rain, senior visits, concierge service | `02_halloween.jpeg`, 1.3663 (cosine 0.317) |
+| Annual pass discounts | blocks 4, 13, 24 (0.6377 to 0.7712) | not searched |
 
-| Format | Approach |
-| :--- | :--- |
-| `.docx` | Walk the document body: paragraphs take the text branch; tables are **converted to Markdown** (read the header, add the separator row, read each row of cells) |
-| `.pdf` | Read text page by page with its page number; extract embedded images, save them as `{name}_p{page}_{index}.{ext}` and record the paths |
-| Images | OCR the text on the image, returning an empty string rather than crashing on failure |
+- The poster question finds no relevant text, because the text files say nothing about Halloween.
+  Its answer (dates, night event, separate ticket, parade) comes from the poster's OCR text, and it
+  cannot say what the poster looks like.
+- The prompt labels each passage `[Source N: file]` and tells the model to answer only from them
+  and to say so when the answer is not there.
 
-> OCR uses `rapidocr-onnxruntime`: it installs through pip alone and needs no system-level binary.
+Part 3 shows what the third route adds. Asked to describe the picture and its colours, the vision
+model answers with what OCR cannot read:
 
-**Three image routes, of which the first two are two halves of one chain**:
+```
+This poster features a dark, gradient purple night sky illuminated by a bright yellow full moon
+and accented with simple, dark geometric bats. ...
+```
 
-1.  **CLIP image vectors** (512-dim): index the images so that "finding a picture" is possible at all.
-2.  **CLIP text vectors**: encode the question into **the same space**, making "find a picture with
-    words" work. ① and ② together are text-to-image search — **they are not alternatives**.
-3.  **A vision model describing the image**: image → text → text embedding, **falling back to
-    ordinary text RAG**.
-
-> **The distinction that matters**: the vectors from the text embedding model (1024-dim) and the
-> vectors from CLIP's text encoder (512-dim) are **both text vectors, and they are not in the same
-> space**. CLIP's image and text encoders were trained into one shared space by OpenAI in 2021 on
-> 400 million image-text pairs — cross-modal retrieval works because somebody did that first.
-
-**The hybrid strategy: all the text, and exactly one image**
-
-Text results are added to the context in distance order, all of them; if image retrieval fired, the
-**single** closest image is added. This is **a deliberately biased rule**, for the reason below.
-
-> **⚠️ Distances from the two indexes are not comparable**: measured on the same question, the text
-> distance is **0.9827** and the image distance is **123.6144**. The scales are unrelated, so
-> **no single threshold can govern both**, and results from the two cannot be merged into one
-> ranking. That blunt-looking rule exists because of this mathematical fact.
-
-**Measured**: a knowledge base of 4 `.docx` files and 2 images produces **26 text blocks and 2 images**.
-
-> **⚠️ Heading-only blocks poison retrieval**: when headings were indexed **on their own**, a
-> five-word block such as `Ticket Rules` ranked near the top for any ticket question,
-> **pushing the block that actually contained the refund clause out of the top k**, and the model
-> could only reply that it had no information. Changing this so **headings are not indexed alone
-> but prefixed as context onto the body blocks** dropped the text blocks from 30 to 26 and the
-> refund question started answering correctly.
-
-**How hallucination is held down**: the system prompt states plainly that the model must
-**use only the information in the background knowledge and not invent anything**; the background is
-listed item by item as `Background N (source: filename)` — **source labelling is the first line of
-defence**.
+An earlier prompt, `What kind of poster is this? Answer briefly.`, returned only `an event poster
+promoting a Halloween-themed festival`, which the OCR text already says.
 
 ### 4.7 QA chains and four ways to combine documents
 

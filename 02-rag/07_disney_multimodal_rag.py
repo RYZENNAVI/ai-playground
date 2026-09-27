@@ -1,15 +1,28 @@
-"""Build a multimodal RAG assistant over Word documents and images, without LangChain.
+"""This script builds a small multimodal RAG assistant for a Disney park by hand,
+without LangChain. The knowledge base is four Word files (ticket rules, senior
+tickets, a visit guide, hotel and membership services) and two event posters.
+Text and images are embedded by different models, so they sit in two FAISS
+indexes whose distances cannot be compared. Both kinds of vector are normalised,
+so the distances look alike, but the two models spread their scores differently.
+Every question searches the text index. The image index is searched only when
+the question mentions a poster, a picture or a similar word, and then it returns
+the single nearest image.
 
-Demonstrates what a framework hides, by assembling the same pipeline by hand:
-    1. Parse .docx files, keeping headings as context and tables as Markdown.
-    2. Read images, optionally lifting their text with OCR.
-    3. Embed text with a text model and images with CLIP.
-    4. Index the two modalities into two separate FAISS indexes.
-    5. Retrieve text always, and images only when the question asks for one.
-    6. Describe an image with a vision model as a third, text-only route.
-    7. Assemble a grounded prompt and generate the answer.
+An image can reach a text-only prompt in three ways, and the script shows all
+three. CLIP embeds the picture, so a text query can find it. OCR reads the words
+printed on it, and those words go into the prompt when the image is found. A
+vision model describes the picture itself. Its description is printed for
+comparison and is not used in the answers.
 
-Module 02: RAG - Multimodal Disney Assistant.
+The run prints three parts:
+    1. Indexing. Each paragraph keeps its heading in front, each table becomes
+       Markdown, and 26 text blocks and 2 images go into the two indexes.
+    2. Retrieval and answers. Three questions: ticket refunds, what the Halloween
+       poster looks like, and annual pass discounts. The poster question finds
+       only unrelated text, so its answer rests on the poster's OCR text and
+       cannot describe the picture.
+    3. Vision model. The Halloween poster described by the vision model, which
+       sees the picture as well as the words.
 """
 
 import os
@@ -25,22 +38,6 @@ load_dotenv(Path(__file__).parents[1] / ".env")
 
 DOCS_DIR = Path(__file__).parent / "data" / "disney_kb"
 IMG_DIR = DOCS_DIR / "images"
-
-# Three routes exist for getting an image into a text-only prompt. All three are
-# implemented below, but they are not three alternatives of equal standing:
-#
-#   1. ocr_image()      RapidOCR reads the text printed on the picture and
-#                       stores it on the image's metadata record. This string is
-#                       what actually reaches the prompt.
-#   2. Embedder.image() CLIP encodes the picture itself into the image index, so
-#                       a text query can locate it. It yields an id, never
-#                       content - which is why routes 1 and 2 are really two
-#                       halves of one path: route 2 finds the image, route 1
-#                       says what is on it. Together they carry the main flow.
-#   3. describe_image() A vision model looks at the picture and writes a
-#                       description of it. The only route that sees the artwork
-#                       rather than the words on it. Standalone here: its output
-#                       is printed for comparison, not fed back into retrieval.
 
 CLIP_MODEL = "openai/clip-vit-base-patch32"
 TEXT_DIM = 1024
@@ -58,13 +55,8 @@ QUESTIONS = [
 
 
 def pick_provider():
-    """Return (api_key, base_url, embed_model, chat_model, vision_model).
-
-    One provider covers all three roles, which keeps a single key and a single
-    quota to reason about. Gemini comes first because it is the only candidate
-    whose one model handles both chat and vision; OpenAI follows so a key of
-    either kind still gets the script running.
-    """
+    """Return (api_key, base_url, embed_model, chat_model, vision_model) for the
+    first key set. One key covers embeddings, chat and vision."""
     if os.getenv("GEMINI_API_KEY"):
         return (os.getenv("GEMINI_API_KEY"),
                 "https://generativelanguage.googleapis.com/v1beta/openai/",
@@ -77,16 +69,8 @@ def pick_provider():
 
 
 def parse_docx(path):
-    """Step 1: pull paragraphs and tables out of a Word file, in document order.
-
-    A heading is never indexed on its own. It is short and keyword-dense, so it
-    scores well against almost any question about the document and crowds a real
-    answer out of the top results; carried as a prefix instead, it adds context
-    to the passage it introduces. Tables become Markdown rather than flattened
-    text because the row and column structure is exactly what a language model
-    needs to read a price list correctly. Walking element by element preserves
-    the original ordering.
-    """
+    """Return a Word file's paragraphs, each under its heading, and its tables as
+    Markdown, in document order. A heading alone would match almost any question."""
     from docx import Document
     from docx.oxml.ns import qn
 
@@ -121,17 +105,8 @@ def parse_docx(path):
 
 
 def ocr_image(path):
-    """Step 2: read any text baked into an image.
-
-    First of the three routes an image can take into the pipeline: lift the text
-    off it and treat that text like any other passage. Cheap and local, but it
-    only ever sees words that were printed on the picture.
-
-    Uses RapidOCR, which installs from pip and needs no external binary -
-    Tesseract is the better-known option but has to be installed system-wide
-    first. When the package is absent this returns an empty string and the
-    pipeline keeps running on CLIP vectors alone.
-    """
+    """Return the words printed on an image, read by RapidOCR (pip only, no system
+    install). Returns "" when RapidOCR is missing, and the run goes on without it."""
     try:
         from rapidocr_onnxruntime import RapidOCR
     except ImportError:
@@ -145,12 +120,8 @@ def ocr_image(path):
 
 
 class Embedder:
-    """Steps 3: text and image encoders, loaded lazily.
-
-    Two encoders, two vector spaces. The text model is good at prose similarity;
-    CLIP puts pictures and their captions in one shared space, which is the only
-    reason a text query can find an image at all.
-    """
+    """The text embedding model and CLIP, which puts pictures and text in one space.
+    CLIP is loaded on first use."""
 
     def __init__(self, api_key, base_url, embed_model):
         from openai import OpenAI
@@ -170,14 +141,8 @@ class Embedder:
         return self._clip
 
     def text(self, text):
-        """Embed prose for the text index, returning a unit vector.
-
-        Normalising is not cosmetic here. Some providers only guarantee unit
-        length at the model's full dimensionality, and a truncated vector comes
-        back with a norm well below 1. FAISS ranks by L2 distance, so an
-        un-normalised vector lets sheer magnitude outweigh direction and the
-        ranking degrades into noise.
-        """
+        """Embed text for the text index as a unit vector. A vector truncated to
+        TEXT_DIM comes back shorter than 1, and L2 distance would count its length."""
         response = self.client.embeddings.create(
             model=self.embed_model, input=text, dimensions=TEXT_DIM)
         vector = np.array(response.data[0].embedding, dtype="float32")
@@ -186,24 +151,18 @@ class Embedder:
 
     @staticmethod
     def _to_vector(features):
-        """Pull a flat projected vector out of whatever CLIP returned.
-
-        transformers <5 returned a plain tensor here. transformers 5 returns an
-        output object whose pooler_output already carries the projected vector.
-        Indexing [0] on the new object silently yields last_hidden_state, i.e.
-        per-patch states of the wrong dimensionality, so check for the attribute.
-        """
+        """Return CLIP's projected vector as a unit vector. transformers 5 wraps it in
+        pooler_output, and indexing the wrapper would return per-patch states instead."""
         if hasattr(features, "pooler_output"):
             features = features.pooler_output
-        return features[0].numpy()
+        vector = features[0].numpy()
+        # CLIP is trained on cosine similarity, so only the direction means anything.
+        # Unnormalised, the longer poster vector loses on L2 even when its direction
+        # matches better.
+        return vector / np.linalg.norm(vector)
 
     def image(self, path):
-        """Embed a picture into CLIP's shared space.
-
-        Second of the three routes: index the picture itself, so a text query
-        can find it even when nothing legible is printed on it. The cost is a
-        second vector space to keep separate from the text one.
-        """
+        """Embed a picture into CLIP's space for the image index."""
         from PIL import Image
 
         model, processor, torch = self._load_clip()
@@ -212,11 +171,8 @@ class Embedder:
             return self._to_vector(model.get_image_features(**inputs))
 
     def clip_text(self, text):
-        """Embed a query into CLIP's space so it can be compared against images.
-
-        Note this is NOT interchangeable with .text(): different model, different
-        dimensionality, different space. Mixing them up silently returns nonsense.
-        """
+        """Embed a question into CLIP's space to search the image index. It is not
+        interchangeable with text(): another model, 512 dimensions, another space."""
         model, processor, torch = self._load_clip()
         inputs = processor(text=text, return_tensors="pt", padding=True, truncation=True)
         with torch.no_grad():
@@ -224,17 +180,13 @@ class Embedder:
 
 
 def build_indexes(embedder):
-    """Step 4: encode the corpus into one text index and one image index.
-
-    IndexIDMap lets us attach our own ids, so a hit in either index can be traced
-    back to the same metadata list.
-    """
+    """Build the text index and the image index. Both use IndexIDMap with ids from
+    one metadata list, so a hit in either index leads back to its record."""
     import faiss
 
     metadata, text_vectors, image_vectors = [], [], []
     next_id = 0
 
-    print("\n--- 1-4. Indexing the knowledge base ---")
     for path in sorted(DOCS_DIR.glob("*.docx")):
         print(f"  {path.name}")
         for block in parse_docx(path):
@@ -267,12 +219,8 @@ def build_indexes(embedder):
 
 
 def retrieve(query, embedder, metadata, text_index, image_index):
-    """Step 5: always search text; search images only on demand.
-
-    The two indexes hold vectors from different models, so their distances are on
-    different scales and cannot be ranked against each other. That is why this
-    takes all the text hits plus at most one image, rather than merging by score.
-    """
+    """Return the TOP_K text hits plus the nearest image when the question asks for
+    one. The two distance scales differ, so the hits are not merged by score."""
     by_id = {m["id"]: m for m in metadata}
     hits = []
 
@@ -281,7 +229,7 @@ def retrieve(query, embedder, metadata, text_index, image_index):
     for distance, doc_id in zip(distances[0], ids[0]):
         if doc_id != -1:
             hits.append(by_id[doc_id])
-            print(f"    text hit id={doc_id} distance={distance:.4f}")
+            print(f"    text hit id={doc_id} squared L2={distance:.4f}")
 
     if any(word in query.lower() for word in IMAGE_KEYWORDS) and image_index.ntotal:
         vector = np.array([embedder.clip_text(query)]).astype("float32")
@@ -289,21 +237,16 @@ def retrieve(query, embedder, metadata, text_index, image_index):
         for distance, doc_id in zip(distances[0], ids[0]):
             if doc_id != -1:
                 hits.append(by_id[doc_id])
-                # Distances here run far larger than the text ones; CLIP vectors
-                # are unnormalised, so do not compare this number to the above.
-                print(f"    image hit id={doc_id} distance={distance:.4f}")
+                # Also a squared L2 between unit vectors, but from another model:
+                # a strong CLIP match sits near cosine 0.3, so do not compare this
+                # number with the text ones.
+                print(f"    image hit id={doc_id} squared L2={distance:.4f}")
     return hits
 
 
 def describe_image(path, api_key, base_url, vision_model):
-    """Step 6: the third route to using an image, via a vision model.
-
-    The other two are ocr_image (text printed on the picture) and
-    Embedder.image (the picture as a CLIP vector). Here, instead of embedding
-    the picture, ask a model to describe it and feed that text into an ordinary
-    text pipeline. Slower and pricier per image, but the output is readable and
-    searchable with no extra vector space to manage.
-    """
+    """Ask the vision model to describe a picture. The description is only printed,
+    not indexed or used in the answers."""
     import base64
 
     from openai import OpenAI
@@ -315,7 +258,9 @@ def describe_image(path, api_key, base_url, vision_model):
     response = client.chat.completions.create(
         model=vision_model,
         messages=[{"role": "user", "content": [
-            {"type": "text", "text": "What kind of poster is this? Answer briefly."},
+            {"type": "text",
+             "text": "Describe what this poster shows in two sentences: the "
+                     "picture and its colours, not only the text."},
             {"type": "image_url",
              "image_url": {"url": f"data:image/{suffix};base64,{encoded}"}},
         ]}],
@@ -324,12 +269,8 @@ def describe_image(path, api_key, base_url, vision_model):
 
 
 def answer(query, hits, api_key, base_url, chat_model):
-    """Step 7: build a grounded prompt and generate.
-
-    Every passage is labelled with the file it came from, and the instruction
-    forbids going beyond them. Source labelling plus that instruction is the
-    cheapest hallucination defence there is.
-    """
+    """Answer from the hits only. Each passage is labelled with its source file, and
+    an image contributes its OCR text."""
     from openai import OpenAI
 
     context, image_path = "", None
@@ -364,18 +305,22 @@ def main():
     api_key, base_url, embed_model, chat_model, vision_model = pick_provider()
     print(f"Provider endpoint: {base_url}")
 
+    # 1. Indexing
+    print("\n--- 1. Indexing ---")
     embedder = Embedder(api_key, base_url, embed_model)
     metadata, text_index, image_index = build_indexes(embedder)
 
-    print("\n--- 5, 7. Retrieval and generation ---")
+    # 2. Retrieval and answers
+    print("\n--- 2. Retrieval and answers ---")
     for question in QUESTIONS:
-        print(f"\n=== {question}")
+        print(f"\n  Q: {question}")
         hits = retrieve(question, embedder, metadata, text_index, image_index)
         print(answer(question, hits, api_key, base_url, chat_model))
 
+    # 3. Vision model
     poster = IMG_DIR / "02_halloween.jpeg"
     if poster.exists():
-        print("\n--- 6. Vision model route (image described as text) ---")
+        print("\n--- 3. Vision model ---")
         print(describe_image(poster, api_key, base_url, vision_model))
 
 
