@@ -1363,117 +1363,87 @@ See `10_kb_question_generation.py`.
 
 ### 7.2 Scenario two: distilling knowledge out of conversations
 
-**A product in production generates conversations every day. How is anything valuable extracted
-from them?**
+A support product produces conversations every day. `11_kb_curation.py` uses DeepSeek to turn
+three visitor conversations about an invented theme park into knowledge base entries, in three
+steps: extract, filter, merge.
 
-**Three core actions**: extract from one conversation → extract in batch →
-**merge similar points with an LLM**.
-
-**Step 1 · Extract** — the instruction casts the model as a knowledge extraction specialist,
-pulling five kinds of content: **facts** (places, times, prices, rules) / **user needs and
-preferences** / **common questions and answers** / **procedures** / **cautions and reminders**.
-
-Output JSON: `extracted_knowledge[]` (`knowledge_type` / `content` / `confidence` / `source` /
-`keywords` / `category`) plus `conversation_summary` and `user_intent`.
-
-**Step 2 · Filter** — the `need` and `question` types have to go. Measured, 6 of the 15 points
-extracted from one conversation fell into those two types, for example:
+- Extract. The model pulls typed points out of each conversation: `fact`, `need`, `question`,
+  `process` and `caution`. Each point also carries `confidence`, `source`, `keywords` and
+  `category`. In three runs every point came back with confidence 1.00, so the script prints
+  that the column does not tell the points apart.
+- Filter. `need` and `question` points record what a visitor wanted, not what is true. Left in
+  the index, a later question about ticket prices could retrieve "the visitor wanted to know the
+  ticket price", which answers nothing. They are dropped: 16 of 39 points in the run below.
+- Merge. The remaining points are grouped by type, and each group becomes one entry through one
+  model call. 23 points became 3 entries.
 
 ```
-drop [need]     The visitor wanted to know the ticket cost for Riverbend Park.
-drop [question] What does a ticket cost?
+  fact: 13 points -> 1 (confidence 1.00)
+    categories: crowd levels, opening hours, pricing, recommended rides, rules, services
+    Riverbend Park opens daily from 08:00 to 20:00. Adult tickets cost 399 on weekdays ...
 ```
 
-> **Why filtering is mandatory**: these record **what somebody wanted to know, not what is true**.
-> Left in the index, the next question about ticket prices retrieves "the visitor wanted to know
-> the ticket price", and the model then answers "what does a ticket cost" with that —
-> **pure noise, and it takes a slot something useful would have filled.**
-
-**Step 3 · Merge** — **group by knowledge type first, then make one model call per group**
-(groups of one are kept as they are). The merge prompt asks for five things: preserve every
-important detail, remove duplication and consolidate similar statements, improve accuracy and
-completeness, keep the logic clear, and **take the highest confidence in the group**. Two extra
-fields come out: `sources` and `frequency` (how many points went in).
-
-**Measured: 27 → 21 → 3**
-
-```
-27 points extracted from three conversations → 6 dropped as need / question → 21 left → 3 after merging
-```
-
-| # | Type | Merged from | Conf. | Content |
-| :-: | :--- | :-: | :-: | :--- |
-| 1 | `fact` | **14** | 0.95 | Ticket prices (399 weekday / 499 weekend and public holiday) + child tickets + opening hours + parking fee + what may be brought in |
-| 2 | `process` | 3 | 0.95 | Metro route from the airport with the interchange + taxi option + where to buy |
-| 3 | `caution` | 4 | 0.95 | Book ahead, especially at weekends and on public holidays |
-
-> **What merging buys**: fragments of a dozen words become a single description of a hundred-plus
-> words. This lines up directly with Small-to-Big in 5.4 — **chunks that are too small answer only
-> part of a question even when retrieved; one entry holding the whole topic answers it in a single
-> retrieval.**
-
-**Three intake routes for a knowledge base**: `① conversations ② thumbs-up → a "good answers" book
-③ thumbs-down → a "corrections" book`. The script implements the first; the other two turn human
-feedback into an intake route of its own.
+Grouping by type puts different topics into one entry: the fact entry holds opening hours,
+prices, rides and park rules together. A real base would group by topic. The `category` field
+the model returns is too loose for that here, with 11 to 14 different values for 23 points
+across three runs. Nothing later in the script uses the merged entries.
 
 ### 7.3 Scenario three: health checks
 
-**How do you give a whole knowledge base a checkup and find what is missing, stale or contradictory?**
+The audit half checks a knowledge base for three problems, each with its own prompt and its own
+extra input:
 
-Three checks, each its own prompt, **with different inputs and different scoring**:
+| Check | Extra input | Finds |
+| :--- | :--- | :--- |
+| Coverage | the test questions | questions no entry answers |
+| Freshness | today's date | entries that have gone out of date |
+| Consistency | none | entries that contradict each other |
 
-| Check | Extra input | Criteria | Output |
-| :--- | :--- | :--- | :--- |
-| **Coverage** (missing) | **A test query set** | ① can each query be answered ② is the knowledge complete and correct ③ are the main needs covered ④ are there blank areas | `missing_knowledge[]` + `coverage_score` |
-| **Freshness** (stale) | **The current date** | Whether times, prices, policies, events, contact details and technical information have aged | `outdated_knowledge[]` + `freshness_score` |
-| **Consistency** (conflicts) | None (an internal question) | Different statements on one topic, price discrepancies, inconsistent times, conflicting rules, divergent procedures | `conflicting_knowledge[]` + `consistency_score` |
+- Coverage needs the questions because a gap only exists relative to something someone asks.
+  Its prompt also says that a contradicted or dated answer still counts as present, so the
+  other two checks own those.
+- Freshness needs today's date because the model has no clock.
 
-**Three design notes**:
-
-*   Coverage **requires a test query set** — **what is missing is defined relative to a need**, and
-    a knowledge base cannot see its own gaps.
-*   Freshness **lives or dies on injecting the current date** — the model has no sense of time (as
-    in 6.8). Only with today's date supplied can it decide that last quarter's policy has expired.
-*   Consistency works by **casting the model as a conflict detector**, spotting version differences
-    within a topic.
-
-**The test method: plant defects, then see whether they are found.** An auditor that finds nothing
-has demonstrated nothing, so the audited base carries three planted defects — no pet policy
-(coverage), an event that ended in late 2023 (freshness), and `kb_002` and `kb_005` quoting a
-parking fee of 100 and 150 respectively (consistency).
-
-**Measured report**:
+The audit does not run on the merged entries. It runs on a separate six-entry base with three
+planted defects, which serve as the answer key: no entry about pets, a winter festival that
+ended in January 2024, and `kb_002` and `kb_005` giving the parking charge as 100 and 150. The
+report checks each check against its planted defect and counts everything else it flagged.
 
 ```
-4. Coverage      0.67   1 gap      —— "Can I bring my dog?" no pet policy            [medium]
-5. Freshness     0.20   5 stale    —— kb_004 event ended 2024-01-05 [high], kb_002 parking fee [high] …
-6. Consistency   0.80   1 conflict —— kb_002 / kb_005 parking fee discrepancy        [high]
-   Overall       0.56
-   Planted defects detected: 3/3 (coverage, freshness, consistency)
+--- 5. Coverage ---
+  score 0.67, 1 gap
+  - Can I bring my dog?                              [medium] Pet/dog admission policy
+--- 6. Freshness ---
+  score 0.67, 2 stale entries
+  - kb_002   [high] parking fee superseded by kb_005 (100 -> 150 per day)
+  - kb_004   [high] event period ended 5 January 2024 (past event)
+--- 7. Consistency ---
+  score 0.83, 1 conflict
+  - kb_002, kb_005     [medium] parking_fee
+--- 8. Report ---
+  planted defects:
+    coverage     found   the dog question, plus 0 other findings
+    freshness    found   kb_004, plus 1 other finding
+    consistency  found   kb_002 and kb_005, plus 0 other findings
+  Freshness flagged kb_002, the conflicting parking pair.
 ```
 
-> **✅ All three planted defects were found**, and the freshness check correctly judged that a
-> December 2023 event had ended — **entirely because the current date was injected into the
-> prompt**. The model does not know what today is.
+All three planted defects were found in each of three runs. The freshness check can tell that
+the festival has ended only because today's date is in the prompt.
 
-> **⚠️ But the freshness score of 0.20 cannot be used as it stands**: it flagged **5 of 6** entries.
-> Unpacking them, two kinds of thing are in there that should not count:
-> ① entries that **merely could change one day** (opening hours "may have been adjusted");
-> ② **the parking-fee conflict, counted a second time here** when it belongs to the consistency
-> check.
-> The three audits take different inputs and **their conclusions still overlap**, so a low score
-> may not be measuring what it claims to.
->
-> ⇒ **Trust the findings list, not the number beside it.** Findings are checkable — each can be
-> verified true or false — while the score is an impression. **This is the same defect as the
-> confidence value in 6.6**: precise-looking, and neither comparable nor reproducible.
-> **Fine as a sort key, not as a KPI.**
+The freshness prompt used to list "prices likely to have moved" among the signs of staleness.
+With it, the check flagged 4 of 6 entries, including kb_003, a ticket price with no date at
+all. With that line removed it flagged 2 in each of three runs: kb_004, and kb_002 as
+superseded by kb_005. That second finding is the parking conflict again, which belongs to the
+consistency check. The three checks take different inputs and their findings still overlap.
 
-**The principle for conflicts**: **the model finds them, a person decides.** Judgements that cannot
-be enumerated need the model's generality, so have it emit conflicts as JSON and
-**leave the final call to a human**.
+The scores are the model's own numbers and nothing here measures them. The findings can be
+checked against the planted defects. Read the findings and treat the scores as a rough
+impression.
 
-See `11_kb_curation.py` (distillation and auditing in one script).
+The model finds conflicts, and a person decides which side is right.
+
+See `11_kb_curation.py`.
 
 ### 7.4 Scenario four: version management and performance comparison
 

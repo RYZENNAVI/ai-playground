@@ -1,15 +1,25 @@
-"""Grow a knowledge base out of support conversations, then audit what it became.
+"""This script uses a chat model for two knowledge base jobs: knowledge extraction
+from support conversations, and an audit of an existing base for coverage,
+freshness and consistency. DeepSeek does both. Extraction pulls typed points (fact,
+need, question, process, caution) out of three visitor conversations about an
+invented theme park. The audit checks a separate six-entry base with three planted
+defects: no entry about pets, a festival that has ended, and two entries that
+disagree on the parking charge. The planted defects are the answer key. The audit
+does not look at the entries merged in part 3.
 
-Demonstrates the two halves of keeping a knowledge base alive:
-    1. Extract structured knowledge points from a single conversation.
-    2. Drop the points that record what someone wanted rather than what is true.
-    3. Merge the survivors by type into fewer, fuller entries.
-    4. Audit for coverage: which test questions the base cannot answer.
-    5. Audit for staleness: which entries have gone out of date.
-    6. Audit for contradictions: where the base disagrees with itself.
-    7. Combine the three into one report.
-
-Module 02: RAG - Knowledge Base Curation.
+The run prints eight parts:
+    1. Extraction. The points from the first conversation in full, then the counts
+       from the other two.
+    2. Dropping what is not knowledge. Needs and questions record what a visitor
+       wanted, not what is true, so they are removed.
+    3. Merging by type. All the remaining points of one type folded into one entry.
+       This mixes topics, as the categories listed under each entry show. Nothing
+       later uses the merged entries.
+    4. The seeded base. The six entries with the three planted defects.
+    5. Coverage. Which of three test questions no entry answers.
+    6. Freshness. Which entries have gone out of date by today's date.
+    7. Consistency. Which entries contradict each other.
+    8. Report. The three scores the model gave, and which planted defects were found.
 """
 
 import json
@@ -29,9 +39,7 @@ load_dotenv(Path(__file__).parents[1] / ".env")
 MODEL = "deepseek-chat"
 BASE_URL = "https://api.deepseek.com"
 
-# These two carry a visitor's wants, not facts about the park. Indexing them
-# means a later question about ticket prices can retrieve "the visitor wanted to
-# know the ticket price", which answers nothing and displaces something that would.
+# Needs and questions record what a visitor wanted, not facts about the park.
 TRANSIENT_TYPES = {"need", "question"}
 
 CONVERSATIONS = [
@@ -44,7 +52,7 @@ CONVERSATIONS = [
                    "holidays. Book through the park website or an authorised reseller."),
      ("user", "How do I get there from the airport?"),
      ("assistant", "Take metro line 2 to Riverside, change to line 11, and get off at "
-                   "the park station - about an hour in total. A taxi takes about 40 "
+                   "the park station, about an hour in total. A taxi takes about 40 "
                    "minutes.")],
     [("user", "Is the park open today and how busy is it?"),
      ("assistant", "The park opens daily from 08:00 to 20:00. Crowds peak at weekends, "
@@ -62,7 +70,7 @@ CONVERSATIONS = [
      ("assistant", "Sealed packaged snacks and bottled water are fine. Glass and "
                    "alcohol are refused at the gate. Food inside the park is expensive, "
                    "so bringing your own is worth it."),
-     ("user", "I'm taking a toddler - anything else?"),
+     ("user", "I'm taking a toddler. Anything else?"),
      ("assistant", "Pushchairs can be hired near the main entrance, and some rides "
                    "have a minimum height.")],
 ]
@@ -71,6 +79,9 @@ CONVERSATIONS = [
 # checker that reports nothing proves nothing. kb_002 and kb_005 disagree about
 # the parking charge, kb_004 describes an event that has long since finished, and
 # nothing at all covers the pet question in AUDIT_QUERIES.
+PLANTED = {"coverage": "the dog question", "freshness": "kb_004",
+           "consistency": "kb_002 and kb_005"}
+PARKING_PAIR = {"kb_002", "kb_005"}
 SEEDED_BASE = [
     {"id": "kb_001", "text": "Riverbend Park opens daily from 08:00 to 20:00."},
     {"id": "kb_002", "text": "The on-site car park charges 100 per day."},
@@ -91,7 +102,7 @@ AUDIT_QUERIES = [
 
 EXTRACT_INSTRUCTION = """You are a knowledge extraction specialist. Pull the reusable
 knowledge out of the conversation below. Cover:
-1. factual information - places, times, prices, rules
+1. factual information: places, times, prices, rules
 2. what the visitor wanted
 3. questions asked and answered
 4. procedures and step-by-step routes
@@ -107,7 +118,7 @@ Return JSON only:
 
 MERGE_INSTRUCTION = """You are a knowledge editor. Merge the {kind} points below into one
 fuller point. Rules:
-1. keep every piece of information - lose nothing
+1. keep every piece of information and lose nothing
 2. remove duplication and fold similar phrasings together
 3. stay accurate and complete
 4. keep the result readable
@@ -122,10 +133,10 @@ and the test questions, decide which questions the entries cannot answer.
 
 Judge only whether an answer exists somewhere in the entries. Do not judge
 whether that answer is correct, current or agreed upon. In particular:
-1. an answer that another entry contradicts still counts as present - that is a
-   consistency problem, and the consistency check owns it
-2. an answer that looks out of date still counts as present - that is a
-   freshness problem, and the freshness check owns it
+1. an answer that another entry contradicts still counts as present. That is a
+   consistency problem, and the consistency check owns it.
+2. an answer that looks out of date still counts as present. That is a
+   freshness problem, and the freshness check owns it.
 
 Report a question as missing only when no entry answers it at all.
 
@@ -135,8 +146,8 @@ Return JSON only:
  "coverage_score": 0.0}"""
 
 FRESHNESS_INSTRUCTION = """You are a knowledge base freshness auditor. Today's date is
-{today}. Decide which entries have gone out of date - expired dates and periods,
-prices likely to have moved, superseded rules, finished events.
+{today}. Decide which entries have gone out of date: expired dates and periods,
+superseded rules, finished events.
 
 Return JSON only:
 {{"outdated_knowledge": [{{"chunk_id": "...", "outdated_aspect": "...",
@@ -155,10 +166,7 @@ Return JSON only:
 
 
 def client():
-    """Return an OpenAI-protocol client pointed at DeepSeek.
-
-    Every step here is text in, structured text out, so one provider covers it.
-    """
+    """Return an OpenAI-protocol client pointed at DeepSeek, the one provider this script uses."""
     key = os.getenv("DEEPSEEK_API_KEY")
     if not key:
         raise SystemExit("DEEPSEEK_API_KEY is not set. Add it to .env and retry.")
@@ -205,21 +213,8 @@ def merge_group(api, kind, points):
 
 
 def audit(api, entries, queries, today):
-    """Steps 4-6: three independent checks over the same entries.
-
-    They are separate calls because their inputs genuinely differ. Coverage needs
-    the test questions, and cannot be derived from the entries alone - a gap is
-    only a gap relative to something someone wanted to ask. Freshness needs the
-    current date, because the model has no clock. Consistency needs neither: a
-    contradiction is visible inside the entries themselves.
-
-    Separate inputs do not by themselves keep the three verdicts apart. A
-    coverage check shown a base that contradicts itself will report the
-    contradicted topic as a gap unless it is told not to, which is why
-    COVERAGE_INSTRUCTION spends four lines saying what is not a gap. That
-    boundary lives in the prompt, so it holds most of the time rather than
-    always - the overlap warning further down stays in for the rest.
-    """
+    """Parts 5 to 7: coverage, freshness and consistency, as three calls over the same entries.
+    Only coverage gets the test questions, and only freshness gets today's date."""
     body = "\n".join(f"{e['id']}: {e['text']}" for e in entries)
     questions = "\n".join(f"- {q}" for q in queries)
 
@@ -242,6 +237,11 @@ def as_score(value):
         return None
 
 
+def plural(count, word, words=None):
+    """Return "1 gap", "2 gaps", or the given irregular plural."""
+    return f"{count} {word if count == 1 else words or word + 's'}"
+
+
 def short(text, width=86):
     """Trim text to one printable line."""
     flat = " ".join(str(text).split())
@@ -251,8 +251,10 @@ def short(text, width=86):
 def main():
     api = client()
 
+    # 1. Extraction
+
     print("=" * 92)
-    print("--- 1. Extracting knowledge from one conversation ---")
+    print("--- 1. Extraction ---")
     first = extract(api, CONVERSATIONS[0])
     points = first.get("extracted_knowledge", [])
     for i, point in enumerate(points, 1):
@@ -262,13 +264,19 @@ def main():
     print(f"\n  summary: {short(first.get('conversation_summary', ''))}")
     print(f"  intent : {short(first.get('user_intent', ''))}")
 
-    print("\n--- Extracting from the rest ---")
+    print("\n  the other two conversations:")
     harvested = list(points)
     for turns in CONVERSATIONS[1:]:
         found = extract(api, turns).get("extracted_knowledge", [])
         harvested.extend(found)
         print(f"  +{len(found)} points")
     print(f"  {len(harvested)} points in total")
+    confidences = {as_score(point.get("confidence")) for point in harvested}
+    if len(confidences) == 1 and None not in confidences:
+        print(f"  Every point came back with confidence {confidences.pop():.2f}, so the "
+              "column does not tell them apart.")
+
+    # 2. Dropping what is not knowledge
 
     print("\n" + "=" * 92)
     print("--- 2. Dropping what is not knowledge ---")
@@ -280,8 +288,10 @@ def main():
         print(f"    drop [{point.get('knowledge_type')}] {short(point.get('content'), 66)}")
     print("\n  These record what somebody wanted, not what is true. Left in the index,")
     print("  a later question about ticket prices can retrieve 'the visitor wanted to")
-    print("  know the ticket price' - which answers nothing and takes a slot that")
+    print("  know the ticket price', which answers nothing and takes a slot that")
     print("  something useful would have filled.")
+
+    # 3. Merging by type
 
     print("\n--- 3. Merging by type ---")
     grouped = defaultdict(list)
@@ -291,51 +301,64 @@ def main():
     for kind, group in sorted(grouped.items()):
         entry = merge_group(api, kind, group)
         merged.append(entry)
+        categories = sorted({str(point.get("category", "?")) for point in group})
         print(f"\n  {kind}: {len(group)} points -> 1 "
               f"(confidence {as_score(entry.get('confidence')) or 0:.2f})")
+        print(f"    categories: {short(', '.join(categories), 72)}")
         print(f"    {short(entry.get('content', ''), 84)}")
-    print(f"\n  {len(keep)} points became {len(merged)} entries. Short fragments answer")
-    print("  a question only partly; one entry that holds the whole topic answers it")
-    print("  in a single retrieval.")
+    all_categories = {str(point.get("category", "?")) for point in keep}
+    print(f"\n  {len(keep)} points became {len(merged)} entries, one per type. Merging by type")
+    print("  puts different topics into one entry. The category field is too loose to")
+    print(f"  group by instead: it has {len(all_categories)} different values for "
+          f"{len(keep)} points.")
+
+    # 4. The seeded base
 
     print("\n" + "=" * 92)
     today = date.today().isoformat()
-    print(f"--- 4-6. Auditing a knowledge base (today is {today}) ---")
-    print("  The base below has three defects planted in it on purpose, because an")
-    print("  auditor that finds nothing has demonstrated nothing:")
+    print(f"--- 4. The seeded base (today is {today}) ---")
+    print("  Six entries with three planted defects:")
     for entry in SEEDED_BASE:
         print(f"    {entry['id']}: {short(entry['text'], 78)}")
 
     coverage, freshness, consistency = audit(api, SEEDED_BASE, AUDIT_QUERIES, today)
 
-    print("\n  4. Coverage")
+    # 5. Coverage
+
+    print("\n--- 5. Coverage ---")
     missing = coverage.get("missing_knowledge", [])
-    print(f"     score {as_score(coverage.get('coverage_score')) or 0:.2f}, "
-          f"{len(missing)} gap(s)")
+    print(f"  score {as_score(coverage.get('coverage_score')) or 0:.2f}, "
+          f"{plural(len(missing), 'gap')}")
     for gap in missing:
-        print(f"     - {short(gap.get('query'), 46):<48} "
+        print(f"  - {short(gap.get('query'), 46):<48} "
               f"[{gap.get('importance', '?')}] {short(gap.get('missing_aspect'), 34)}")
 
-    print("\n  5. Freshness")
+    # 6. Freshness
+
+    print("\n--- 6. Freshness ---")
     stale = freshness.get("outdated_knowledge", [])
-    print(f"     score {as_score(freshness.get('freshness_score')) or 0:.2f}, "
-          f"{len(stale)} stale entry(s)")
+    print(f"  score {as_score(freshness.get('freshness_score')) or 0:.2f}, "
+          f"{plural(len(stale), 'stale entry', 'stale entries')}")
     for item in stale:
-        print(f"     - {item.get('chunk_id', '?'):<8} [{item.get('severity', '?')}] "
+        print(f"  - {item.get('chunk_id', '?'):<8} [{item.get('severity', '?')}] "
               f"{short(item.get('outdated_aspect'), 62)}")
 
-    print("\n  6. Consistency")
+    # 7. Consistency
+
+    print("\n--- 7. Consistency ---")
     clashes = consistency.get("conflicting_knowledge", [])
-    print(f"     score {as_score(consistency.get('consistency_score')) or 0:.2f}, "
-          f"{len(clashes)} conflict(s)")
+    print(f"  score {as_score(consistency.get('consistency_score')) or 0:.2f}, "
+          f"{plural(len(clashes), 'conflict')}")
     for clash in clashes:
         ids = clash.get("chunk_ids", [])
-        print(f"     - {', '.join(ids):<18} [{clash.get('severity', '?')}] "
+        print(f"  - {', '.join(ids):<18} [{clash.get('severity', '?')}] "
               f"{short(clash.get('conflict_type'), 50)}")
         if len(ids) < 2:
-            print("       [suspect] a contradiction needs two sides; this names one")
+            print("    [suspect] a contradiction needs two sides; this names one")
 
-    print("\n--- 7. Report ---")
+    # 8. Report
+
+    print("\n--- 8. Report ---")
     scores = {"coverage": as_score(coverage.get("coverage_score")),
               "freshness": as_score(freshness.get("freshness_score")),
               "consistency": as_score(consistency.get("consistency_score"))}
@@ -346,32 +369,39 @@ def main():
         overall = sum(present.values()) / len(present)
         print(f"    {'overall':<12} {overall:.2f}")
 
-    found = {"coverage": bool(missing), "freshness": bool(stale),
-             "consistency": bool(clashes)}
-    print(f"\n  planted defects detected: "
-          f"{sum(found.values())}/3  ({', '.join(k for k, v in found.items() if v) or 'none'})")
-    missed = [k for k, v in found.items() if not v]
-    if missed:
-        print(f"  not detected: {', '.join(missed)} - the check ran and found nothing,")
-        print("  which on a base with a known defect means the check missed it.")
+    hits = {
+        "coverage": [g for g in missing if "dog" in str(g.get("query", "")).lower()],
+        "freshness": [s for s in stale if s.get("chunk_id") == "kb_004"],
+        "consistency": [c for c in clashes if PARKING_PAIR <= set(c.get("chunk_ids", []))],
+    }
+    findings = {"coverage": missing, "freshness": stale, "consistency": clashes}
+    print("\n  planted defects:")
+    for name, planted in PLANTED.items():
+        others = len(findings[name]) - len(hits[name])
+        verdict = "found" if hits[name] else "MISSED"
+        print(f"    {name:<12} {verdict:<7} {planted}, plus "
+              f"{plural(others, 'other finding')}")
+    if not all(hits.values()):
+        print("  A check that misses its planted defect has failed, whatever else it reports.")
 
-    if len(stale) > len(SEEDED_BASE) / 2:
-        print(f"\n  Note the freshness check flagged {len(stale)} of {len(SEEDED_BASE)} entries.")
-        print("  Read those findings before trusting the count: some will be entries")
-        print("  that merely could change one day, and some will be the conflicting")
-        print("  pair reported again under a heading that belongs to the consistency")
-        print("  check. The three audits overlap in practice even though their inputs")
-        print("  do not, so a low freshness score can be measuring the wrong thing.")
+    stale_ids = [str(s.get("chunk_id")) for s in stale if s.get("chunk_id") != "kb_004"]
+    repeated = [i for i in stale_ids if i in PARKING_PAIR]
+    undated = [i for i in stale_ids if i not in PARKING_PAIR]
+    if repeated:
+        print(f"\n  Freshness flagged {', '.join(repeated)}, the conflicting parking pair.")
+        print("  That finding belongs to part 7: the three checks overlap in practice")
+        print("  even though their inputs do not.")
+    if undated:
+        print(f"\n  Freshness also flagged {', '.join(undated)}, which carry no date at all.")
 
     if len(set(present.values())) == 1 and len(present) > 1:
         print("\n  Note all three scores came back identical. Three independent checks")
         print("  agreeing to two decimal places is a property of how the model picks")
         print("  numbers, not a measurement of three separate things. Use these to")
         print("  rank one base against itself over time, never as a target to hit.")
-    print("\n  What the checks can and cannot do: they are the only part of this")
-    print("  script with an answer key, and even here the scores are impressions")
-    print("  while the findings are checkable. Trust the findings list; treat the")
-    print("  numbers beside it as decoration.")
+    print("\n  The findings can be checked against the planted defects. The scores")
+    print("  cannot: the model picks them, and nothing here measures them. Read the")
+    print("  findings and treat the scores as a rough impression.")
 
 
 if __name__ == "__main__":
