@@ -1364,8 +1364,11 @@ for question, sql in TRAINING_PAIRS:
 misleads.
 
 ⚠️ **Split the DDL per statement; do not push the whole file in as one record.** Retrieval returns
-whole records, so **one large blob drags every table into every prompt and defeats the point of
-retrieving at all.**
+whole records, so separate statements let a larger store return only the tables a question needs. In
+this script it makes no difference yet: Vanna returns up to 10 items of each kind by default, the
+store holds 5 statements, 5 notes and 3 pairs, and every question gets all of them. Lowering the
+limit to 3 was tried and made things worse: the three DDL statements returned were `daily_sales`,
+`policies` and `claims`, without `products`, where premium lives.
 
 ⚠️ **The division of labour between the three matters**: DDL gives structure, documentation gives
 vocabulary, question/SQL pairs give worked examples. **Feeding only DDL is the common misuse** — that
@@ -1395,52 +1398,60 @@ the result is right, rather than guessing at the `ask` level.
 ### 15.6 What It Retrieved, and What That Produced
 
 Asked `How many policies have lapsed, and what do they cost in premium per year?`, the store returned
-all three kinds of material:
+every item it held:
 
 ```
-related DDL: 5 statement(s)      -> CREATE TABLE policies / daily_sales / ...
-related notes: 5                 -> "policy_status is stored as a two-letter code.
-                                     IF means the policy is in force, ..."
-                                 -> "Premium is held on the products table,
-                                     not on the policy."
+related DDL: 5 statement(s)      -> CREATE TABLE daily_sales / policies / ...
+related notes: 5                 -> "Premium is held on the products table, ..."
+                                 -> "payment_status on a policy is P when ..."
+                                 -> "policy_status is stored as a two-letter code. ..."
 similar question/SQL pairs: 3    -> "What is the total premium across all policies
                                      that are in force?"
 ```
 
-**Each kind shows up in the generated SQL:**
+Part 4 only shows this. `generate_sql` in part 5 retrieves again by itself.
+
+In three runs on 2026-09-27 the generated SQL was the same apart from column aliases:
 
 ```sql
-SELECT COUNT(*) AS lapsed_policy_count,
-       SUM(pr.premium * CASE pr.payment_frequency
-             WHEN 'Monthly'   THEN 12
-             WHEN 'Quarterly' THEN 4
-             WHEN 'Annual'    THEN 1
-           END) AS total_annual_premium
+SELECT COUNT(*), SUM(pr.premium)
 FROM policies po
 JOIN products pr ON po.product_id = pr.product_id
 WHERE po.policy_status = 'LP'
 ```
 
-- `WHERE po.policy_status = 'LP'` ← from the **documentation** note about stored codes
-- `JOIN products` ← from the note stating **premium lives on the products table**
-- The annualisation by `payment_frequency` ← the model's own, using the domain stated in the DDL
+- `WHERE po.policy_status = 'LP'` comes from the note about stored codes.
+- `JOIN products` comes from the note stating that premium lives on the products table.
+- The question asks for premium per year, but `premium` is the price per payment period and products
+  are paid monthly, quarterly or annually. The query never reads `payment_frequency`.
 
-Result: **13 lapsed policies, 13632.0 in annual premium.**
+The script checks the result against a hand-written query that converts each premium to a yearly
+amount:
+
+| | Policies | Premium |
+| :--- | :---: | :---: |
+| Generated SQL | 13 | 8912.0 (per payment period, added up) |
+| Hand-written SQL | 13 | 13632.0 per year |
+
+An earlier run of this script generated the conversion and got 13632.0. The three runs on
+2026-09-27 did not. No note says how to annualise a premium, so the result depends on whether the
+model thinks of it. Without the check, the wrong figure would have printed as the answer.
 
 ### 15.7 The Wrong-Answer Notebook, Measured
 
-The correction case is `How many customers do we have?` — a question that looks unambiguous until
-someone asks whether closed accounts count. **That is a decision, not a fact about the data, and no
-amount of schema reading reveals it:**
+The correction case is `How many customers do we have?`, a question that looks unambiguous until
+someone asks whether closed accounts count. That is a decision, not a fact about the data, and no
+amount of schema reading reveals it. After the first answer, the settled SQL is stored as a new
+question and SQL pair, and part 7 asks twice. The three runs gave the same results:
 
-| Stage | Generated SQL | Result |
-| :--- | :--- | :--- |
-| Before correction | `SELECT COUNT(*) FROM customers;` | 40 (everyone) |
-| After storing one verified pair | `SELECT COUNT(*) FROM customers WHERE customer_status IN ('A', 'L')` | **35** (closed accounts excluded) |
+| Question | Generated SQL | Result |
+| :--- | :--- | :---: |
+| `How many customers do we have?`, before correction | `SELECT COUNT(*) FROM customers` | 40 |
+| The same question after storing the pair | `SELECT COUNT(*) FROM customers WHERE customer_status IN ('A', 'L')` | 35 |
+| `How many customers are there in total?` after storing the pair | `SELECT COUNT(*) FROM customers` | 40 |
 
-⇒ **One verified example corrected a definition the schema could never express.** It is lighter than
-editing a prompt and it compounds — **the next person to ask gets the settled definition
-automatically.**
+⇒ The stored pair fixed the question it was stored under. A reworded question did not pick it up, so
+the settled definition does not reach the next person unless they ask in nearly the same words.
 
 ### 15.8 Running It Entirely Locally
 
@@ -1454,8 +1465,9 @@ Every component can run on your own machine:
 changes to get there** — the composition already treats both halves as replaceable, so switching to
 local serving is a constructor argument rather than a rewrite.
 
-**Storage behaviour**: vector data persists to disk, and query history accumulates, which is what
-makes the correction loop in 15.7 compound over time rather than reset each run.
+**Storage behaviour**: the vector store persists to disk. This script deletes and rebuilds it on
+every run, so each run starts from the same 13 items and the correction in 15.7 does not carry over
+between runs.
 
 ### 15.9 Two Practical Notes
 
@@ -2398,7 +2410,7 @@ Every script has been run. From the most recent full pass:
 | 01 | 5 tables, **38 column comments**, 325 rows (40 customers, 10 products, 60 policies, 35 claims, 180 days), fixed seed |
 | 02 | DDL style 7/7, using the table's code 3/3; both prose styles 4/7 with 0/3, writing `'Denied'`, `'Lapsed'` and `'Active'` in place of the codes (three runs, same scores) |
 | 03 | Reflection drops every column comment; a missing table raises a parsing exception in all three runs; the coded question was answered correctly (43, matching the reference SQL) after the agent queried the distinct codes and guessed that `IF` means in force; 4 and 5 tool calls |
-| 04 | Retrieved 5 DDL statements, 5 notes and 3 pairs; answered the lapsed-policy question with 13 policies and 13632.0 annual premium; correction took `COUNT(*) FROM customers` from 40 to **35** |
+| 04 | Retrieved all 5 DDL statements, 5 notes and 3 pairs; the lapsed-policy question got 13 policies but 8912.0 instead of 13632.0 per year, because the query never converted the premium (three runs); the stored correction took the same question from 40 to 35, while a reworded question stayed at 40 |
 | 05 | Four blocked and four passed across all three layers; read-only connection verified as non-writable; benchmark **7/7** — single 3/3, two-table 2/2, three-table 2/2 |
 | 06 | All four tools fired; regression recovered year-end new at **$789.07** and renewal at **$549.15** against true values of 806 and 533 (**−2.1% / +3.0%**) |
 

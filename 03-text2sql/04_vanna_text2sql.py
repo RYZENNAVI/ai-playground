@@ -1,17 +1,30 @@
-"""Keep the schema, the notes and the past answers in a vector store instead of a prompt.
+"""Generate SQL with Vanna, which retrieves the schema, notes and examples it needs.
 
-Demonstrates the retrieval-trained approach to Text2SQL:
-    1. Compose a client from a vector store class and a chat class.
-    2. Point it at the local database.
-    3. Train it on three kinds of material: DDL, written notes, question/SQL pairs.
-    4. Inspect what a question retrieves before any SQL is written.
-    5. Generate SQL and run it.
-    6. Feed a corrected answer back in, the way a wrong-answer notebook works.
-    7. Re-ask the question the correction was meant to fix.
+Vanna applies retrieval-augmented generation to Text2SQL. It stores three kinds of
+training material in a vector store (Chroma, embedded locally): the five CREATE
+TABLE statements, five written notes that explain the status codes and where
+premium lives, and three question and SQL pairs. For each question it retrieves
+related items of each kind and pastes them into the prompt for DeepSeek.
 
-Module 03: Text2SQL - Retrieval-Trained Client.
+Vanna returns up to 10 items of each kind by default, and this store holds 5, 5
+and 3, so every question gets all of them. Retrieval here only orders them.
+
+The run prints seven parts:
+    1. Composing the client. A Chroma store and the DeepSeek chat model.
+    2. Connecting to the database.
+    3. Training. The counts of each kind of material.
+    4. What the question retrieves. The lapsed-policy question's top items of
+       each kind. This part only shows them: part 5 retrieves again by itself.
+    5. Generating and running. The SQL and its result, checked against a
+       hand-written query that converts each premium to a yearly amount.
+    6. Correcting a wrong answer. "How many customers do we have?" before
+       correction, and the settled SQL stored as a new pair.
+    7. Asking again. The same question, then the same question reworded, and
+       whether each one used the stored correction.
 """
 
+import contextlib
+import io
 import os
 import shutil
 import sys
@@ -35,8 +48,8 @@ STORE_PATH = Path(__file__).parent / "data" / "vanna_store"
 
 # Written notes are the piece the other two approaches have no room for. Script
 # 02 could only carry what fits in one prompt; script 03 lost the comments to
-# reflection. Here the meanings live in the store and are retrieved only when a
-# question needs them.
+# reflection. Here the meanings live in the store and are retrieved by question.
+# This store is small enough that every question gets all five.
 DOCUMENTATION = [
     "policy_status is stored as a two-letter code. IF means the policy is in "
     "force, LP means it has lapsed, TM means it was terminated.",
@@ -71,24 +84,35 @@ TRAINING_PAIRS = [
 ]
 
 QUESTION = "How many policies have lapsed, and what do they cost in premium per year?"
+# premium is the price per payment period, so a yearly figure multiplies it by
+# the number of periods in a year.
+REFERENCE_SQL = (
+    "SELECT COUNT(*), SUM(pr.premium * CASE pr.payment_frequency "
+    "WHEN 'Monthly' THEN 12 WHEN 'Quarterly' THEN 4 ELSE 1 END) "
+    "FROM policies po JOIN products pr ON po.product_id = pr.product_id "
+    "WHERE po.policy_status = 'LP'"
+)
+
 CORRECTION_QUESTION = "How many customers do we have?"
+REWORDED_QUESTION = "How many customers are there in total?"
 # The answer a reviewer settled on for the question above. Counting customers
 # looks unambiguous until someone asks whether closed accounts still count. The
 # house rule here is that they do not, and no amount of schema reading would
-# reveal that - it is a decision, not a fact about the data.
+# reveal that. It is a decision, not a fact about the data.
 CORRECTED_SQL = (
     "SELECT COUNT(*) FROM customers WHERE customer_status IN ('A', 'L')"
 )
 
 
-def build_client(fresh=False):
-    """Compose a Vanna client from a vector store and a chat model.
+def quiet(call, *args, **kwargs):
+    """Run a Vanna call without its own prints (full DDL on training, token counts)."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        return call(*args, **kwargs)
 
-    Vanna ships the store and the model as separate mixins so either half can be
-    swapped. The import path moved in version 2: the classes the 0.x examples
-    use now live under vanna.legacy, while the top-level package became an agent
-    framework with a different shape entirely.
-    """
+
+def build_client(fresh=False):
+    """Compose a Vanna client from a Chroma store and an OpenAI-protocol chat model.
+    In vanna 2 these classes live under vanna.legacy."""
     from openai import OpenAI
     from vanna.legacy.chromadb import ChromaDB_VectorStore
     from vanna.legacy.openai import OpenAI_Chat
@@ -102,12 +126,8 @@ def build_client(fresh=False):
     STORE_PATH.mkdir(parents=True, exist_ok=True)
 
     class LocalVanna(ChromaDB_VectorStore, OpenAI_Chat):
-        """Vector store on disk, chat model over the network.
-
-        The two parents read different keys out of the same config dict, and the
-        chat half chokes on the store's keys, so each is initialised with only
-        what it understands.
-        """
+        """Vector store on disk, chat model over the network. Each parent gets only
+        its own config keys, because the chat half rejects the store's."""
 
         def __init__(self, config):
             ChromaDB_VectorStore.__init__(
@@ -118,36 +138,27 @@ def build_client(fresh=False):
             )
 
         def log(self, message, title="Info"):
-            """Swallow the library's running commentary.
-
-            The default implementation prints the whole assembled prompt on
-            every call, which buries this script's own output. The prompt is
-            still worth seeing once, so step 4 prints the retrieved pieces
-            deliberately instead.
-            """
+            """Drop Vanna's log calls, which print the whole prompt each time.
+            Its plain prints are silenced by quiet() instead."""
 
     client = OpenAI(api_key=key, base_url=BASE_URL)
     return LocalVanna({"path": str(STORE_PATH), "client": client, "model": MODEL})
 
 
 def train(vanna, schema):
-    """Load the three kinds of material into the store.
-
-    Splitting the schema per statement matters: retrieval returns whole records,
-    so one giant blob would drag every table into every prompt and undo the point
-    of retrieving at all.
-    """
+    """Store each CREATE TABLE separately, then the notes and the pairs. Separate
+    statements let a larger store return only the tables a question needs."""
     counts = {"ddl": 0, "documentation": 0, "pairs": 0}
     for statement in schema.split(";"):
         statement = statement.strip()
         if statement.startswith("CREATE TABLE"):
-            vanna.train(ddl=statement + ";")
+            quiet(vanna.train, ddl=statement + ";")
             counts["ddl"] += 1
     for note in DOCUMENTATION:
-        vanna.train(documentation=note)
+        quiet(vanna.train, documentation=note)
         counts["documentation"] += 1
     for question, sql in TRAINING_PAIRS:
-        vanna.train(question=question, sql=sql)
+        quiet(vanna.train, question=question, sql=sql)
         counts["pairs"] += 1
     return counts
 
@@ -170,10 +181,24 @@ def show_retrieval(vanna, question):
         print(f"    {str(text)[:78]}")
 
 
+def rows(frame):
+    """Return a result frame's rows as tuples, rounded, for comparison."""
+    return [
+        tuple(round(v, 2) if isinstance(v, float) else v for v in row)
+        for row in frame.itertuples(index=False)
+    ]
+
+
+def flat(sql):
+    """Collapse a query onto one line."""
+    return " ".join(sql.split())
+
+
 def main():
     db_path = _db.ensure_database()
     schema = _db.load_schema()
 
+    # 1. Composing the client
     print("--- 1. Composing the client ---")
     vanna = build_client(fresh=True)
     print(f"  vector store: {STORE_PATH}")
@@ -181,43 +206,59 @@ def main():
     print("  Embeddings run locally inside the store, so nothing but the chat")
     print("  call leaves the machine.")
 
+    # 2. Connecting to the database
     print("\n--- 2. Connecting to the database ---")
     vanna.connect_to_sqlite(str(db_path))
     print(f"  connected: {db_path.name}")
 
+    # 3. Training
     print("\n--- 3. Training ---")
     counts = train(vanna, schema)
     print(f"  {counts['ddl']} CREATE TABLE statements")
     print(f"  {counts['documentation']} written notes")
     print(f"  {counts['pairs']} question/SQL pairs")
 
+    # 4. What the question retrieves
     print(f"\n--- 4. What '{QUESTION}' retrieves ---")
     show_retrieval(vanna, QUESTION)
 
+    # 5. Generating and running
     print("\n--- 5. Generating and running ---")
-    sql = vanna.generate_sql(QUESTION)
-    print(f"  SQL:\n{sql}\n")
+    sql = quiet(vanna.generate_sql, QUESTION)
+    print(f"  SQL:\n    {flat(sql)}\n")
     frame = vanna.run_sql(sql)
     print(f"  Result:\n{frame.to_string(index=False)}")
+    expected = vanna.run_sql(REFERENCE_SQL)
+    count, yearly = rows(expected)[0]
+    print(f"\n  Hand-written SQL: {count} policies, {yearly} in premium per year.")
+    if rows(frame) == rows(expected):
+        print("  The generated result matches it.")
+    else:
+        print("  The generated result does not match it.")
+        if "payment_frequency" not in sql:
+            print("  The query never reads payment_frequency, so it adds up premiums")
+            print("  per payment period instead of per year.")
 
+    # 6. Correcting a wrong answer
     print("\n--- 6. Correcting a wrong answer ---")
     print(f"  Q: {CORRECTION_QUESTION}")
-    before = vanna.generate_sql(CORRECTION_QUESTION)
-    print(f"  before correction:\n    {' '.join(before.split())[:150]}")
-    # This is the loop that makes the store worth keeping: a reviewer settles
-    # the ambiguity once, the settled pair goes back in, and the next asker
-    # inherits the decision. Only verified SQL belongs here - a wrong pair
-    # teaches the mistake just as efficiently as a right one teaches the fix.
-    vanna.train(question=CORRECTION_QUESTION, sql=CORRECTED_SQL)
+    before = quiet(vanna.generate_sql, CORRECTION_QUESTION)
+    print(f"  before correction:\n    {flat(before)[:150]}")
+    # A reviewer settles the ambiguity once and the settled pair goes back in.
+    # Only verified SQL belongs here, because a wrong pair teaches the mistake
+    # as readily as a right one teaches the fix. Part 7 shows how far it reaches.
+    quiet(vanna.train, question=CORRECTION_QUESTION, sql=CORRECTED_SQL)
     print(f"  stored correction:\n    {CORRECTED_SQL}")
 
+    # 7. Asking again
     print("\n--- 7. Asking again ---")
-    after = vanna.generate_sql(CORRECTION_QUESTION)
-    print(f"  after correction:\n    {' '.join(after.split())[:150]}")
-    changed = " ".join(before.split()) != " ".join(after.split())
-    print(f"\n  answer changed: {changed}")
-    result = vanna.run_sql(after)
-    print(f"  Result:\n{result.to_string(index=False)}")
+    for question in (CORRECTION_QUESTION, REWORDED_QUESTION):
+        after = quiet(vanna.generate_sql, question)
+        used = "customer_status" in after
+        print(f"  Q: {question}")
+        print(f"    {flat(after)[:150]}")
+        print(f"    uses the stored correction: {'yes' if used else 'no'}, "
+              f"result {rows(vanna.run_sql(after))[0][0]}")
 
 
 if __name__ == "__main__":
