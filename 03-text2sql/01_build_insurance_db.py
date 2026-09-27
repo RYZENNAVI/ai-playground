@@ -1,13 +1,25 @@
-"""Build the local SQLite database every other script in this module queries.
+"""Build the SQLite database that the other Text2SQL scripts in this module query.
 
-Demonstrates how to prepare a schema a language model can actually read:
-    1. Define five related tables with typed columns and column comments.
-    2. Generate deterministic sample rows so results are reproducible.
-    3. Write the database to disk only when it is missing or out of date.
-    4. Export the CREATE TABLE statements that later scripts feed to the model.
-    5. Print a summary so the data is visible before any model sees it.
+Text2SQL turns a question into a SQL query. The model writes that query from the
+schema it is shown, and this script writes that schema. It has five tables for an
+insurance company: customers, products, policies, claims and daily sales. Columns
+that need explaining carry a comment inside the CREATE TABLE text. The status
+columns store short codes such as 'DEN' for a denied claim, so only the comments
+tell the model what the codes mean. Script 02 measures how much that matters.
 
-Module 03: Text2SQL - Local Database Setup.
+The rows come from a fixed seed, so every build produces the same 325 rows.
+Running this script always rebuilds the database. The other scripts call
+ensure_database(), which builds it only when the file is missing.
+
+The run prints five parts:
+    1. Schema. The five tables and their 38 column comments.
+    2. Generating rows. The fixed seed.
+    3. Writing database. 40 customers, 10 products, 60 policies, 35 claims and
+       180 days of sales.
+    4. Exporting schema. The CREATE TABLE text that scripts 02, 04, 05 and 06
+       read.
+    5. Database summary. Row counts, three sample customers, and how many claims
+       exceed 10000 and how many policies are unpaid.
 """
 
 import os
@@ -24,9 +36,9 @@ DATA_DIR = Path(__file__).parent / "data"
 DB_PATH = DATA_DIR / "insurance.db"
 SCHEMA_PATH = DATA_DIR / "schema.sql"
 
-# A fixed seed keeps every run identical. Text2SQL is judged by comparing a
-# generated query against a known answer, so the data behind that answer has to
-# stop moving.
+# A fixed seed keeps every run identical. Text2SQL is judged by comparing the
+# rows a generated query returns with the rows of a known-correct query, so the
+# data behind those rows has to stay the same.
 SEED = 20260822
 
 # Column comments live in the schema itself rather than in a side file. The
@@ -35,9 +47,8 @@ SEED = 20260822
 #
 # The status columns store short codes rather than readable words, the way
 # production systems usually do. A model asked "which claims were turned down"
-# has no way to reach 'DEN' from the column name alone - it has to be told. That
-# is what makes the comments load-bearing instead of decorative, and it is what
-# script 02 measures.
+# cannot get to 'DEN' from the column name alone. Only the comment tells it.
+# Script 02 measures how much the comments help.
 SCHEMA = """
 CREATE TABLE customers (
     customer_id     INTEGER PRIMARY KEY,        -- unique customer number
@@ -100,7 +111,7 @@ CREATE TABLE claims (
     claim_status  TEXT    NOT NULL,             -- stored as a code: APP = approved, PND = pending, PAY = paid, DEN = denied
     handler       TEXT    NOT NULL,             -- staff member who reviewed the claim
     review_date   DATE,                         -- null while the claim is unreviewed
-    denial_reason TEXT,                         -- null unless claim_status is Denied
+    denial_reason TEXT,                         -- null unless claim_status is DEN
     FOREIGN KEY (policy_number) REFERENCES policies (policy_number)
 );
 """
@@ -136,12 +147,7 @@ PRODUCTS = [
 
 
 def make_customers(rng, count=40):
-    """Build customer rows with birth dates spread either side of the age-30 line.
-
-    The spread is deliberate: several benchmark questions filter on age, and a
-    dataset where everyone is the same age cannot tell a correct query from a
-    query that forgot the filter.
-    """
+    """Build customers born between 1968 and 2001."""
     rows = []
     for i in range(1, count + 1):
         first = rng.choice(FIRST_NAMES)
@@ -165,12 +171,8 @@ def make_customers(rng, count=40):
 
 
 def make_policies(rng, customer_count, count=60):
-    """Build policy rows, leaving roughly a fifth unpaid.
-
-    'Find the unpaid policies' is one of the benchmark questions. If every row
-    were paid, a query that dropped the WHERE clause would return nothing and
-    look correct.
-    """
+    """Build policies weighted 8:2 paid to unpaid (6 of 60 unpaid in this build).
+    Script 05 counts the unpaid ones, so a query that drops the filter returns 60."""
     rows = []
     for i in range(1, count + 1):
         start = date(2020, 1, 1) + timedelta(days=rng.randint(0, 365 * 5))
@@ -191,11 +193,8 @@ def make_policies(rng, customer_count, count=60):
 
 
 def make_claims(rng, policy_numbers, count=35):
-    """Build claim rows spanning the 10000 threshold and every status value.
-
-    Two benchmark questions depend on this spread: one filters on
-    claim_amount > 10000, the other on claim_status = 'Pending'.
-    """
+    """Build claims in all four statuses, with amounts below 9500 or above 10500.
+    The gap keeps every claim clear of script 02's 10000, so > and >= match."""
     rows = []
     for i in range(1, count + 1):
         status = rng.choices(["APP", "PND", "PAY", "DEN"], weights=[3, 3, 3, 1])[0]
@@ -223,12 +222,8 @@ CAMPAIGN_LIFT = {"none": 1.0, "spring": 1.15, "autumn": 1.10, "yearend": 1.30}
 
 
 def make_daily_sales(rng, days=180):
-    """Build one row per day, with the total premium implied by the segment mix.
-
-    The totals are generated from fixed per-segment prices plus a campaign lift
-    and a little noise. Nothing writes those prices into the table - recovering
-    them from the totals is exactly what script 06 has to do.
-    """
+    """Build one row per day, pricing each total from SEGMENT_PREMIUM and
+    CAMPAIGN_LIFT with up to 3% noise."""
     rows = []
     start = date(2024, 1, 1)
     for offset in range(days):
@@ -254,12 +249,8 @@ def make_daily_sales(rng, days=180):
 
 
 def build_database(path):
-    """Create the database from scratch and fill it with generated rows.
-
-    The build writes to a temporary file and renames it into place, so an
-    interrupted run never leaves a half-populated database that later scripts
-    would happily query.
-    """
+    """Build the database in a temporary file, then rename it into place.
+    An interrupted run never leaves a half-filled database behind."""
     rng = random.Random(SEED)
     tmp_path = path.with_suffix(".db.tmp")
     if tmp_path.exists():
@@ -296,12 +287,8 @@ def build_database(path):
 
 
 def export_schema(path):
-    """Write the CREATE TABLE text to a file the other scripts read.
-
-    Later scripts paste this text straight into the prompt. Reading it from the
-    database at run time would work too, but a file on disk lets you see exactly
-    what the model was shown.
-    """
+    """Write the CREATE TABLE text to schema.sql, so you can see exactly what
+    the model was shown."""
     path.write_text(SCHEMA.strip() + "\n", encoding="utf-8")
 
 
@@ -321,13 +308,13 @@ def summarise(path):
         ):
             print(f"    {row}")
 
-        print("\n  Sample: claims above the 10000 threshold")
+        print("\n  Claims above 10000")
         high, total = connection.execute(
             "SELECT SUM(claim_amount > 10000), COUNT(*) FROM claims"
         ).fetchone()
         print(f"    {high} of {total} claims exceed 10000")
 
-        print("\n  Sample: unpaid policies")
+        print("\n  Unpaid policies")
         unpaid, total = connection.execute(
             "SELECT SUM(payment_status = 'NP'), COUNT(*) FROM policies"
         ).fetchone()
@@ -338,10 +325,7 @@ def summarise(path):
 
 def ensure_database(rebuild=False):
     """Return the database path, building it first when it is missing.
-
-    Every other script in this module calls this instead of assuming the file
-    exists, which makes the whole module runnable in any order.
-    """
+    Scripts 02 to 06 call this, so they run in any order."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if rebuild or not DB_PATH.exists():
         build_database(DB_PATH)
@@ -357,20 +341,25 @@ def load_schema():
 
 
 def main():
+    # 1. Schema
     print("--- 1. Schema ---")
     print(f"  5 tables defined, {SCHEMA.count('--')} inline column comments")
 
+    # 2. Generating rows
     print("\n--- 2. Generating rows ---")
     print(f"  seed = {SEED} (fixed, so every run produces the same data)")
 
+    # 3. Writing database
     print("\n--- 3. Writing database ---")
-    rebuilt = not DB_PATH.exists()
+    was_missing = not DB_PATH.exists()
     ensure_database(rebuild=True)
-    print(f"  {'created' if rebuilt else 'rebuilt'}: {DB_PATH}")
+    print(f"  {'created' if was_missing else 'rebuilt'}: {DB_PATH}")
 
+    # 4. Exporting schema
     print("\n--- 4. Exporting schema ---")
     print(f"  written: {SCHEMA_PATH}")
 
+    # 5. Database summary
     print()
     summarise(DB_PATH)
 

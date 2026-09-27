@@ -1538,8 +1538,8 @@ The comment in the build script states the consequence plainly:
 ```python
 # The status columns store short codes rather than readable words, the way
 # production systems usually do. A model asked "which claims were turned down"
-# has no way to reach 'DEN' from the column name alone - it has to be told. That
-# is what makes the comments load-bearing instead of decorative.
+# cannot get to 'DEN' from the column name alone. Only the comment tells it.
+# Script 02 measures how much the comments help.
 ```
 
 **Two — the data comes from a fixed seed.**
@@ -1551,8 +1551,9 @@ SEED = 20260822   # fixed, so every run produces the same data
 Text2SQL is judged by comparing a generated query's results against a known answer, so **the data
 behind that answer has to stop moving.**
 
-**Three — the build is idempotent.** The database is only rebuilt when it is missing or out of date,
-so the other five scripts can run in any order, any number of times.
+**Three: two ways in.** Running `01_build_insurance_db.py` always rebuilds the database, and the
+fixed seed makes the rebuilt file identical byte for byte. Scripts 02 to 06 call `ensure_database()`,
+which builds the database only when the file is missing, so they can run in any order.
 
 ### 17.3 The Prompt Benchmark
 
@@ -2379,7 +2380,7 @@ Six scripts. **`01` builds the database; the other five each take one route or o
 
 | Script | What it does | Chapters |
 | :--- | :--- | :--- |
-| `01_build_insurance_db.py` | Build the local SQLite database: 5 tables, 38 column comments, 325 rows from a fixed seed, idempotent, and export the DDL the other scripts use | 17 |
+| `01_build_insurance_db.py` | Build the local SQLite database: 5 tables, 38 column comments, 325 rows from a fixed seed, and export the DDL the other scripts use | 17 |
 | `02_prompt_to_sql.py` | Compare three prompt styles, then re-ask the failures with retrieved verified SQL | 6, 7, 13 |
 | `03_langchain_sql_agent.py` | The LangChain toolkit route: reflection-driven schema, and the failure modes it exposes | 11, 12 |
 | `04_vanna_text2sql.py` | The Vanna route: DDL, documentation and question/SQL pairs into a vector store, with the correction loop | 15 |
@@ -2392,7 +2393,7 @@ Every script has been run. From the most recent full pass:
 
 | # | Result |
 | :--- | :--- |
-| 01 | 5 tables, **38 column comments**, 325 rows (40 customers, 10 products, 60 policies, 35 claims, 180 days), fixed seed, idempotent |
+| 01 | 5 tables, **38 column comments**, 325 rows (40 customers, 10 products, 60 policies, 35 claims, 180 days), fixed seed |
 | 02 | **DDL style 7/7 with 3/3 stored literals; both prose styles 3/7 with 0/3** |
 | 03 | Reflection drops every column comment; a missing table raises a parsing exception; **the coded question was answered correctly this run (43 policies, matching the reference SQL) because the sample rows happened to contain `IF`** |
 | 04 | Retrieved 5 DDL statements, 5 notes and 3 pairs; answered the lapsed-policy question with 13 policies and 13632.0 annual premium; correction took `COUNT(*) FROM customers` from 40 to **35** |
