@@ -9,7 +9,7 @@ Some scripts call a hosted model. Those all go through the OpenAI SDK, so you ca
 between DeepSeek, Gemini and OpenAI by changing `base_url` and the key. The rest need no
 API key at all: they run local models with Ollama or Transformers, train networks in
 PyTorch on your GPU, or fit models with scikit-learn, gradient boosting and forecasting
-libraries.
+libraries. One script, 02-08, also calls the Tavily search API over plain HTTP.
 
 ## Modules
 
@@ -70,6 +70,7 @@ cp .env.example .env          # PowerShell: copy .env.example .env
 | `GEMINI_API_KEY` | Multimodal vision and long context |
 | `OPENAI_API_KEY` | Universal fallback |
 | `OPENAI_BASE_URL` | Where `OPENAI_API_KEY` is sent. Point it at another vendor's OpenAI-compatible endpoint to use that vendor's models instead |
+| `TAVILY_API_KEY` | Web search in 02-08. Optional: without it that part is skipped. The free tier gives 1,000 credits a month |
 
 ### 3. Run any script
 
@@ -136,7 +137,7 @@ See [LLM-Foundation.md](01-llm-foundation/LLM-Foundation.md) for the concepts be
 | 05 | `05_chunking_strategies.py` | Five chunking strategies compared by chunk size on one ticket guide |
 | 06 | `06_chatpdf_langchain_faiss.py` | PDF question answering with LangChain, FAISS and page-level citations |
 | 07 | `07_disney_multimodal_rag.py` | Multimodal RAG by hand: two indexes, CLIP, OCR and a vision model description |
-| 08 | `08_query_rewriting.py` | Five rewrite types, single-prompt intent detection, search-engine rewriting |
+| 08 | `08_query_rewriting.py` | Five rewrite types, single-prompt intent detection, search-engine rewriting checked with a real Tavily search |
 | 09 | `09_rerank_and_multiquery.py` | Two-stage retrieval: BM25 recall then cross-encoder rerank, with query expansion |
 | 10 | `10_kb_question_generation.py` | Doc2Query: generated questions as a second retrieval index |
 | 11 | `11_kb_curation.py` | Conversation distillation and knowledge-base health auditing |

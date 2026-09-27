@@ -60,6 +60,10 @@ rapidocr-onnxruntime>=1.3.0  # 07 -> OCR. Pure pip, no external binary required.
 #                         # Chosen over pytesseract because that is only a wrapper
 #                         # and additionally needs a separate Tesseract system install.
 
+# Query rewriting (08)
+# 08 needs nothing beyond Core. Its web search calls the Tavily API through urllib,
+# so no Tavily package is needed; set TAVILY_API_KEY in .env or that part is skipped.
+
 # Keyword retrieval and reranking (09, 10)
 rank_bm25>=0.2.2          # 09, 10 -> BM25Okapi, the cheap first-stage recall
 #                         # 09 also needs sentence-transformers (listed under 04) for

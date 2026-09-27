@@ -953,31 +953,28 @@ prompt = f"""### Instruction ###\n{instruction}\n### Conversation history ###\n{
 ### Current question ###\n{current_query}\n### Rewritten question ###\n"""
 ```
 
-The five as measured by the script:
+`08_query_rewriting.py` runs these rewrites with DeepSeek on a made-up park, Riverbend Park, and
+prints nine parts. It only rewrites. It does not retrieve anything, so what a rewrite does for
+retrieval is reasoning here, not a measurement. Parts 1 to 5 are the five types:
 
-| Type | Trigger | Original → rewritten |
+| Type | Trigger | Original and rewrite |
 | :--- | :--- | :--- |
-| **Context-dependent** | Depends on three prior turns | `Are there any other rides?`<br>→ `Are there any other rides in the Wildwood area at Riverbend Park besides the ranger station, training camp, and ice cream parlour?` |
-| **Comparative** | Neither side was ever named | `Which one takes longer and is more fun?`<br>→ `Which takes longer and is more fun: Wildwood or Skyline at Riverbend Park?` |
-| **Ambiguous reference** | `both of them` points backwards | `When do both of them start?`<br>→ `When do the fireworks shows at Riverbend Park and Harbour Park start?` |
-| **Multi-intent** | Three questions in one turn | `How much is a ticket? Do I need to book ahead? What does parking cost?`<br>→ split into three independent questions (**this returns a list, not a string**) |
-| **Rhetorical** | Emotion carries the sentence | `Don't tell me I have to book a month ahead as well?`<br>→ `What is the typical advance booking window for tickets?` |
+| Context-dependent | Depends on the conversation before it | `Are there any other rides?`<br>`Are there any other rides in the Wildwood area at Riverbend Park besides the ranger station, the training camp, and the ice cream parlour?` |
+| Comparative | Neither side was named | `Which one takes longer and is more fun?`<br>`Which one takes longer and is more fun, Wildwood or Skyline?` |
+| Ambiguous reference | `both of them` points backwards | `When do both of them start?`<br>`When do both the fireworks show at Riverbend Park and the fireworks show at Harbour Park start?` |
+| Multi-intent | Three questions in one turn | `How much is a ticket? Do I need to book ahead? What does parking cost?`<br>split into the three questions, returned as a JSON list |
+| Rhetorical | A complaint carries the sentence | `Don't tell me I have to book a month ahead as well?`<br>`How far in advance must tickets be booked?` |
 
-**Three points worth stopping on**:
-
-*   **Why the context-dependent type must be rewritten**: `Are there any other rides?` sent to
-    vector retrieval **matches any chunk containing `rides`**; naming the area and the three rides
-    already mentioned **narrows the target immediately**.
-*   **Why the rhetorical type must be rewritten**: vectorising the original spends
-    **most of the sentence's length on the complaint**, leaving only a few words of retrievable
-    fact. Rewriting **strips the emotion and keeps the request**.
-*   **The multi-intent type is not like the other four**: its output is
-    **a list, not a single query**, and everything downstream has to retrieve each part and merge
-    the answers. **It changes the shape of the pipeline**, and must be handled separately.
-
-> **Not every query needs rewriting.** Rewriting costs a model call, and short literal questions
-> retrieve fine without it. This is a cost-benefit judgement, not something to switch on
-> everywhere.
+- The context-dependent question does not say which area it means. The rewrite names the area and
+  the rides already listed.
+- The rhetorical question is a complaint. The rewrite keeps the question inside it.
+- The multi-intent type returns a list, not one query, so everything downstream has to retrieve
+  each part and merge the answers. It changes the shape of the pipeline.
+- The ambiguous reference only resolves when the conversation is clear. When the assistant's reply
+  read `Both Riverbend Park and Harbour Park run a fireworks show.`, the nearest plural was the two
+  parks, and three runs in four came back as `When do both Riverbend Park and Harbour Park start?`.
+  The reply now ends with `both shows are popular`, and five runs in five named the shows.
+- Each rewrite is one model call, so rewriting has a cost per question.
 
 ### 6.6 Intent detection: classification, rewriting and confidence in one prompt
 
@@ -994,45 +991,27 @@ match), with a fixed JSON output:
 **Compared with a rule engine**: one call handles the whole judgement, avoiding the accumulated
 latency of several; an "other" catch-all keeps it extensible.
 
-**Measured, five samples**:
+Part 6 of the script runs this prompt on five samples, one of each type:
 
 | # | Query | Type | Conf. | Rewritten |
 | :-: | :--- | :--- | :-: | :--- |
-| 1 | `Are there any other rides?` | context_dependent | 1.00 | `Are there any other rides in the Wildwood area at Riverbend Park?` |
-| 2 | `Which Riverbend Park area is more fun?` | comparative | 1.00 | `Which Riverbend Park area, Wildwood or Skyline, is more fun?` |
+| 1 | `Are there any other rides?` | context_dependent | 0.95 | `Are there any other rides at the Wildwood area of Riverbend Park besides the ranger station, training camp, and ice cream parlour?` |
+| 2 | `Which Riverbend Park area is more fun?` | comparative | 0.95 | `Which Riverbend Park area, Wildwood or Skyline, is more fun?` |
 | 3 | `Are they all suitable for small children?` | ambiguous_pronoun | 0.95 | `Are the fireworks shows at Riverbend Park and Harbour Park suitable for small children?` |
-| 4 | `Which restaurants are there? What do they cost?` | multi_intent | 1.00 | `Which restaurants are there? What do they cost?` ← **returned unchanged** |
-| 5 | `Don't tell me this is another two-hour queue?` | rhetorical | 0.90 | `Is this another two-hour queue?` |
+| 4 | `Which restaurants are there? What do they cost?` | multi_intent | 0.95 | `Which restaurants are there, and what do they cost?` |
+| 5 | `Don't tell me this is another two-hour queue?` | rhetorical | 0.90 | `Is this going to be another two-hour queue?` |
 
-> **⚠️ Row 4 is the failure, and the cause is not a misclassification**: all five types are
-> identified correctly. The problem is that this schema declares `rewritten_query` as
-> **a single string** — the multi-intent type owes a **list**, the structure has nowhere to put
-> one, and the two questions come back flattened into a single line.
->
-> **The classification is right and the rewrite is still wrong**, because
-> **one output shape cannot serve five query types.** That is the cost of folding classification
-> and rewriting into one call, and the reason type 4 in 6.5 is handled on its own.
-
-> **Read the confidence column carefully**: it is the model's impression of its own answer. Row 4
-> is wrong and scores a full 1.00; row 5 rewrites cleanly and scores only 0.90.
-> **It ranks; it does not measure.**
-
-**What confidence is and is not**: **it is not a cosine between vectors, it is a score the model
-produces from its own reading**, not a computation. Two ways to improve on it:
-① **cross-check against vector similarity** — patch an impression with an actual measurement;
-② route low-confidence results to **human review**.
-
-**Three ways to keep improving**: feed bad cases (like row 4) back into the prompt's example bank;
-build an **A/B test** for rewrite quality; train a dedicated classifier for a specialist domain.
-**Prefer a mature open-source path for standard flows, and only customise where precision pays.**
-
-> **What the rewrite actually is**: `query' → used for the embedding that retrieves the top-k chunks`
-> — the product of rewriting **is not an answer shown to the user; it is an intermediate fed to the
-> embedding model.**
-
-**Practice nine: query rewriting** (see `08_query_rewriting.py`) covers rewriting
-context-dependent questions, rewriting ambiguous references, classifying and rewriting in a single
-call, and **comparing retrieval before and after the rewrite**.
+- All five types are identified correctly. Row 4 still shows the limit of one call: the schema
+  declares `rewritten_query` as one string, so the two questions come back as one sentence. The
+  list that part 5 of 6.5 produced has nowhere to go, which is why the multi-intent type is
+  handled on its own.
+- The confidence runs from 0.90 to 0.95, and the script prints that range. The model reports the
+  score itself. It is not a cosine between vectors or any other measurement. Two ways to back it
+  up are a cross-check against vector similarity and human review of low scores.
+- An earlier run gave row 4 back unchanged at a confidence of 1.00, so a flawed rewrite can carry
+  the top score.
+- The rewrite is not shown to the user. It is the query that gets embedded to retrieve the top k
+  chunks.
 
 ### 6.7 Two-way rewriting: Query2Doc and Doc2Query
 
@@ -1084,47 +1063,64 @@ A private knowledge base is a **static snapshot**, and anything that changes it 
 | Booking | booking, reservation, tickets | How far ahead must I book? | Policies change |
 | Live status | queue, crowded, footfall | How busy is it now? | Only meaningful live |
 
-**The root cause: the model has no sense of the current time**, and the date has to be injected
-from outside.
+Parts 7 to 9 of the script handle this, for a real park, Shanghai Disneyland, so that part 8 can
+run a real search. Each prompt lists the cases in the table above and asks for JSON:
 
-**Three core functions** (each writes the table above into the prompt and returns JSON):
-
-| Function | Input | Output |
+| Part | Input | Output |
 | :--- | :--- | :--- |
-| Decide whether live data is needed | query + history | `need_web_search` / `search_reason` / `confidence` |
-| Rewrite for a search engine | query + search type | `rewritten_query` / `search_keywords` / `search_intent` / `suggested_sources` |
-| Build a search plan | as above, with the current date injected | `primary_keywords` / `extended_keywords` / `search_platforms` / `search_tips` / `verification_methods` |
+| 7. Does it need live data | the question | `need_web_search` / `search_reason` / `confidence` |
+| 8. Rewrite for a search engine | the question | `rewritten_query` / `search_keywords` / `search_intent` / `suggested_sources`, then a Tavily search |
+| 9. Search plan | the question | `primary_keywords` / `extended_keywords` / `search_platforms` / `time_range` |
 
-**Six rewriting techniques**: add a specific place, add a time range, use keyword combinations, add
-search intent, remove conversational phrasing, add related terms.
-
-**Measured (two questions through all three functions)**:
+- Part 7 asks about three questions. Two need live data and one, which themed lands the park has,
+  can be answered from the knowledge base, so the run shows both answers.
+- A question goes on to parts 8 and 9 only when the model says it needs a search and its
+  confidence is at least 0.7.
+- Part 8 sends the original question and the rewrite to Tavily and prints the top three results
+  of each. Without `TAVILY_API_KEY` the searches are skipped and the rest runs as before.
+- Parts 8 and 9 both start from the original question. Part 8 does not feed part 9, and the
+  search plan is not searched.
+- Part 9 flags a weak plan: primary keywords that are just the original sentence, or no extended
+  keywords at all.
 
 ```
-Q: Is Riverbend Park open today, and how busy is it right now?
-  ① decide   search: True   confidence: 1.00 (gate at 0.7)
-             reason: opening status and live crowd levels are both time-sensitive
-  ② rewrite  query   : Riverbend Park open today current crowd level
-             keywords: ['Riverbend Park','open today','hours','current crowd','busy now','live status']
-             sources : ['official park website','Google Maps','park social media','local news']
-  ③ plan     primary : ['Riverbend Park','open today','busy right now']
-             extended: ['Riverbend Park hours today','Riverbend Park live crowd status', …]
-             window  : today, current time
+  Is Shanghai Disneyland open today, and how busy is it right now?
+    search: True   confidence: 0.98 (gate at 0.7)
+    query   : Shanghai Disneyland opening status today and current crowd level
 
-Q: How much is a Riverbend Park ticket next Saturday, and how far ahead must I book?
-  ① decide   search: True   confidence: 0.95
-  ② rewrite  query   : Riverbend Park ticket price next Saturday booking advance requirement
-  ③ plan     window  : current week
+  How much is a Shanghai Disneyland ticket next Saturday, and how far ahead must I book?
+    search: True   confidence: 0.95 (gate at 0.7)
+    query   : Shanghai Disneyland ticket price next Saturday advance booking requirement
+    Tavily, original:
+      Shanghai Disneyland Planning Guide  (travellingwithnikki.com/2018/06/...)
+      Shanghai Disneyland Discount Tickets & Visiting Guide  (us.trip.com)
+      One-Day General Admission Ticket Advanced Reservation ...  (shanghaidisneyresort.com)
+    Tavily, rewrite:
+      Shanghai Disneyland Ticket Prices 2026: ¥475 to ¥799  (disneyparknerds.com)
+      Shanghai Disneyland Ticket Prices  (mickeyvisit.com)
+      Book Shanghai Disney Resort Tickets: Latest Prices & ...  (us.trip.com)
+
+  Which themed lands does Shanghai Disneyland have?
+    search: False   confidence: 0.95 (gate at 0.7)
 ```
 
-> **The two functions produce visibly different shapes, and that is the point**: ② produces
-> **keywords and sites for a crawler**, while the rewriting in 6.5 produces
-> **a complete sentence for vector retrieval**. The same word "rewrite", two entirely different
-> deliverables — **sharing one prompt between them is guaranteed to go wrong.**
+- For the ticket question, the original wording brought back a planning guide from 2018 first,
+  and the rewrite brought back three price pages. The rewrite lost the official reservation page,
+  which the original had in third place.
+- A trial the same day with five results per search showed the risk more plainly. The original
+  opening-hours question listed an official notice from 2020 that the park was temporarily
+  closed, and the original ticket question listed an official page that no longer exists. Neither
+  came back for the rewrites.
+- Search results change from day to day, so these lists hold for 2026-09-27 only.
+- Part 8 produces keywords for a search engine. The rewrites in 6.5 produce a full sentence for
+  vector retrieval. The same word, two different outputs, so they need different prompts.
+- The time window only repeats the wording of the question (`today`, `next Saturday`). The script
+  does not give the model the current date, so it cannot turn these into dates.
+- In this run the 0.7 gate decided nothing. The two questions that need a search score 0.98 and
+  0.95, and the third is a no from the model itself.
 
-> **The time-window row deserves a second look**: the two questions return `today, current time`
-> and `current week`, and that judgement **can only come from the current date injected into the
-> prompt**. The model has no notion of what today is — without the injection, that row is a guess.
+The script calls Tavily with `POST https://api.tavily.com/search`, the key in an
+`Authorization: Bearer` header, and a body of `query` and `max_results` only.
 
 **Common search API parameters** (Tavily as the example): `query` (required), `search_depth`
 (basic/advanced), `time_range` (day/week/month/year/all), `max_results`, `topic` (general/news),
@@ -1132,10 +1128,6 @@ Q: How much is a Riverbend Park ticket next Saturday, and how far ahead must I b
 (`include_images` / `include_answer` / `include_raw_html`).
 **The convention: JSON output, required and optional fields separated.** Search tools of this kind
 can also be exposed through the MCP protocol.
-
-**How it fires**: a **confidence threshold (0.7 and above)** decides whether to search.
-⚠️ Note that this is the **only place in this topic where confidence genuinely acts as a
-threshold** — in 6.6 it is a reference value, here it is a switch.
 
 ### 6.9 GraphRAG: writing the relationships into the data structure
 
