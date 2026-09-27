@@ -552,44 +552,54 @@ declarative, neutral passages. This is exactly why section 6 exists.
 
 ### 4.5 Practice five: PDF question answering with page-level citations
 
-See `06_chatpdf_langchain_faiss.py`. Stack: LangChain + FAISS over an OpenAI-compatible endpoint
-(`gemini-embedding-001` for vectors, `gemini-3.1-flash-lite` for generation).
+`06_chatpdf_langchain_faiss.py` answers two questions about a nine-page PDF, a bank's rules for
+assessing retail account managers, and cites the pages each answer came from. One question asks
+how many points a customer complaint costs, the other when the yearly appointment review opens.
+LangChain splits the text, embeds the chunks (`gemini-embedding-001`) and builds a FAISS store;
+`gemini-3.1-flash-lite` writes the answers. The run prints five parts: reading and chunking,
+vector store, reload, question answering, and several phrasings.
 
-**Eight steps**:
+- The text comes out of pypdf page by page and is split with `RecursiveCharacterTextSplitter`,
+  `chunk_size=1000` and `chunk_overlap=200`, trying `["\n\n", "\n", ".", " ", ""]` in order.
+- The page citations are the script's own work. The splitter cuts the text wherever it likes, so
+  a page number recorded per line cannot be matched to chunk i. The script records a page number
+  for every character, finds each chunk in the text with `str.find`, and gives the chunk the
+  page most of its characters came from.
+- Pages are joined with a single newline. Each page ends on its footer (`- 5 -`), and without the
+  newline the next page's first line was glued to it. The extracted text has no `\n\n`, so joining
+  with `\n\n` would have made the page breaks the splitter's first choice and stopped chunks from
+  crossing pages. With `\n`, 10 of the 15 chunks still span two pages.
+- The prompt holds the 4 nearest chunks (the "stuff" approach: every retrieved chunk in one
+  prompt, one model call).
 
-1.  Extract text from the PDF **while remembering which page every character came from**.
-2.  Split the text into overlapping chunks.
-3.  Map each chunk back to the page it mostly came from.
-4.  Embed the chunks and build the FAISS store.
-5.  Persist it and reload it.
-6.  Retrieve the chunks nearest a question.
-7.  Answer through a QA chain and cite the source pages.
-8.  Retrieve again under several phrasings and see what the first pass missed.
+| Measure | Result |
+| :--- | :--- |
+| Text and chunks | 11968 characters from 9 pages, 15 chunks, all 15 with a page number |
+| Complaint question | `2 points are deducted for each customer complaint.`, pages [5, 6, 3] |
+| Review question | `January of each year is the application window…`, pages [6, 4, 8, 7] |
 
-**Splitting parameters**: `RecursiveCharacterTextSplitter`, `chunk_size=1000, chunk_overlap=200`,
-separator priority `paragraph → sentence → space → character` (`["\n\n", "\n", ".", " ", ""]`).
+- `TOP_K` has to fit the size of the store. The script once used `TOP_K=10` on a store of 5
+  chunks, which returned everything, so the cited pages looked precise while nothing had been
+  filtered. With 15 chunks one answer cited 8 pages, and k=4 made the citations mean something.
 
-**Page citation is the point of this case, and it has a trap that cannot be avoided**:
+Part 5 rewrites each question three ways, retrieves under all four phrasings and merges the chunks.
+Each question carries the page that holds its answer (5 and 6, checked against the PDF), so the run
+shows whether the extra phrasings found anything that mattered.
 
-*   **The wrong way**: record page numbers per line, then read `page_numbers[i]` for chunk i. The
-    splitter cuts on semantic boundaries and merges up to `chunk_size`, so **there is no
-    correspondence between line index and chunk index**, and the mapping is guaranteed to be wrong.
-*   **The right way**: **record a page number for every character**, then assign each chunk the
-    **modal page** of the characters it covers. This depends on no string matching, and a chunk
-    spanning pages still resolves to the page that contributed most of it.
+```
+    single phrasing : 3 pages [5, 6, 3], answer page 5 at position 1
+    4 phrasings     : 3 pages [5, 6, 3], answer page 5 at position 1
+    new pages       : none
 
-**Measured**: 11958 characters across 9 pages → **15 chunks**, `TOP_K=4`, with the two questions
-citing pages `[5, 6, 3]` and `[6, 4, 7, 8]`.
+    single phrasing : 4 pages [6, 4, 8, 7], answer page 6 at position 1
+    4 phrasings     : 6 pages [6, 4, 8, 7, 3, 2], answer page 6 at position 1
+    new pages       : [3, 2], not needed, the answer page was already found
+```
 
-> **⚠️ `TOP_K` has to be rechecked whenever the store changes size.** This script once used
-> `TOP_K=10`: with a store of only 5 chunks, k=10 returns everything, so **the "source pages"
-> looked precise while nothing had ever been filtered**. Growing the store to 15 chunks exposed it
-> immediately — one answer cited 8 pages. Dropping k to 4 restored the meaning.
-> **A parameter tuned for one version of the data must be retuned when the data changes.**
-
-**Measured (step 8)**: adding three paraphrases of each question widens what retrieval can reach —
-the first question goes from 3 pages to 4 (page 8 becomes newly reachable), the second from 4 pages
-to 6 (pages 3 and 2 become newly reachable).
+- Both answer pages are first with the question alone, so the rephrasings bring in nothing the
+  answer needs. The two extra pages for the second question only make the context longer.
+- Rephrasing helps when the asker's wording misses the vocabulary of the document. These two
+  questions already use the document's words.
 
 ### 4.6 Practice six: a multimodal RAG assistant built by hand
 

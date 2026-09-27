@@ -1,16 +1,22 @@
-"""Answer questions about a PDF with LangChain, FAISS, and page-level citations.
+"""This script answers two questions about a nine-page PDF, a bank's rules for
+assessing retail account managers, and cites the pages each answer came from. One
+question asks how many points a customer complaint costs, the other when the
+yearly appointment review opens. LangChain splits the text, embeds the chunks and
+builds a FAISS store. The page citations are the script's own work. The splitter
+cuts the text wherever it likes, so the script records a page number for every
+character and gives each chunk the page most of its characters came from.
 
-Demonstrates the end-to-end path LangChain automates for you:
-    1. Extract text from a PDF while remembering which page every character came from.
-    2. Split the text into overlapping chunks.
-    3. Map each chunk back to the page it mostly came from.
-    4. Embed the chunks and build a FAISS store.
-    5. Persist the store and reload it.
-    6. Retrieve the chunks nearest a question.
-    7. Answer through a QA chain and cite the source pages.
-    8. Retrieve again under several phrasings and see what the first pass missed.
-
-Module 02: RAG - ChatPDF with LangChain.
+The run prints five parts:
+    1. Reading and chunking. The text of the PDF, split into chunks of up to 1,000
+       characters with 200 overlapping, each mapped to a page.
+    2. Vector store. The chunks embedded and saved to disk with their page map.
+    3. Reload. The saved store loaded back.
+    4. Question answering. For each question, the 4 nearest chunks go into one
+       prompt, and the answer is printed with the pages of those chunks.
+    5. Several phrasings. The model rewrites each question three ways. The pages
+       found by all four phrasings are compared with the pages found by the
+       question alone, and the run shows where the page holding the answer ranks
+       in each. A new page helps only if the answer page was missing before.
 """
 
 import os
@@ -31,23 +37,19 @@ INDEX_DIR = Path(__file__).parent / "models" / "bank_kpi_faiss"
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 TOP_K = 4
-# How many alternative phrasings step 8 asks for.
+# How many alternative phrasings part 5 asks for.
 MULTI_QUERY_COUNT = 3
 
-QUESTIONS = [
-    "How many points are deducted for each customer complaint?",
-    "When do account managers apply for their annual appointment review?",
-]
+# Each question with the PDF page that holds its answer.
+QUESTIONS = {
+    "How many points are deducted for each customer complaint?": 5,
+    "When do account managers apply for their annual appointment review?": 6,
+}
 
 
 def pick_provider():
-    """Return (api_key, base_url, embed_model, chat_model) for whichever key works.
-
-    Any OpenAI-compatible endpoint works. One provider covers both roles, so
-    there is a single key and a single quota to reason about. Gemini is tried
-    first because it also supplies the embedding model this script needs;
-    OpenAI is checked after, so setting a single key is enough.
-    """
+    """Return (api_key, base_url, embed_model, chat_model) for the first key set.
+    The provider must offer embeddings too, so one key covers both roles."""
     if os.getenv("GEMINI_API_KEY"):
         return (os.getenv("GEMINI_API_KEY"),
                 "https://generativelanguage.googleapis.com/v1beta/openai/",
@@ -59,13 +61,9 @@ def pick_provider():
 
 
 def extract_text_with_pages(pdf_path):
-    """Step 1: read the PDF, recording a page number for every character.
-
-    Tracking pages per character rather than per line is what makes step 3 work:
-    the splitter later cuts the text at arbitrary offsets, and only a character
-    level mapping survives that.
-    """
-    from PyPDF2 import PdfReader
+    """Read the PDF and record a page number for every character. The splitter
+    cuts at any offset, so only a per-character map survives it."""
+    from pypdf import PdfReader
 
     reader = PdfReader(str(pdf_path))
     text = ""
@@ -75,6 +73,11 @@ def extract_text_with_pages(pdf_path):
         if not page_text:
             print(f"  page {page_number}: no extractable text")
             continue
+        # Each page ends on its footer ("- 5 -"). A plain newline keeps the next
+        # page's first line off it. Not "\n\n": the text has none, so the pages
+        # would become the splitter's first choice and chunks would stop
+        # crossing them.
+        page_text += "\n"
         text += page_text
         char_pages.extend([page_number] * len(page_text))
     print(f"  extracted {len(text)} characters from {len(reader.pages)} pages")
@@ -82,12 +85,8 @@ def extract_text_with_pages(pdf_path):
 
 
 def split_text(text):
-    """Step 2: cut the document into overlapping chunks.
-
-    The separator list is tried in order, so the splitter prefers paragraph
-    breaks over sentence breaks over raw character cuts. The overlap keeps a
-    fact that straddles a boundary readable in at least one chunk.
-    """
+    """Cut the text into overlapping chunks, trying the separators in order:
+    paragraph, line, full stop, space, then any character."""
     try:
         from langchain_text_splitters import RecursiveCharacterTextSplitter
     except ImportError:  # LangChain < 0.2 kept it in the main package
@@ -105,13 +104,8 @@ def split_text(text):
 
 
 def map_chunks_to_pages(text, chunks, char_pages):
-    """Step 3: decide which page each chunk belongs to.
-
-    A chunk can straddle a page break, so there is no single right answer. Taking
-    the most common page among the chunk's characters gives the page that
-    contributed most of it. Chunks are located with str.find because the splitter
-    strips whitespace and the offsets no longer line up exactly.
-    """
+    """Give each chunk the page most of its characters came from. Chunks are found
+    with str.find, because the splitter strips whitespace and returns no offsets."""
     page_info = {}
     cursor = 0
     for chunk in chunks:
@@ -128,13 +122,8 @@ def map_chunks_to_pages(text, chunks, char_pages):
 
 
 def make_embeddings(api_key, base_url, embed_model):
-    """Build the embedding client.
-
-    check_embedding_ctx_length=False matters for non-OpenAI endpoints: by default
-    LangChain tokenises the text and posts integer arrays, which OpenAI accepts
-    but Gemini's compatibility layer rejects with a 501. Turning it off sends
-    plain strings, which every provider understands.
-    """
+    """Build the embedding client. check_embedding_ctx_length=False sends plain
+    strings: the default posts token arrays, which Gemini rejects with a 501."""
     from langchain_openai import OpenAIEmbeddings
 
     return OpenAIEmbeddings(model=embed_model, api_key=api_key, base_url=base_url,
@@ -142,11 +131,9 @@ def make_embeddings(api_key, base_url, embed_model):
 
 
 def build_store(chunks, page_info, api_key, base_url, embed_model):
-    """Steps 4-5: embed the chunks, build FAISS, and save it next to its page map."""
-    # FAISS still ships inside langchain-community, which upstream has marked as
-    # sunset. No official standalone replacement exists yet, so the deprecation
-    # warning printed here is expected rather than a misconfiguration. Module 07
-    # builds the same pipeline directly on faiss-cpu, with no framework at all.
+    """Embed the chunks, build FAISS, and save it next to its page map."""
+    # langchain-community prints a DeprecationWarning here. Script 07 builds the
+    # same pipeline on faiss-cpu without LangChain.
     from langchain_community.vectorstores import FAISS
 
     embeddings = make_embeddings(api_key, base_url, embed_model)
@@ -163,11 +150,8 @@ def build_store(chunks, page_info, api_key, base_url, embed_model):
 
 
 def load_store(embeddings):
-    """Step 5 (reverse): reload a saved index instead of paying to embed again.
-
-    allow_dangerous_deserialization is required because the store is a pickle;
-    only ever point this at a file you created yourself.
-    """
+    """Reload the saved store and its page map. The store is a pickle, so load only
+    files you created yourself."""
     from langchain_community.vectorstores import FAISS
 
     store = FAISS.load_local(str(INDEX_DIR), embeddings,
@@ -183,24 +167,13 @@ def load_store(embeddings):
 
 
 def ask(store, question, api_key, base_url, chat_model):
-    """Steps 6-7: retrieve, answer, and report which pages the answer came from.
-
-    This is the "stuff" strategy: concatenate every retrieved chunk into a single
-    prompt and call the model once. It is the cheapest of the four document
-    strategies and the right default while the retrieved set fits the context
-    window. The alternatives cost more calls: map_reduce summarises each chunk
-    separately then merges, refine walks chunks in sequence carrying an answer
-    forward, and map_rerank scores each chunk and keeps the best.
-
-    LangChain 1.x removed load_qa_chain along with the rest of langchain.chains,
-    so the LCEL pipeline below expresses the same idea with the pieces that
-    remain: format a prompt, call the model, parse the text out.
-    """
+    """Answer from the TOP_K nearest chunks in one prompt (the "stuff" approach)
+    and print the pages they came from."""
     from langchain_core.output_parsers import StrOutputParser
     from langchain_core.prompts import ChatPromptTemplate
     from langchain_openai import ChatOpenAI
 
-    print(f"\n--- Q: {question}")
+    print(f"\n  Q: {question}")
     docs = store.similarity_search(question, k=TOP_K)
 
     prompt = ChatPromptTemplate.from_template(
@@ -211,31 +184,13 @@ def ask(store, question, api_key, base_url, chat_model):
     chain = prompt | llm | StrOutputParser()
 
     context = "\n\n".join(doc.page_content for doc in docs)
-    print(f"A: {chain.invoke({'context': context, 'question': question})}")
-
-    pages = []
-    for doc in docs:
-        page = store.page_info.get(doc.page_content.strip(), "unknown")
-        if page not in pages:
-            pages.append(page)
-    print(f"Sources: pages {pages}")
+    print(f"  A: {chain.invoke({'context': context, 'question': question})}")
+    print(f"  Sources: pages {page_numbers(store, docs)}")
 
 
-def ask_multi_query(store, question, api_key, base_url, chat_model):
-    """Step 8: retrieve under several phrasings of the question, then merge.
-
-    A single phrasing is a single throw: if the asker's wording misses the
-    vocabulary the document used, similarity search returns neighbours of the
-    wrong region and the answer is never in the context at all. Asking the model
-    for alternative phrasings and taking the union of their hits widens what the
-    retriever can see, at the cost of one extra model call plus one embedding
-    call per variant.
-
-    LangChain ships this as MultiQueryRetriever. In 1.x it moved out of
-    langchain.retrievers into the separate langchain_classic package, so it is
-    written out here instead - the mechanism is a dozen lines and this keeps the
-    dependency list to packages that are actively maintained.
-    """
+def ask_multi_query(store, question, answer_page, api_key, base_url, chat_model):
+    """Retrieve under the question and its rephrasings, merge, and show where the
+    answer page ranks. Written out because MultiQueryRetriever left langchain."""
     from langchain_core.output_parsers import StrOutputParser
     from langchain_core.prompts import ChatPromptTemplate
     from langchain_openai import ChatOpenAI
@@ -248,16 +203,17 @@ def ask_multi_query(store, question, api_key, base_url, chat_model):
         "Question: {question}"
     ) | llm | StrOutputParser()
 
-    variants = [line.strip(" -0123456789.") for line
+    # Strip list markers such as "1. " or "- " from the left only, so a phrasing
+    # that ends in a number keeps it.
+    variants = [line.lstrip(" -0123456789.").strip() for line
                 in expand.invoke({"n": MULTI_QUERY_COUNT, "question": question}).splitlines()
                 if line.strip()]
 
-    print(f"\n--- Q: {question}")
+    print(f"\n  Q: {question}")
     for variant in variants:
         print(f"    + {variant}")
 
-    # Deduplicate on chunk text: the same chunk surfacing under three phrasings
-    # would otherwise fill three of the TOP_K slots and crowd out everything else.
+    # Deduplicate on chunk text, so a chunk found by several phrasings counts once.
     seen, merged = set(), []
     for phrasing in [question] + variants:
         for doc in store.similarity_search(phrasing, k=TOP_K):
@@ -267,10 +223,20 @@ def ask_multi_query(store, question, api_key, base_url, chat_model):
 
     single_pages = page_numbers(store, store.similarity_search(question, k=TOP_K))
     multi_pages = page_numbers(store, merged)
-    print(f"  single phrasing : {len(single_pages)} pages {single_pages}")
-    print(f"  {len(variants) + 1} phrasings   : {len(multi_pages)} pages {multi_pages}")
+    label = f"{len(variants) + 1} phrasings"
+    for name, pages in (("single phrasing", single_pages), (label, multi_pages)):
+        where = (f"position {pages.index(answer_page) + 1}" if answer_page in pages
+                 else "missing")
+        print(f"    {name:<16}: {len(pages)} pages {pages}, "
+              f"answer page {answer_page} at {where}")
     gained = [p for p in multi_pages if p not in single_pages]
-    print(f"  newly reachable : {gained if gained else 'nothing - the first wording already covered it'}")
+    if not gained:
+        print("    new pages       : none")
+    elif answer_page in single_pages:
+        print(f"    new pages       : {gained}, not needed, the answer page was "
+              "already found")
+    else:
+        print(f"    new pages       : {gained}")
 
 
 def page_numbers(store, docs):
@@ -290,25 +256,31 @@ def main():
     api_key, base_url, embed_model, chat_model = pick_provider()
     print(f"Provider endpoint: {base_url}")
 
-    print("\n--- 1-3. Reading and chunking the PDF ---")
+    # 1. Reading and chunking
+    print("\n--- 1. Reading and chunking ---")
     text, char_pages = extract_text_with_pages(PDF_FILE)
     chunks = split_text(text)
     page_info = map_chunks_to_pages(text, chunks, char_pages)
 
-    print("\n--- 4-5. Building and saving the vector store ---")
+    # 2. Vector store
+    print("\n--- 2. Vector store ---")
     store, embeddings = build_store(chunks, page_info, api_key, base_url, embed_model)
 
-    print("\n--- 5. Reloading from disk ---")
+    # 3. Reload
+    print("\n--- 3. Reload ---")
     store = load_store(embeddings)
-    print(f"  reloaded, {len(store.page_info)} chunks carry a page number")
+    with_page = sum(page != "unknown" for page in store.page_info.values())
+    print(f"  reloaded, {with_page} of {len(store.page_info)} chunks carry a page number")
 
-    print("\n--- 6-7. Question answering ---")
+    # 4. Question answering
+    print("\n--- 4. Question answering ---")
     for question in QUESTIONS:
         ask(store, question, api_key, base_url, chat_model)
 
-    print("\n--- 8. Retrieving under several phrasings ---")
-    for question in QUESTIONS:
-        ask_multi_query(store, question, api_key, base_url, chat_model)
+    # 5. Several phrasings
+    print("\n--- 5. Several phrasings ---")
+    for question, answer_page in QUESTIONS.items():
+        ask_multi_query(store, question, answer_page, api_key, base_url, chat_model)
 
 
 if __name__ == "__main__":
