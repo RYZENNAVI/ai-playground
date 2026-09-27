@@ -1252,49 +1252,57 @@ models), `MAP_MAX_TOKENS` 500, `CONCURRENCY` 32, `MAX_RETRIES` 20.
 > lower cost; or a **full-context agent approach** — chunk the data and **answer from all of it**,
 > sidestepping the incompleteness of answering from only the top-k passages.
 
-**Practice ten: asking one multi-hop question twice** (see `13_graphrag_vs_vector.py`):
-
-1.  Read the corpus and display the **chain of facts** the question depends on.
-2.  Retrieve the top 3 with a vector index and answer (the baseline).
-3.  Retrieve through the knowledge graph and answer.
-4.  Compare the two, and account for the graph route's extra cost.
+**Practice ten: one multi-hop question, asked of a vector index and of GraphRAG** (see
+`13_graphrag_vs_vector.py`).
 
 The corpus is a purpose-written English archive, `northgate_archive.txt` (1220 words), and the
-question is `How did Mira Delaunay's way of working end up affecting Port Halbrook?` —
-**the answer sits in no single passage**, and requires joining five facts that are never stated
-together: `Delaunay trained Ek → Ek founded Northgate → Northgate produced Latch Encoding →
-Latch Encoding made the Orrery system possible → Orrery was deployed at Port Halbrook`.
+question is `How did Mira Delaunay's way of working end up affecting Port Halbrook?`. The answer
+sits in no single passage. It needs five facts that are never stated together: `Delaunay trained
+Ek, Ek founded Northgate, Northgate developed Latch Encoding, Latch Encoding made the Orrery
+system possible, Orrery was deployed at Port Halbrook`.
 
-**Three measured results**:
+- The baseline splits the archive into 7 chunks of about 150 words, embeds them with
+  gemini-embedding-001 and answers from the nearest 3 (cos 0.686 / 0.655 / 0.652) with
+  gemini-3.1-flash-lite. All five chain terms appear in those chunks. A term can also sit in a
+  passage that denies the link, so that count is an upper bound: the third chunk is the Broch
+  collection, which the archive itself warns researchers against, and it scored well only by
+  sharing names and vocabulary.
+- graphrag 2.7.2 runs in its own virtual environment, because it pins numpy 1.x. Its index
+  holds 28 entities, 36 relationships, 4 communities and 4 community reports, extracted from 5
+  text units. `ASHFIELD` and `ASHFIELD POLYTECHNIC`, `NORTHGATE` and `NORTHGATE LAB` stay four
+  entities: extraction merges only entities with the same name and type.
+- Global search answers from community summaries and cites them as `Reports`. Local search starts
+  from the entities in the question and also cites `Entities`, `Relationships` and `Sources` (the
+  text units). The script checks that every cited id exists in its table; all of them do. That
+  shows the rows exist, not that they support the sentence they are attached to.
 
-| Route | What was retrieved | Result |
-| :--- | :--- | :--- |
-| **Vector baseline** | The nearest 3 of 7 chunks (cos 0.686 / 0.655 / 0.652) | **All five links present**, answer correct |
-| **Global (community summaries)** | Community reports, cited as `Reports` | Covers all 7 relevant entities, plus 1 outside the chain |
-| **Local (from the entities)** | Entities and relationships, cited as `Entities` / `Relationships` | Covers all 7 relevant entities, plus 3 outside the chain |
+Step 8 counts, in each of the three answers, how many of the question's 7 entities it names:
 
-Index size: **28 entities, 36 relationships, 4 communities, 4 community reports**, extracted from 5
-text units.
+```
+  baseline  names 4 of the 7 entities the question is about, plus 1 beyond it
+    not named: Tomas Ek, Coastal Institute, Northgate Lab
+    beyond the chain: LATCH-V
+  global    names 7 of the 7 entities the question is about, plus 1 beyond it
+    beyond the chain: PRIYA RAMAN
+  local     names 7 of the 7 entities the question is about, plus 3 beyond it
+    beyond the chain: JULIAN ADEYEMI, LATCH-V, VELLUM INSTRUMENTS
+```
 
-> **⚠️ The most honest result here: the baseline did not lose.** It retrieved all five links and its
-> answer holds up. The reason is **the corpus is small** — 1220 words split seven ways makes the
-> nearest three chunks nearly half the archive, and a chain packed that tightly survives being
-> retrieved by resemblance.
-> **The two approaches separate on a corpus whose five links sit hundreds of pages apart, and this
-> one is too small to show it.**
-> ⇒ The graph is doing real work here, **but this run does not prove it was needed**. Saying that
-> plainly is worth more than a conclusion that the graph won.
+The retrieved text held all five chain terms, yet the baseline answer names only 4 of the 7
+entities: it reaches Port Halbrook through the later Latch-V system and leaves out Ek, the
+Coastal Institute and Northgate Lab. Retrieving the passages is not the same as joining them.
+Both graph answers name all seven, because the joins were computed when the index was built.
 
-> **Unresolved entities, demonstrated in the output**: `ASHFIELD` and `ASHFIELD POLYTECHNIC`,
-> `NORTHGATE` and `NORTHGATE LAB` are treated as **four entities**. Extraction merges only entities
-> sharing a name and a type; **resolving different names for one real thing is a separate step that
-> is off by default** — this is what that costs.
+The comparison has limits. It is one question. Naming an entity is not stating the link between
+two of them. And the corpus is small: the top 3 of 7 chunks is 43% of it, so the vector route
+still retrieves every term. The two approaches separate more clearly when the links sit far
+apart, which this corpus is too small to show.
 
-> **Cost is where this comparison lands**: the baseline was **two API calls in total**. The graph
-> route needed a full indexing pass before a single question could be asked — about **a minute and
-> a half** on this corpus — and **that pass scales with the corpus, not with the number of
-> questions**. Over a book it runs for half an hour and bills accordingly.
-> **It earns that back only where the connections matter more than the passages do.**
+The cost is on the graph side. The baseline made three API calls: embeddings for the chunks, an
+embedding for the question, and the answer. The global search took 27 to 87 seconds across runs
+and the local search about 19. Before any question, the graph needs a full indexing pass that
+grows with the corpus, not with the number of questions. It pays off only where the connections
+matter more than the passages.
 
 ---
 
@@ -1457,8 +1465,11 @@ of an invented park's base has 3 entries; version 2 adds 2 entries and extends t
 - Diff. Added and removed ids come from set operations, modified ones from exact text
   comparison, with no model: 2 added, 0 removed, 3 modified.
 - Indexing. Both versions are embedded with gemini-embedding-001 at 1024 dimensions into
-  `IndexFlatIP`. Below full width the vectors come back with a mean length of about 0.62, so
-  they are rescaled to unit length first and the inner product is a cosine.
+  `IndexFlatIP`. The model's full width is 3072 dimensions, where its vectors have length 1.
+  Asked for 1024, it returns the first 1024 of those values (2.5 shows the leading values
+  match), so the length drops: to about 0.62 on average here, and by a different amount for
+  each text. Rescaling divides each vector by its own length. It keeps all 1024 dimensions and
+  makes the inner product a cosine, so no entry ranks higher only because its vector is longer.
 - Scoring. Each of five test questions names a string the answer must contain. A question
   counts as answered when that string appears in the top 3 entries, and the table shows the
   rank of the first entry holding it.

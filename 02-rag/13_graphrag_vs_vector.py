@@ -1,16 +1,30 @@
-"""Ask one multi-hop question twice: once of a vector index, once of a knowledge graph.
+"""This script compares GraphRAG with plain vector retrieval on one multi-hop
+question. The corpus is a 1,220-word invented archive about Northgate Lab. The
+question asks how Mira Delaunay's way of working affected Port Halbrook. The
+answer needs five facts joined end to end, and no passage states them together.
+The baseline splits the text into 150-word chunks, embeds them with
+gemini-embedding-001, retrieves the nearest 3 and has gemini-3.1-flash-lite answer
+from them. GraphRAG (Microsoft's graphrag 2.7.2) extracts entities and
+relationships when it builds the index, groups them into communities and
+summarises each one. It then answers twice: a global search over the community
+summaries, and a local search that starts from the entities in the question.
+graphrag pins numpy 1.x, so it runs in its own virtual environment and this
+script drives it from the command line.
 
-Demonstrates what a graph index buys over similarity search, and what it costs:
-    1. Read the corpus and show the chain of facts the question depends on.
-    2. Baseline: embed the chunks, retrieve the nearest ones, answer from those.
-    3. Locate the isolated environment the graph tool runs in.
-    4. Build the graph index, unless a previous run already produced one.
-    5. Report what that index contains.
-    6. Global search, which reasons over community summaries.
-    7. Local search, which walks out from the entities in the question.
-    8. Put the three answers side by side.
-
-Module 02: RAG - Graph Retrieval.
+The run prints eight parts:
+    1. The corpus and the question. The five links the answer needs.
+    2. Baseline. The 3 nearest chunks, which chain terms they contain, and the
+       answer.
+    3. The isolated environment. Where the graphrag interpreter is.
+    4. Building the graph index. Skipped when a previous run left one.
+    5. What the index contains. Table sizes, some entities and edges, and names
+       that appear in two forms.
+    6. Global search. The answer from community summaries, and whether its
+       citations point at rows that exist.
+    7. Local search. The same for the search that starts from the question's
+       entities.
+    8. Reading the three answers. How many of the question's entities each answer
+       names, and which names it adds beyond them.
 """
 
 import json
@@ -31,10 +45,10 @@ HERE = Path(__file__).parent
 CORPUS = HERE / "data" / "graphrag_input" / "northgate_archive.txt"
 WORKSPACE = HERE / "models" / "graphrag"
 
-# The graph tool pins numpy 1.x and pandas 2.x. Installing it beside the rest of
-# this module would force numpy back a major version and break torch, faiss and
-# sentence-transformers along with it, so it lives in its own interpreter and is
-# driven through the command line. Nothing it installs reaches this process.
+# graphrag pins numpy 1.x. Installing it beside the rest of this module would force
+# numpy back a major version and break torch, faiss and sentence-transformers along
+# with it, so it lives in its own interpreter and is driven through the command
+# line. Nothing it installs reaches this process.
 VENV = Path(__file__).parents[2] / ".venv-graphrag"
 VENV_PYTHON = VENV / "Scripts" / "python.exe"
 if not VENV_PYTHON.exists():
@@ -44,10 +58,8 @@ EMBED_MODEL = "gemini-embedding-001"
 CHAT_MODEL = "gemini-3.1-flash-lite"
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
-# Chunk size has to leave top-k retrieval with an actual choice to make. At 300
-# words this corpus splits into four chunks, so asking for three returns most of
-# the document and similarity search cannot fail - not because it is good, but
-# because it was never made to select. Smaller chunks put that decision back.
+# At 300 words this corpus splits into four chunks, so the top 3 would return most
+# of it and similarity search could not fail. 150 words leaves it a real choice.
 CHUNK_WORDS = 150
 TOP_K = 3
 
@@ -56,12 +68,11 @@ TOP_K = 3
 # and similarity search is not.
 QUESTION = "How did Mira Delaunay's way of working end up affecting Port Halbrook?"
 
-# Each link is paired with the term that settles whether it was retrieved, and
-# every term is chosen to be unique in this corpus. Taking the last word of the
-# sentence instead - the obvious shortcut - makes link four turn on the word
-# "possible" and links one and two on "Institute" and "Lab", terms that occur in
-# passages having nothing to do with the chain. A coverage number is only worth
-# printing when the thing it counts is specific enough to be wrong.
+# Each link is paired with a term that marks it in retrieved text. The terms are
+# specific to the chain: the last word of each sentence would not do, because
+# "possible", "Institute" and "Lab" also occur in passages unrelated to it. A term
+# can still appear in a passage that denies the link, so a count of terms is an
+# upper bound on the links retrieved.
 CHAIN = [
     ("Delaunay trained Tomas Ek at the Coastal Institute", "Tomas Ek"),
     ("Ek founded Northgate Lab", "Northgate Lab"),
@@ -70,10 +81,14 @@ CHAIN = [
     ("Orrery was deployed at Port Halbrook", "Port Halbrook"),
 ]
 
-# The entities the question is actually about. Step 8 uses this to separate the
-# names a graph answer was asked for from the ones it went and found on its own.
+# The entities the question is about. Step 8 counts them in each answer, and
+# separates them from the names an answer went and found on its own.
 CHAIN_ENTITIES = ["Mira Delaunay", "Tomas Ek", "Coastal Institute", "Northgate Lab",
                   "Latch Encoding", "Orrery", "Port Halbrook"]
+
+# The archive's own note on the Broch collection, which researchers confuse with the
+# Northgate material. A retrieved chunk holding it contributes no link.
+UNRELATED_MARKER = "warning against this"
 
 INSTALL_HINT = f"""The isolated environment is missing. Create it with:
 
@@ -84,7 +99,7 @@ Then set GRAPHRAG_API_KEY in {WORKSPACE / '.env'} and run this script again."""
 
 
 def gemini():
-    """Return a client for Gemini, which supplies both models this script needs."""
+    """Return a client for Gemini, which supplies both models the baseline needs."""
     from openai import OpenAI
 
     key = os.getenv("GEMINI_API_KEY")
@@ -113,12 +128,7 @@ def embed(api, texts):
 
 
 def cosine_top_k(query_vector, matrix, k=TOP_K):
-    """Return the indexes of the k nearest rows by cosine similarity.
-
-    Vectors are normalised before the dot product rather than after, because a
-    truncated embedding is not a unit vector and the raw dot product would then
-    be ranking magnitude alongside direction.
-    """
+    """Return (index, score) for the k rows nearest the query by cosine similarity."""
     import numpy as np
 
     q = np.asarray(query_vector, dtype="float32")
@@ -178,7 +188,7 @@ out["_edges"] = ["%s -> %s" % (a, b) for a, b in
 # The ids an answer is allowed to cite. Gathered here because the answers name
 # rows by human_readable_id, and only this interpreter can read the tables.
 ids = {}
-for name in ("entities", "relationships", "community_reports"):
+for name in ("entities", "relationships", "community_reports", "text_units"):
     path = os.path.join(folder, name + ".parquet")
     if not os.path.exists(path):
         continue
@@ -192,27 +202,25 @@ print(json.dumps(out))
 
 
 def graph_stats():
-    """Ask the isolated interpreter what the index contains.
-
-    The tables are parquet, and reading them here would mean adding pyarrow to
-    this environment for the sake of a few counts. The interpreter that wrote
-    them already has it, so it does the reading and returns JSON.
-    """
+    """Return (what the index holds, None), or (None, the error) when it cannot be read.
+    The graphrag interpreter reads the parquet tables, so this one needs no pyarrow."""
     probe = PROBE.replace("OUTPUT_DIR", repr(str(WORKSPACE / "output")))
     result = subprocess.run([str(VENV_PYTHON), "-c", probe],
-                            capture_output=True, text=True, encoding="utf-8")
+                            capture_output=True, text=True, encoding="utf-8",
+                            errors="replace")
     if result.returncode != 0:
-        return None
+        lines = (result.stderr or result.stdout).strip().splitlines()
+        return None, lines[-1] if lines else f"exit code {result.returncode}"
     try:
-        return json.loads(result.stdout.strip().splitlines()[-1])
+        return json.loads(result.stdout.strip().splitlines()[-1]), None
     except (json.JSONDecodeError, IndexError):
-        return None
+        return None, "the probe printed no JSON"
 
 
 # A graph answer cites its evidence as [Data: Reports (3, 5); Entities (8)]. The
 # names in those markers are not the table names, so they need mapping back.
 CITED_TABLE = {"reports": "community_reports", "entities": "entities",
-               "relationships": "relationships"}
+               "relationships": "relationships", "sources": "text_units"}
 CITATION_BLOCK = re.compile(r"\[Data:([^\]]*)\]", re.IGNORECASE)
 CITATION_PART = re.compile(r"([A-Za-z ]+)\(([^)]*)\)")
 
@@ -230,14 +238,8 @@ def cited_ids(text):
 
 
 def check_citations(answer, known_ids):
-    """Report whether each id an answer cites exists in the table it named.
-
-    This settles the one part of "should I believe this" that needs no model: a
-    citation either points at a row that exists or it does not. It says nothing
-    about whether that row supports the sentence it is attached to - a real id
-    under an invented claim passes here, which is the limit worth stating out
-    loud rather than letting the check imply more than it verifies.
-    """
+    """Print whether each id an answer cites exists in the table it names.
+    A real id under an invented claim still passes: this checks existence, not support."""
     cited = cited_ids(answer)
     if not cited:
         print("    citations: the answer names no evidence")
@@ -253,25 +255,15 @@ def check_citations(answer, known_ids):
 
 
 def mentions(name, text):
-    """True when text names this entity as a word rather than inside another.
-
-    Substring matching is not good enough here: the index holds an entity
-    called EK alongside TOMAS EK, and a bare substring test finds the first one
-    in any answer containing the word "week".
-    """
+    """True when text names this entity as a whole word. A plain substring test would
+    find the index entity EK inside the word "week"."""
     return re.search(r"\b" + re.escape(name.lower()) + r"\b",
                      (text or "").lower()) is not None
 
 
 def collapse(titles):
-    """Drop each title that is a shorter form of another title in the same set.
-
-    The index lists RAMAN beside PRIYA RAMAN and NORTHGATE beside NORTHGATE LAB,
-    which is the near-duplicate problem step 5 reports. Counting both makes one
-    entity look like two, so the longest form wins and the rest are folded into
-    it. This is presentation only - the index still holds both, and the note in
-    step 5 is what says so.
-    """
+    """Keep only the longest of titles that name the same thing, such as NORTHGATE and
+    NORTHGATE LAB. This affects the printout only; the index still holds both."""
     kept = []
     for title in sorted(titles, key=len, reverse=True):
         if not any(mentions(title, other) for other in kept):
@@ -280,14 +272,8 @@ def collapse(titles):
 
 
 def entity_split(answer, all_entities):
-    """Return (chain entities the answer names, graph entities beyond the chain).
-
-    Both sides have to survive the same near-duplicate problem. The first list
-    is counted against CHAIN_ENTITIES rather than against index titles, so it is
-    deduplicated by construction; the second comes straight from the index and
-    has to be collapsed by hand, or one entity under two names is reported as
-    two separate findings.
-    """
+    """Return (chain entities the answer names, other index entities it names).
+    The second list is collapsed, so one entity under two names counts once."""
     on_chain = [c for c in CHAIN_ENTITIES if mentions(c, answer)]
     off_chain = {e for e in all_entities
                  if mentions(e, answer)
@@ -321,6 +307,8 @@ def main():
         raise SystemExit(f"Corpus not found at {CORPUS}")
     text = CORPUS.read_text(encoding="utf-8")
 
+    # 1. The corpus and the question
+
     print("=" * 98)
     print("--- 1. The corpus and the question ---")
     print(f"  {CORPUS.name}: {len(text.split())} words")
@@ -331,8 +319,10 @@ def main():
 
     api = gemini()
 
+    # 2. Baseline
+
     print("\n" + "=" * 98)
-    print("--- 2. Baseline: similarity search over the same text ---")
+    print("--- 2. Baseline ---")
     chunks = chunk_words(text)
     vectors = embed(api, chunks)
     query_vector = embed(api, [QUESTION])[0]
@@ -346,12 +336,16 @@ def main():
     lowered = context.lower()
     missing = [step for step, marker in CHAIN if marker.lower() not in lowered]
     baseline_answer = answer_from_context(api, QUESTION, context)
-    print(f"\n  chain links present in the retrieved text: "
+    print(f"\n  chain terms present in the retrieved text: "
           f"{len(CHAIN) - len(missing)}/{len(CHAIN)}")
     for step in missing:
         print(f"    missing: {step}")
+    print("  A term can appear in a passage that denies the link, so this is an")
+    print("  upper bound on the links retrieved.")
     print("\n  Answer:")
     wrap(baseline_answer, indent="    ")
+
+    # 3. The isolated environment
 
     print("\n" + "=" * 98)
     print("--- 3. The isolated environment ---")
@@ -359,21 +353,28 @@ def main():
         print(INSTALL_HINT)
         return
     print(f"  interpreter: {VENV_PYTHON}")
-    print("  It holds numpy 1.x and pandas 2.x, which this process does not, and")
-    print("  is driven entirely through the command line.")
+    print("  It holds the numpy 1.x that graphrag pins, and this script drives it")
+    print("  entirely through the command line.")
+
+    # 4. Building the graph index
 
     print("\n--- 4. Building the graph index ---")
+    index_seconds = None
     if (WORKSPACE / "output" / "entities.parquet").exists():
-        print("  an index is already present - delete models/graphrag/output to rebuild")
+        print("  an index is already present; delete models/graphrag/output to rebuild")
     else:
         print("  running, this is the slow step …")
-        output, elapsed = run_graphrag(["index", "--root", str(WORKSPACE)], "index")
+        output, index_seconds = run_graphrag(["index", "--root", str(WORKSPACE)], "index")
         if output is None:
             return
-        print(f"  finished in {elapsed:.0f}s")
+        print(f"  finished in {index_seconds:.0f}s")
+
+    # 5. What the index contains
 
     print("\n--- 5. What the index contains ---")
-    stats = graph_stats()
+    stats, error = graph_stats()
+    if error:
+        print(f"  could not read the index: {error}")
     if stats:
         for key in ("documents", "text_units", "entities", "relationships",
                     "communities", "community_reports"):
@@ -393,76 +394,94 @@ def main():
             print("  type; resolving different names for one real thing is a separate")
             print("  step that is off by default, and this is what that costs.")
 
-    print("\n--- 6. Global search: reasoning over community summaries ---")
-    output, elapsed = run_graphrag(
+    # 6. Global search
+
+    print("\n--- 6. Global search ---")
+    output, global_seconds = run_graphrag(
         ["query", "--root", str(WORKSPACE), "--method", "global", "--query", QUESTION],
         "global query")
     global_answer = clean(output)
     if global_answer:
         wrap(global_answer, indent="    ")
         check_citations(global_answer, (stats or {}).get("_ids") or {})
-        print(f"\n  [{elapsed:.0f}s]")
+        print(f"\n  [{global_seconds:.0f}s]")
 
-    print("\n--- 7. Local search: walking out from the entities named in the question ---")
-    output, elapsed = run_graphrag(
+    # 7. Local search
+
+    print("\n--- 7. Local search ---")
+    output, local_seconds = run_graphrag(
         ["query", "--root", str(WORKSPACE), "--method", "local", "--query", QUESTION],
         "local query")
     local_answer = clean(output)
     if local_answer:
         wrap(local_answer, indent="    ")
         check_citations(local_answer, (stats or {}).get("_ids") or {})
-        print(f"\n  [{elapsed:.0f}s]")
+        print(f"\n  [{local_seconds:.0f}s]")
+
+    # 8. Reading the three answers
 
     print("\n" + "=" * 98)
     print("--- 8. Reading the three answers ---")
     all_entities = (stats or {}).get("_all_entities") or []
-    if all_entities:
-        for label, answer in (("global", global_answer), ("local", local_answer)):
-            on_chain, off_chain = entity_split(answer, all_entities)
-            print(f"  {label:<7} names {len(on_chain)} of the {len(CHAIN_ENTITIES)} "
-                  f"entities the question is about"
-                  + (f", plus {len(off_chain)} beyond it" if off_chain else ""))
-            if off_chain:
-                print(f"    beyond the chain: {', '.join(off_chain[:8])}")
-        print("  Names outside the chain are the graph following edges nobody asked")
-        print("  about. That is the behaviour worth watching: it is where a genuine")
-        print("  connection and a wrong edge look identical from the outside, and the")
-        print("  citation check above only tells you the rows cited are real.")
-        print()
-    print("  Similarity search returned the passages that read most like the question,")
-    print("  which is not the same as the passages that connect it. One of the three")
-    print("  it retrieved is a collection the corpus explicitly describes as unrelated -")
-    print("  it scores well because it shares names and vocabulary, not because it")
-    print("  contributes a link.")
-    if missing:
-        print("  It also left a link out, and nothing in the retrieved text marks the")
-        print("  absence, so the answer routes around the gap rather than reporting it.")
+    named = {}
+    for label, answer in (("baseline", baseline_answer), ("global", global_answer),
+                          ("local", local_answer)):
+        if not answer:
+            continue
+        on_chain, off_chain = entity_split(answer, all_entities)
+        named[label] = on_chain
+        print(f"  {label:<9} names {len(on_chain)} of the {len(CHAIN_ENTITIES)} "
+              f"entities the question is about"
+              + (f", plus {len(off_chain)} beyond it" if off_chain else ""))
+        absent = [c for c in CHAIN_ENTITIES if c not in on_chain]
+        if absent:
+            print(f"    not named: {', '.join(absent)}")
+        if off_chain:
+            print(f"    beyond the chain: {', '.join(off_chain[:8])}")
+    if not all_entities:
+        print("  (the index could not be read, so names beyond the chain are not counted)")
+    print("  In a graph answer, a name outside the chain is the graph following an edge")
+    print("  nobody asked about. A genuine connection and a wrong edge look the same")
+    print("  from outside, and the citation checks only show that the cited rows exist.")
+
+    print()
+    if any(UNRELATED_MARKER in chunks[i] for i, _ in hits):
+        print("  One of the chunks the baseline retrieved is the Broch collection, which")
+        print("  the archive itself warns researchers against. It scored well because it")
+        print("  shares names and vocabulary, not because it holds a link.")
+    base_named = len(named.get("baseline", []))
+    if not missing and base_named < len(CHAIN_ENTITIES):
+        print(f"  The retrieved text held all {len(CHAIN)} chain terms, yet the baseline "
+              f"answer names only")
+        print(f"  {base_named} of the {len(CHAIN_ENTITIES)} entities. Retrieving the "
+              "passages is not the same as joining them.")
+    print(f"  This corpus is small: {len(text.split())} words in {len(chunks)} chunks, so "
+          f"the top {TOP_K} is")
+    print(f"  {TOP_K / len(chunks):.0%} of it. The two approaches separate more clearly "
+          "when the links sit")
+    print("  far apart, which this corpus is too small to show.")
+
+    print()
+    print("  The graph answers can join the chain because the joins were computed when")
+    print("  the index was built. Global reads community summaries and cites them as")
+    print("  Reports. Local starts from the entities in the question and cites")
+    print("  Entities, Relationships and Sources as well. The answers are fluent either")
+    print("  way, and a wrong edge would read as well as a right one: structure")
+    print("  improves what gets retrieved, it does not verify it.")
+
+    print()
+    print("  Cost. The baseline made three API calls: embeddings for the chunks,")
+    print("  an embedding for the question, and the answer.", end=" ")
+    print(f"The global search took {global_seconds:.0f}s")
+    print(f"  and the local search {local_seconds:.0f}s on this run.", end=" ")
+    if index_seconds is not None:
+        print(f"Building the index took {index_seconds:.0f}s")
+        print("  before any question could be asked.")
     else:
-        print("  It carried all five links even so, and the baseline answer is sound.")
-        print("  That is a fact about this corpus, not a verdict on the method. Twelve")
-        print("  hundred words split seven ways makes the nearest three passages nearly")
-        print("  half the archive, and a chain packed that tightly survives being")
-        print("  retrieved by resemblance. Where the two approaches separate is a corpus")
-        print("  whose five links sit hundreds of pages apart, and this one is too small")
-        print("  to show it. Note what that costs the comparison: the graph is doing")
-        print("  real work below, but this run does not prove it was needed.")
-    print()
-    print("  The graph answers differ because the joins were computed at index time.")
-    print("  Global reads community summaries and cites them as Reports; local starts")
-    print("  from the entities in the question and cites Entities and Relationships.")
-    print("  Global suits questions about the corpus as a whole, local suits questions")
-    print("  about a named thing in it.")
-    print()
-    print("  Neither is free of the usual caveat: the graph answers are fluent and")
-    print("  confident, and a wrong edge would read exactly as well as a right one.")
-    print("  Structure improves what gets retrieved; it does not verify it.")
-    print()
-    print("  Cost is the honest half of this comparison. The baseline was two API calls")
-    print("  in total. The graph needed a full indexing pass before a single question")
-    print("  could be asked - on this corpus roughly a minute and a half, and that pass")
-    print("  scales with the corpus rather than with the number of questions. Over a")
-    print("  book it runs for half an hour and bills accordingly. It earns that back")
-    print("  only where the connections matter more than the passages do.")
+        print("The index was already")
+        print("  built, so its cost is not in this run. Building it is a full pass over the")
+        print("  corpus, and it grows with the corpus, not with the number of questions.")
+    print("  It pays off only where the connections matter more than the passages.")
 
 
 if __name__ == "__main__":
