@@ -1447,55 +1447,49 @@ See `11_kb_curation.py`.
 
 ### 7.4 Scenario four: version management and performance comparison
 
-**How do you version a knowledge base so you can run regression tests, sign off a release, and
-compare versions?** This is the only one of the four scenarios where **embeddings, not an LLM, do
-the work**.
+`12_kb_version_management.py` versions a knowledge base, benchmarks retrieval on each version and
+runs a regression check before release. Embeddings do the work here, not a chat model. Version 1
+of an invented park's base has 3 entries; version 2 adds 2 entries and extends the other 3.
 
-**Core functions**: version creation with description and statistics, **a hash as the version
-identity**, statistics (entry count, content length, category distribution), and version comparison.
+- Fingerprints. Each version gets an MD5 hash of its sorted ids and texts, so one edited
+  character changes it. v1.0 has 3 entries and hash `1d0aec844c6e`, v2.0 has 5 entries and
+  `61d5d51301c1`.
+- Diff. Added and removed ids come from set operations, modified ones from exact text
+  comparison, with no model: 2 added, 0 removed, 3 modified.
+- Indexing. Both versions are embedded with gemini-embedding-001 at 1024 dimensions into
+  `IndexFlatIP`. Below full width the vectors come back with a mean length of about 0.62, so
+  they are rescaled to unit length first and the inner product is a cosine.
+- Scoring. Each of five test questions names a string the answer must contain. A question
+  counts as answered when that string appears in the top 3 entries, and the table shows the
+  rank of the first entry holding it.
 
-**Seven modules**:
+```
+  query                                            v1.0     v2.0
+  --------------------------------------------------------------
+  Where is the park?                             rank 2   rank 3
+  How much is an adult ticket on a Tuesday?      rank 1   rank 1
+  What time does it close?                       rank 1   rank 1
+  How do I get there by public transport?          MISS   rank 1
+  Which rides should I not miss?                   MISS   rank 1
+  --------------------------------------------------------------
+  accuracy                                          60%     100%
+```
 
-| Module | Implementation |
-| :--- | :--- |
-| 1 Vectorisation | Call the embedding endpoint at a fixed dimensionality |
-| 2 Index building | Walk the base producing vectors and metadata → `IndexFlatL2` → `add_with_ids` |
-| 3 **Version diff** | **Set operations**: `added = set(v2)-set(v1)`, `removed = set(v1)-set(v2)`, `common = intersection`; modifications by `!=`, **exact text comparison, no LLM** |
-| 4 Search | `search(query_vector, k=3)`; `similarity = 1/(1+distance)` (turning "smaller is better" into "larger is better") |
-| 5 Evaluation | Record response time; judge correctness by **string containment**; `accuracy = correct / total` |
-| 6 Comparison | **A/B testing**: the same test set against two versions, reporting changes in accuracy and time |
-| 7 Regression | Re-run historical cases against the new version, `pass rate = passed / total` |
-
-> **Module 5's evaluation has a ceiling**: string containment can verify that the answer's text is
-> present, not that the answer is right. The stronger option is to have a model judge, at the cost
-> of reintroducing something unreproducible.
-
-**Measured** (v1 holds three basic entries; v2 expands all three and adds two more):
-
-| Function | Result |
-| :--- | :--- |
-| 1 Fingerprints | v1.0 **3 entries / mean 62 chars / hash `1d0aec844c6e`**; v2.0 **5 entries / mean 124 chars / `61d5d51301c1`** |
-| 2 Diff | **2 added, 0 removed, 3 modified** (`kb_001 +50` / `kb_002 +103` / `kb_003 +56` chars) |
-| 3 Indexing | 3 and 5 vectors; **mean raw norm 0.620 / 0.622 after truncation to 1024 dimensions, normalised before indexing** |
-| 4 Evaluation | 5 cases: v1 accuracy **60%**, v2 **100%**; mean search time **0.017 ms → 0.010 ms** |
-| 5 Regression | v1 passed 3 of 5, and **all 3 still pass on v2 — no regressions**; the other 2 were fixed by v2 |
-
-**Three things to read out of these numbers**:
-
-1.  **60% → 100% comes entirely from content v1 never had**: the two failures were "how do I get
-    there by public transport" and "which rides should I not miss", and v1's three entries hold no
-    answer to either; v2 adds `kb_004` and `kb_005` and they pass.
-    ⇒ **A version comparison usually measures knowledge coverage, not retrieval quality. v2 does
-    not search better; it has more to find.** That is worth saying out loud before anyone reads the
-    number as a search improvement.
-2.  **The timing "change" is measurement noise, not a trend**: an exact search over 3 vectors and
-    over 5 costs effectively the same, which is why v2 can come out 0.007 ms *faster*.
-    **A difference of this size should be reported as "no measurable change", not as a number.**
-3.  **Regression testing asks a different question from performance comparison**: the comparison
-    asks "is the new version better", regression asks **"did anything that used to work stop
-    working"**. A release is signed off on the second.
-    But do not overstate it — **five cases cannot certify a release; they can only catch the
-    breakages those five cases cover.**
+- Version 1 has only 3 entries, so the top 3 is its whole base for every question. A MISS there
+  means the answer is missing, never that retrieval failed.
+- The accuracy hides a weak retrieval. "Where is the park?" counts as answered in both versions,
+  but the location entry comes second in version 1 and third in version 2. With the top 1 it
+  would fail in both, and with the top 2 in version 2.
+- The gap from 60% to 100% comes entirely from content version 1 lacked. The script checks each
+  gained question: `line 11` and `launch coaster` are in no entry of version 1. Version 2 does not
+  search better; it has more to find.
+- The mean search time was 0.007 ms and 0.006 ms. An exact search over 3 or 5 vectors costs the
+  same, so the script reports no measurable change instead of a difference.
+- The regression check asks whether every question version 1 answered still passes: 3 of 3 do.
+  The two fixed questions are the gains above. Five cases can only catch the breakages they
+  cover, so the claim is "no regressions on this test set".
+- A substring test shows that the answer's text was retrieved, not that a reply built from it
+  would be right.
 
 See `12_kb_version_management.py`.
 

@@ -1,14 +1,22 @@
-"""Treat a knowledge base as versioned code: diff it, benchmark it, regression-test it.
+"""This script versions a knowledge base and benchmarks retrieval on each version,
+with a regression check before release. The base describes an invented theme park.
+Version 1 has 3 entries. Version 2 adds 2 entries and extends the other 3. Both are
+embedded with gemini-embedding-001 at 1024 dimensions into FAISS inner-product
+indexes. Five test questions each name a string the answer must contain, and a
+question counts as answered when that string appears in the top 3 entries. Version
+1 has only 3 entries, so for it the top 3 is the whole base and its score says only
+whether the answer exists.
 
-Demonstrates the release discipline a knowledge base needs once it starts changing:
-    1. Stamp each version with a hash and a set of statistics.
-    2. Diff two versions with set operations and exact comparison, no model involved.
-    3. Embed each version into its own FAISS index.
-    4. Retrieve and score each version against the same test set.
-    5. Compare the two runs and read what the difference actually measures.
-    6. Run the old test cases against the new version as a regression check.
-
-Module 02: RAG - Versioning and Benchmarking.
+The run prints six parts:
+    1. Version fingerprints. A hash, the entry count and the length of each version.
+    2. What changed. Added, removed and modified entries, found without a model.
+    3. Indexing both versions. The embeddings are rescaled to unit length first,
+       because at 1024 dimensions they come back shorter.
+    4. Scoring both versions. Each question against each index, with the rank of
+       the first entry that holds the answer.
+    5. What the difference measures. Which questions each version gained or lost,
+       and whether version 1 held the answer at all.
+    6. Regression check. Whether every question version 1 answered still passes.
 """
 
 import hashlib
@@ -54,9 +62,9 @@ VERSION_2 = [
                              "boat ride in Treasure Cove."},
 ]
 
-# Two of these five have no answer anywhere in version 1. That is deliberate, and
-# step 5 is about noticing that the accuracy gap measures exactly that and nothing
-# more subtle.
+# Two of these five have no answer anywhere in version 1, on purpose. Version 1 has
+# only TOP_K entries, so it returns all of them for every question: its score can
+# only show whether the answer exists. Part 5 checks that this is all the gap measures.
 TEST_CASES = [
     {"query": "Where is the park?", "expect": "east bank"},
     {"query": "How much is an adult ticket on a Tuesday?", "expect": "399"},
@@ -77,13 +85,8 @@ def gemini():
 
 
 def embed(api, texts):
-    """Embed texts and return unit-length vectors.
-
-    Normalising is not optional. This model is only unit-length at its full width;
-    ask for fewer dimensions and the vectors come back with varying magnitude, so
-    an unnormalised inner product would rank partly by length instead of purely by
-    direction. Normalising first makes the inner product a cosine again.
-    """
+    """Return the texts' embeddings rescaled to unit length, and their mean length before.
+    Below full width this model's vectors are shorter than 1, so the inner product needs it."""
     import numpy as np
 
     response = api.embeddings.create(model=EMBED_MODEL, input=texts,
@@ -94,12 +97,8 @@ def embed(api, texts):
 
 
 def version_stats(entries):
-    """Step 1: hash and measure one version.
-
-    The hash covers ids and text in a stable order, so two builds of the same
-    content produce the same fingerprint and a single edited character produces
-    a different one.
-    """
+    """Part 1: hash and measure one version. Sorting first makes the hash depend on
+    the content only, so one edited character changes it and nothing else does."""
     payload = json.dumps(sorted((e["id"], e["text"]) for e in entries),
                          ensure_ascii=False)
     lengths = [len(e["text"]) for e in entries]
@@ -112,13 +111,8 @@ def version_stats(entries):
 
 
 def diff_versions(old, new):
-    """Step 2: what changed between two versions.
-
-    Set operations on the ids give added and removed; the intersection is then
-    compared character by character. There is no model in this function and no
-    reason for one - "did this text change" has an exact answer, and an exact
-    answer is cheaper, faster and reproducible.
-    """
+    """Part 2: added and removed ids by set operations, modified ones by exact comparison.
+    No model is needed, because whether a text changed has an exact answer."""
     old_map = {e["id"]: e["text"] for e in old}
     new_map = {e["id"]: e["text"] for e in new}
     added = sorted(set(new_map) - set(old_map))
@@ -129,7 +123,7 @@ def diff_versions(old, new):
 
 
 def build_index(api, entries):
-    """Step 3: embed one version and put it in a FAISS index."""
+    """Part 3: embed one version and put it in a FAISS index."""
     import faiss
 
     vectors, mean_norm = embed(api, [e["text"] for e in entries])
@@ -139,37 +133,26 @@ def build_index(api, entries):
 
 
 def evaluate(api, index, entries, cases, k=TOP_K):
-    """Step 4: retrieve for every case and score it.
-
-    Scoring is a substring test: did the expected string appear anywhere in the
-    retrieved text. That is enough to tell retrieval apart from silence, and it
-    is all it is enough for - it cannot tell a correct answer from a passage that
-    merely contains the right characters, and it says nothing about the wording
-    of any answer generated afterwards.
-    """
+    """Part 4: retrieve the top k for every case and find the first entry holding the answer.
+    A substring test only shows the answer was retrieved, not that any reply would be right."""
     import numpy as np
 
     query_vectors, _ = embed(api, [c["query"] for c in cases])
 
-    # One throwaway search first. The very first call into the library pays a
-    # one-off setup cost, and timing it alongside the rest made the smaller index
-    # look a hundred times slower than the larger one - an artefact, not a result.
+    # One throwaway search first. The first call into the library pays a one-off
+    # setup cost, and timing it made the smaller index look a hundred times slower.
     index.search(np.array([query_vectors[0]]), min(k, len(entries)))
 
     results, elapsed = [], []
     for case, vector in zip(cases, query_vectors):
         started = time.perf_counter()
-        scores, indexes = index.search(np.array([vector]), min(k, len(entries)))
+        _, indexes = index.search(np.array([vector]), min(k, len(entries)))
         elapsed.append((time.perf_counter() - started) * 1000)
         retrieved = [entries[i] for i in indexes[0] if i >= 0]
-        joined = " ".join(e["text"] for e in retrieved)
-        results.append({
-            "query": case["query"],
-            "expect": case["expect"],
-            "hit": case["expect"].lower() in joined.lower(),
-            "top_id": retrieved[0]["id"] if retrieved else None,
-            "top_score": float(scores[0][0]) if len(scores[0]) else 0.0,
-        })
+        rank = next((position for position, entry in enumerate(retrieved, 1)
+                     if case["expect"].lower() in entry["text"].lower()), None)
+        results.append({"query": case["query"], "expect": case["expect"],
+                        "hit": rank is not None, "rank": rank})
     accuracy = sum(r["hit"] for r in results) / len(results)
     return results, accuracy, sum(elapsed) / len(elapsed)
 
@@ -180,8 +163,15 @@ def short(text, width=62):
     return flat if len(flat) <= width else flat[:width - 1] + "…"
 
 
+def cell(result):
+    """Show a result as 'rank 1' or 'MISS'."""
+    return f"rank {result['rank']}" if result["hit"] else "MISS"
+
+
 def main():
     api = gemini()
+
+    # 1. Version fingerprints
 
     print("=" * 92)
     print("--- 1. Version fingerprints ---")
@@ -190,6 +180,8 @@ def main():
     for name, s in stats.items():
         print(f"  {name:<8} {s['entries']:>8} {s['mean_chars']:>11.0f} "
               f"{s['total_chars']:>8}  {s['hash']}")
+
+    # 2. What changed
 
     print("\n--- 2. What changed ---")
     added, removed, modified, old_map, new_map = diff_versions(VERSION_1, VERSION_2)
@@ -204,55 +196,69 @@ def main():
     print("\n  No model was called for this. Whether two strings differ has an exact")
     print("  answer, and an exact answer is cheaper, faster and identical on every run.")
 
+    # 3. Indexing both versions
+
     print("\n--- 3. Indexing both versions ---")
     index_1, entries_1, norm_1 = build_index(api, VERSION_1)
     index_2, entries_2, norm_2 = build_index(api, VERSION_2)
     print(f"  v1.0: {index_1.ntotal} vectors, mean raw norm before scaling {norm_1:.3f}")
     print(f"  v2.0: {index_2.ntotal} vectors, mean raw norm before scaling {norm_2:.3f}")
     if abs(norm_1 - 1.0) > 0.01:
-        print(f"  Truncated to {EMBED_DIM} dimensions these are not unit vectors, which")
-        print("  is why they are normalised before indexing rather than after.")
+        print(f"  Truncated to {EMBED_DIM} dimensions these are not unit vectors, so they")
+        print("  are rescaled before they go into the index.")
 
-    print("\n--- 4. Scoring both against the same cases ---")
+    # 4. Scoring both versions
+
+    print(f"\n--- 4. Scoring both versions, top {TOP_K} ---")
     results_1, accuracy_1, ms_1 = evaluate(api, index_1, entries_1, TEST_CASES)
     results_2, accuracy_2, ms_2 = evaluate(api, index_2, entries_2, TEST_CASES)
-    print(f"  {'query':<44} {'v1.0':>6} {'v2.0':>6}")
-    print("  " + "-" * 60)
+    print(f"  {'query':<44} {'v1.0':>8} {'v2.0':>8}")
+    print("  " + "-" * 62)
     for r1, r2 in zip(results_1, results_2):
-        print(f"  {short(r1['query'], 42):<44} {'ok' if r1['hit'] else 'MISS':>6} "
-              f"{'ok' if r2['hit'] else 'MISS':>6}")
-    print("  " + "-" * 60)
-    print(f"  {'accuracy':<44} {accuracy_1:>5.0%} {accuracy_2:>6.0%}")
-    print(f"  {'mean search time (ms)':<44} {ms_1:>6.3f} {ms_2:>6.3f}")
+        print(f"  {short(r1['query'], 42):<44} {cell(r1):>8} {cell(r2):>8}")
+    print("  " + "-" * 62)
+    print(f"  {'accuracy':<44} {accuracy_1:>8.0%} {accuracy_2:>8.0%}")
+    print("\n  The rank is where the first entry holding the answer came.")
+    print(f"  Version 1 returns all {len(VERSION_1)} of its entries for every question, "
+          "so a MISS there")
+    print("  means the answer is missing, not that retrieval failed.")
+    for name, results in (("version 1", results_1), ("version 2", results_2)):
+        for r in results:
+            if r["hit"] and r["rank"] > 1:
+                print(f"  In {name}, '{short(r['query'], 40)}' counts as answered, "
+                      f"but the answer came at rank {r['rank']}.")
+
+    # 5. What the difference measures
 
     print("\n--- 5. What the difference measures ---")
-    gained = [r2["query"] for r1, r2 in zip(results_1, results_2)
-              if r2["hit"] and not r1["hit"]]
+    gained = [r2 for r1, r2 in zip(results_1, results_2) if r2["hit"] and not r1["hit"]]
     lost = [r2["query"] for r1, r2 in zip(results_1, results_2)
             if r1["hit"] and not r2["hit"]]
     print(f"  accuracy {accuracy_1:.0%} -> {accuracy_2:.0%}")
-    for query in gained:
-        print(f"    gained: {short(query, 70)}")
+    absent = 0
+    for r2 in gained:
+        in_v1 = any(r2["expect"].lower() in text.lower() for text in old_map.values())
+        absent += not in_v1
+        where = "held by an entry" if in_v1 else "in no entry"
+        print(f"    gained: {short(r2['query'], 44):<46} '{r2['expect']}' was {where} "
+              "of version 1")
     for query in lost:
         print(f"    lost  : {short(query, 70)}")
-    if gained and not lost:
-        print("\n  Every gain here comes from an entry that version 1 simply did not")
-        print("  contain. The benchmark is measuring coverage, not retrieval quality:")
-        print("  version 2 does not search better, it has more to find. A version")
-        print("  comparison will usually be measuring this, so it is worth saying out")
-        print("  loud before anyone reads the number as a search improvement.")
+    if gained and absent == len(gained) and not lost:
+        print("\n  Every gain comes from an answer version 1 did not contain. The")
+        print("  benchmark is measuring coverage, not retrieval quality: version 2")
+        print("  does not search better, it has more to find.")
 
-    delta_ms = ms_2 - ms_1
-    print(f"\n  search time moved by {delta_ms:+.3f} ms going from {len(VERSION_1)} to "
-          f"{len(VERSION_2)} vectors.")
-    print("  At this scale that figure is measurement noise, not a trend - an exact")
-    print("  search over five vectors and over three costs effectively the same. Any")
-    print("  reported speed difference this small should be quoted as 'no measurable")
-    print("  change' rather than as a number.")
+    print(f"\n  Mean search time was {ms_1:.3f} ms on {len(VERSION_1)} vectors and "
+          f"{ms_2:.3f} ms on {len(VERSION_2)}.")
+    print("  An exact search over this few vectors costs the same either way, so any")
+    print("  difference here is noise. Report it as no measurable change.")
+
+    # 6. Regression check
 
     print("\n--- 6. Regression check ---")
-    print("  The question a release needs answered is not 'is the new version better'")
-    print("  but 'did anything that used to work stop working'.")
+    print("  A release needs one question answered: did anything that used to work")
+    print("  stop working?")
     # A regression check has one denominator and it is not the test set. Counting
     # against every case folds three different outcomes into one number: cases
     # that passed and still pass, cases that never passed and still do not, and
@@ -260,8 +266,6 @@ def main():
     was_passing = [(r1, r2) for r1, r2 in zip(results_1, results_2) if r1["hit"]]
     regressions = [r1["query"] for r1, r2 in was_passing if not r2["hit"]]
     still_passing = len(was_passing) - len(regressions)
-    fixed = [r2["query"] for r1, r2 in zip(results_1, results_2)
-             if not r1["hit"] and r2["hit"]]
 
     if was_passing:
         print(f"  {still_passing}/{len(was_passing)} previously passing cases still pass "
@@ -271,10 +275,10 @@ def main():
               f"(0 of {len(TEST_CASES)})")
     for query in regressions:
         print(f"    REGRESSION: {short(query, 66)}")
-    for query in fixed:
-        print(f"    fixed by v2: {short(query, 64)}")
+    if gained:
+        print(f"  Cases version 2 fixed: {len(gained)}, the gains listed in part 5.")
     if was_passing and not regressions:
-        print("  no regressions - version 2 is safe to ship on this test set")
+        print("  No regressions on this test set.")
     print("\n  'On this test set' is the whole claim. Five cases cannot certify a")
     print("  release; they can only catch the breakages the five cases cover.")
 
