@@ -244,14 +244,15 @@ effect size seen on a completion model.
 
 ## 6. Prompt Works: Three Styles Compared
 
-This is the most directly reusable chapter in the module. Same model, same questions, same tables —
-only the packaging differs, and the accuracy gap is large.
+This is the most directly reusable chapter in the module. The model and the questions stay the same.
+Styles A and B share a prose schema and differ only in wording. Style C changes both the template
+and the schema, so the failures of A and B are traced below by the values they wrote.
 
 ### 6.1 The Three Styles
 
 All three share two placeholders: `{question}` is the user's question, `{schema}` is the schema text.
-**What gets substituted into `{schema}` is what actually differs** — styles A and B receive a prose
-paragraph, style C receives the raw `CREATE TABLE` statements.
+Styles A and B receive a paragraph naming four of the five tables and their columns, with no types,
+comments or stored codes. Style C receives the raw `CREATE TABLE` statements with their comments.
 
 **Style A — prose schema, question wrapped in a comment block, the instruction left implicit**
 
@@ -291,9 +292,9 @@ Here is the SQL query I have generated to answer the question `{question}`:
 """
 ```
 
-⚠️ **The unclosed fence at the end of style C is deliberate, not a typo.** These models were trained
-on code, and **an unclosed ```` ```sql ```` block is the strongest available signal that SQL comes
-next rather than an explanation.**
+The unclosed fence at the end of style C is deliberate. The prompt ends inside a ```` ```sql ````
+block, so the reply starts with SQL rather than an explanation, and `extract_sql()` handles a reply
+with no opening fence.
 
 The script binds each style to the schema text it is allowed to see:
 
@@ -347,27 +348,29 @@ wrong literal returns an empty result set and looks like a valid answer. The fir
 `02_prompt_to_sql.py` measures exactly that. The benchmark is **7 questions with known-correct
 answers, 3 of which hinge on a stored code**:
 
-| Style | Rows correct | Stored literal used |
+Three runs on 2026-09-27 gave the same scores each time:
+
+| Style | Rows correct | Table's code used |
 | :--- | :---: | :---: |
-| A prose | 3 / 7 | **0 / 3** |
-| B prose + explicit ask | 3 / 7 | **0 / 3** |
-| **C create-table** | **7 / 7** | **3 / 3** |
+| A prose | 4 / 7 | 0 / 3 |
+| B prose + explicit ask | 4 / 7 | 0 / 3 |
+| C create-table | 7 / 7 | 3 / 3 |
 
-**The two columns differ in stability, and that matters more than the numbers themselves:**
+When a query misses the code, the script prints what the table stores and what the query wrote:
 
-- **"Rows correct" fluctuates.** Re-run the same code and A/B land on 2/7 or 3/7 — the model
-  sometimes **guesses** a value correctly, or slips on an aggregate in a question that needed no code
-- **"Stored literal used" is nailed down.** The prose schema handed to A and B **does not contain the
-  strings `IF`, `L` or `DEN` anywhere**. There is nothing to read them from, so it stays **0/3** no
-  matter how many times it runs
+| Question | A and B wrote | Table stores |
+| :--- | :--- | :--- |
+| Which claims were turned down? | `'Denied'` | `DEN` |
+| Which customers have lapsed? | `'Lapsed'` (on `policies.policy_status`) | `L` on `customers.customer_status` |
+| How many policies are still running? | `'Active'` | `IF` |
 
-⇒ **This is why the measure had to change.** Reading only the first column, A versus C looks like
-"3/7 against 7/7" — a plausible swing in model performance. The second column shows the real gap:
-**complete ignorance against complete knowledge.**
-
-The script scores the literal separately for exactly this reason, stated in its own comments: a
-strong model occasionally guesses the right value, and **scoring the guess as knowledge would hide
-the very gap the experiment is measuring.**
+- A and B fail exactly the three code questions and pass the other four. Each failure is a readable
+  word guessed in place of a code the prose schema never gives.
+- A and B score the same, so the extra instruction in B changes nothing on these questions.
+- C changes the template as well as the schema, so the scores alone cannot split the two. The
+  guessed values above point to the schema.
+- The last column shows why a query failed. It cannot tell a lucky guess from knowledge: a query
+  that guessed `'DEN'` would count as used.
 
 ### 6.4 Why DDL Beats Prose
 
@@ -1085,9 +1088,10 @@ def retrieve(query, top_k=2, threshold=0.05):
 
 **This is a deliberate choice, and the script states both reasons:**
 
-1. **The similarity here is lexical rather than semantic, and that is sufficient.** These questions
-   are short, share a vocabulary, and live in one domain — **term overlap separates them cleanly.**
-   A neural embedding model would be aimed at a problem this data does not have
+1. **The similarity here is lexical rather than semantic.** The vocabulary comes from the six
+   example questions only, so words new to them are dropped from a query. "Which customers have
+   lapsed?" and "Which customers signed up during 2023?" both match "How many customers do we
+   have?" at 1.0, because customers is the only word they share with it
 2. **It keeps the script on a single provider.** The chat endpoint in use has no embedding
    counterpart, so vector retrieval would mean introducing a second vendor — against the one
    provider per script rule from chapter 4
@@ -2281,7 +2285,7 @@ current but **discards column comments**, so keep the business annotations separ
 
 **Q: Which prompt style should I use?**
 The CREATE TABLE text, laid out as a completion ending in an unclosed ```` ```sql ```` fence. It
-scored 7/7 against 3/7, and **3/3 against 0/3 on stored literals**. See chapter 6.
+scored 7/7 against 4/7 in three runs, and 3/3 against 0/3 on using the code the table stores. See chapter 6.
 
 **Q: Does a better prompt really mean better SQL?**
 Yes, and the mechanism is specific: **give the model the metadata, the table definitions and the
@@ -2394,7 +2398,7 @@ Every script has been run. From the most recent full pass:
 | # | Result |
 | :--- | :--- |
 | 01 | 5 tables, **38 column comments**, 325 rows (40 customers, 10 products, 60 policies, 35 claims, 180 days), fixed seed |
-| 02 | **DDL style 7/7 with 3/3 stored literals; both prose styles 3/7 with 0/3** |
+| 02 | DDL style 7/7, using the table's code 3/3; both prose styles 4/7 with 0/3, writing `'Denied'`, `'Lapsed'` and `'Active'` in place of the codes (three runs, same scores) |
 | 03 | Reflection drops every column comment; a missing table raises a parsing exception; **the coded question was answered correctly this run (43 policies, matching the reference SQL) because the sample rows happened to contain `IF`** |
 | 04 | Retrieved 5 DDL statements, 5 notes and 3 pairs; answered the lapsed-policy question with 13 policies and 13632.0 annual premium; correction took `COUNT(*) FROM customers` from 40 to **35** |
 | 05 | Four blocked and four passed across all three layers; read-only connection verified as non-writable; benchmark **7/7** — single 3/3, two-table 2/2, three-table 2/2 |
@@ -2402,8 +2406,8 @@ Every script has been run. From the most recent full pass:
 
 ⚠️ **Two of these move between runs, so quote them with care:**
 
-- **The "rows correct" column for 02** — the prose styles land on 2/7 or 3/7 depending on whether the
-  model guesses a status value. **The stored-literal column, 0/3 against 3/3, does not move**
+- **The scores for 02** gave 4/7, 4/7 and 7/7 in three runs on 2026-09-27. Earlier runs recorded 3/7
+  for the prose styles
 - **The coded question in 03** — it passed this time because all three sample rows showed `IF`. A
   different code or a different data distribution changes that. See 12.3
 
@@ -2449,8 +2453,8 @@ CREATE TABLE text  +  column comments  +  enumerated domains  +  business vocabu
 ```
 
 **The evidence**: same model, same questions. Replacing a prose description of the tables with the
-CREATE TABLE text in a completion format moved accuracy from 3/7 to 7/7, and **stored-literal use
-from 0/3 to 3/3** — the second being the measure that does not move between runs.
+CREATE TABLE text in a completion format moved accuracy from 4/7 to 7/7, and stored-code use from
+0/3 to 3/3. The prose styles wrote `'Denied'`, `'Lapsed'` and `'Active'` in place of the codes.
 
 **The corollary**: any automation that discards comments is unusable on a database built from stored
 codes. That is precisely why the reflection route fails, and why its one passing run proved nothing.
