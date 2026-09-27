@@ -1,8 +1,8 @@
-"""This script asks a chat model what DeepSeek and OpenAI have announced recently. The
-model's knowledge stops at its training cutoff, so it gets a web search tool, and the
-script runs each search the model asks for. The search is simulated on purpose: the
-tool queries the Wikipedia search API, which needs no key, and the model is told it
-searches the web.
+"""This script builds a small search agent with function calling. It asks a chat model
+what DeepSeek and OpenAI have announced recently. The model's knowledge stops at its
+training cutoff, so it gets a web search tool, and the script runs each search the
+model asks for. The search is simulated on purpose: the tool queries the Wikipedia
+search API, which needs no key, and the model is told it searches the web.
 
 Nothing in the tool loop itself stops the model from searching forever, so the script
 caps it at three rounds. After the third round it adds a message telling the model to

@@ -1,6 +1,7 @@
-"""This script asks a chat model about the weather in two cities. The model has no live
-weather data, so it cannot answer on its own. Instead it asks the script to call a local
-function, get_current_weather, and the script sends the results back.
+"""This script shows function calling, also called tool calling. It asks a chat model
+about the weather in two cities. The model has no live weather data, so it cannot answer
+on its own. Instead it asks the script to call a local function, get_current_weather,
+and the script sends the results back.
 
 The script uses DeepSeek when DEEPSEEK_API_KEY is set, and OpenAI otherwise. The run
 prints three steps:

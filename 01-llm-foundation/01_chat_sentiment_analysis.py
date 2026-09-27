@@ -1,6 +1,7 @@
 """This script sends two kinds of request to a chat model. The first is an ordinary
 question. The second asks the model to label a product review as positive, negative
-or neutral. Both use the same API call but different system messages.
+or neutral (sentiment analysis). Both use the same API call but different system
+messages.
 
 The script uses DeepSeek when DEEPSEEK_API_KEY is set, and OpenAI otherwise. The run
 prints two parts:

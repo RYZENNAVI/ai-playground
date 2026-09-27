@@ -1,10 +1,11 @@
-"""This script answers two questions about a nine-page PDF, a bank's rules for
-assessing retail account managers, and cites the pages each answer came from. One
-question asks how many points a customer complaint costs, the other when the
-yearly appointment review opens. LangChain splits the text, embeds the chunks and
-builds a FAISS store. The page citations are the script's own work. The splitter
-cuts the text wherever it likes, so the script records a page number for every
-character and gives each chunk the page most of its characters came from.
+"""This script is a small RAG pipeline. It answers two questions about a
+nine-page PDF, a bank's rules for assessing retail account managers, and cites
+the pages each answer came from. One question asks how many points a customer
+complaint costs, the other when the yearly appointment review opens. LangChain
+splits the text, embeds the chunks and builds a FAISS store. The page citations
+are the script's own work. The splitter cuts the text wherever it likes, so the
+script records a page number for every character and gives each chunk the page
+most of its characters came from.
 
 The run prints five parts:
     1. Reading and chunking. The text of the PDF, split into chunks of up to 1,000

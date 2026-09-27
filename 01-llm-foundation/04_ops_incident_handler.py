@@ -1,8 +1,8 @@
-"""This script hands a database alert to a chat model. The system message tells the
-model to check the server first. The model cannot read the server itself, so it calls
-a local function, get_current_status, and the script sends the result back. The script
-keeps calling the model until a reply comes without a tool call. There is no limit on
-rounds; script 06 adds one.
+"""This script hands a database alert to a chat model and runs function calling in a
+loop. The system message tells the model to check the server first. The model cannot
+read the server itself, so it calls a local function, get_current_status, and the
+script sends the result back. The script keeps calling the model until a reply comes
+without a tool call. There is no limit on rounds; script 06 adds one.
 
 The script uses DeepSeek when DEEPSEEK_API_KEY is set, and OpenAI otherwise. The run
 prints three parts:

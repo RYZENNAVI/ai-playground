@@ -1399,6 +1399,9 @@ for hit in hits:
     spent += cost
 ```
 
+The comparison above applies the budget to the top 8 chunks. The answers in step 5 apply it to
+each backend's top 3 from step 3, so their context never holds more than 3 chunks.
+
 ### 14.4 A web interface over the same backends
 
 `--ui` serves a small Blocks page: a question box, a selector for the four backends, a cutoff selector, and

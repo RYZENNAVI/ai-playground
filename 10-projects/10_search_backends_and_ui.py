@@ -1,21 +1,25 @@
 """This script answers questions about an invented insurer's policy wording.
 The eight documents are written into the script, and each question names the
 document that answers it, so retrieval can be scored rather than judged. The
-same chunks go to a keyword index (BM25) and a vector index. The two rankings
-are also fused two ways. Reciprocal rank fusion (RRF) adds 1 / (60 + rank) from
-each backend and never looks at the scores. The weighted fusion rescales each
-backend's scores to 0 to 1 for the question and adds them half and half. Raw
-scores cannot be added: BM25 has no upper bound and cosine does.
+same chunks go to a keyword index (BM25) and a vector index. Hybrid retrieval
+then fuses the two rankings, in two ways. Reciprocal rank fusion (RRF) adds
+1 / (60 + rank) from each backend and never looks at the scores. The weighted
+fusion rescales each backend's scores to 0 to 1 for the question and adds them
+half and half. Raw scores cannot be added: BM25 has no upper bound and cosine
+does.
 
 The run prints six parts:
     1. The corpus, chunked. Windows of 60 words with 15 overlapping.
     2. Two indexes and two fusions. The four backends the rest of the run uses.
     3. Retrieval scores. Each question through each backend, and the rank of the
        expected document if it is in the top 3.
-    4. Two ways to cut the context. The same retrieved chunks cut to three, and
-       to an estimated budget of 220 tokens.
+    4. Two ways to cut the context. The vector backend's top 8 for each question,
+       cut to three chunks and to an estimated budget of 220 tokens. This part
+       only compares the two cuts, and nothing later uses its results.
     5. Answers. Gemini answers each question from the keyword backend's chunks
-       and from the vector backend's.
+       and from the vector backend's. The context is each backend's top 3 from
+       part 3, trimmed by the same token budget, so it never holds more than 3
+       chunks.
     6. Peeling a failure back. The first question a backend missed, traced one
        layer at a time from the answer down to the cause.
 

@@ -7,7 +7,8 @@ prints five parts:
        cache after the first run.
     2. Loading. The model goes onto the GPU when there is one, and the script prints
        the VRAM it takes.
-    3. Chat template. The script prints the prompt string the model actually receives.
+    3. Chat template. The prompt string the model receives, shown for the message
+       "Hello!". Part 4 builds its own prompt the same way and does not reuse this one.
        The template for this model ends with an opening <think> tag, so the reply
        starts inside the reasoning and shows only the closing </think>.
     4. Generation. Only the new tokens are decoded, so the prompt is not repeated.

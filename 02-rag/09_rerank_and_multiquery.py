@@ -1,22 +1,24 @@
 """This script answers three visitor questions from a small knowledge base of
-Disney ticket rules, in two stages. Stage one, BM25, scores every paragraph by
-the words it shares with the question. BM25 is TF-IDF with two fixes: repeats
-of a word soon stop adding score, and long paragraphs lose the edge of simply
-holding more words. It is cheap, so it keeps a wide set of 8 paragraphs. Stage
-two, a cross-encoder, reads the question together with each sentence of those
-paragraphs and keeps the best 3. It judges meaning rather than shared words,
-but it costs one model pass per sentence, which does not scale to a large corpus.
+Disney ticket rules, in two stages: recall, then reranking. Stage one, BM25,
+scores every paragraph by the words it shares with the question. BM25 is TF-IDF
+with two fixes: repeats of a word soon stop adding score, and long paragraphs
+lose the edge of simply holding more words. It is cheap, so it keeps a wide set
+of 8 paragraphs. Stage two, a cross-encoder, reads the question together with
+each sentence of those paragraphs and keeps the best 3. It judges meaning rather
+than shared words, but it costs one model pass per sentence, which does not scale
+to a large corpus.
 
 The run prints five parts:
     1. Loading the knowledge base. Each .docx file becomes paragraph chunks that
        carry the file's heading.
     2. Recall and rerank. BM25 keeps 8 paragraphs, and the cross-encoder ranks
        their sentences.
-    3. Why the unit matters. One question scored against the answering sentence,
+    3. Why the unit matters. Question 1 scored against the answering sentence,
        its paragraph, and the paragraph with its heading, then against the 8
        recalled paragraphs whole.
-    4. Reading the scores. The cross-encoder returns raw logits, so a correct
-       sentence can score below zero.
+    4. Reading the scores. Question 1 against two hand-written sentences, one
+       correct and one about the Eiffel Tower. The cross-encoder returns raw
+       logits, so the correct sentence can score below zero.
     5. Query expansion, and what it is worth. DeepSeek rewrites each question
        four ways, BM25 recalls for all of them, and the reranker runs again.
        Needs DEEPSEEK_API_KEY.

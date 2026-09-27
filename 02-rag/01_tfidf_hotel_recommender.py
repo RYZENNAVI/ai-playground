@@ -11,7 +11,8 @@ The run prints six parts:
     3. Frequent phrases. The 20 most common three-word phrases across all 152
        descriptions, with stop words removed. "pike place market" comes first. Raw
        counts rank a phrase high whether or not it tells hotels apart, which is the
-       problem TF-IDF addresses in part 5.
+       problem TF-IDF addresses in part 5. The counts are only shown here, and
+       nothing later uses them.
     4. Cleaning. Every description is lowercased and stripped of punctuation and stop
        words. W Seattle's description is shown before and after.
     5. TF-IDF and cosine similarity. The cleaned descriptions become TF-IDF vectors

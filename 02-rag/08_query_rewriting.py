@@ -1,11 +1,11 @@
-"""This script rewrites questions a visitor might ask a park assistant into
-questions a retriever can use. Parts 1 to 6 use a made-up park, Riverbend Park,
-and most of their questions come with the short conversation they depend on.
-Parts 7 to 9 ask about a real park, Shanghai Disneyland, so that part 8 can run
-a real web search. DeepSeek does every rewrite, and all prompts share one frame:
-instruction, conversation history, current question. Only part 8 retrieves
-anything: it sends the original question and its rewrite to the Tavily search
-API, when TAVILY_API_KEY is set.
+"""This script shows query rewriting: questions a visitor might ask a park
+assistant, rewritten into questions a retriever can use. Parts 1 to 6 use a
+made-up park, Riverbend Park, and most of their questions come with the short
+conversation they depend on. Parts 7 to 9 ask about a real park, Shanghai
+Disneyland, so that part 8 can run a real web search. DeepSeek does every
+rewrite, and all prompts share one frame: instruction, conversation history,
+current question. Only part 8 retrieves anything: it sends the original question
+and its rewrite to the Tavily search API, when TAVILY_API_KEY is set.
 
 The run prints nine parts:
     1. Context-dependent question. "Are there any other rides?" rewritten with the

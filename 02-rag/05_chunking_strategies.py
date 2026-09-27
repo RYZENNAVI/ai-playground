@@ -1,7 +1,8 @@
-"""This script splits one short document five ways and compares the chunk sizes.
-The document is a theme park ticket guide in three paragraphs: ticket types, buying
-a ticket, and discounts. It is about 1,300 characters long, and the target chunk
-size is 800. Only sizes are measured. The script does not test retrieval.
+"""This script tries five chunking strategies on one short document and compares
+the chunk sizes. The document is a theme park ticket guide in three paragraphs:
+ticket types, buying a ticket, and discounts. It is about 1,300 characters long,
+and the target chunk size is 800. Only sizes are measured. The script does not test
+retrieval.
 
 The run prints six parts:
     1. Fixed length. The guide cut every 800 characters and moved back to the last

@@ -13,6 +13,8 @@ both rank the entries the same way.
 
 The run prints seven parts:
     1. One embedding. The refund question as a 768-value vector of length 1.
+       Parts 1 to 3 only look at the embeddings, and nothing later uses them:
+       the search from part 4 on embeds the question and the entries again.
     2. Matryoshka dimensions. The same question embedded at 3072, 1536 and 768
        dimensions. The first values match, because each shorter vector is the start
        of the longer one.

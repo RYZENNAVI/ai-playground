@@ -10,7 +10,8 @@ five parts:
        reply comes back at once.
     3. Streaming. A longer reply is printed piece by piece as the model writes it.
     4. Reasoning and answer. Ollama returns the model's reasoning in its own thinking
-       field, apart from the answer. The script prints the length of each. Older
+       field, apart from the answer. The script prints the length of each for the
+       streamed reply from part 3. Older
        Ollama versions put the reasoning inside the answer, wrapped in <think> tags.
        The script follows the newer behaviour of Ollama 0.34.2, the version it was
        tested with.

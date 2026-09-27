@@ -1,14 +1,30 @@
-"""Give every knowledge chunk a set of generated questions, then retrieve on those instead.
+"""This script tries Doc2Query on a small knowledge base. Doc2Query writes the
+questions each chunk can answer. Retrieval then matches a visitor's question
+against those generated questions, not against the chunk text. Both sides are
+searched with BM25, so the comparison is about wording alone.
+The knowledge base is six chunks about an invented theme park: basics, prices,
+opening hours, transport, rides and park rules. Three visitor questions each map
+to one chunk. Two of them share no content word with any chunk. The third uses
+the chunk's own words, as a control.
 
-Demonstrates why matching question against question beats matching question against prose:
-    1. Generate a basic question set for one chunk, typed and graded by difficulty.
-    2. Generate a wider set that also answers itself, so unanswerable questions can be dropped.
-    3. Discard the generated questions the source text cannot actually support.
-    4. Build two BM25 indexes over the same knowledge - one on prose, one on questions.
-    5. Score both indexes against the same test queries.
-    6. Read the per-query scores, which say more than the accuracy headline.
-
-Module 02: RAG - Question Generation for Retrieval.
+The run prints seven parts:
+    1. A basic question set. DeepSeek writes 5 questions for the first chunk,
+       each typed and graded by difficulty. This part is for comparison only and
+       nothing later uses it: the questions come without answers, so none of
+       them can be checked.
+    2. A wider set that answers itself. 8 questions for the same chunk, each with
+       an answer and a flag saying whether the text supports it. Parts 2 and 3
+       show on one chunk what part 4 does to every chunk. Part 4 generates the
+       questions again, so its count for the first chunk can differ from part 3's.
+    3. Dropping what the text cannot support. The flagged questions from part 2.
+    4. Questions for the whole knowledge base. The wider set for every chunk, with
+       the flagged ones dropped, then two BM25 indexes: one on the six chunks and
+       one on the kept questions.
+    5. Scoring both indexes. The three visitor questions through each index.
+    6. Per-query detail. The top score in each index, and the generated question
+       each visitor question matched.
+    7. What the numbers say. Which questions went from wrong to right, and which
+       from right to wrong.
 """
 
 import json
@@ -32,9 +48,8 @@ BASIC_QUESTION_COUNT = 5
 DIVERSE_QUESTION_COUNT = 8
 
 # Function words carry no topic and wreck BM25 on short queries: "When is it
-# quietest?" otherwise scores highest against a chunk that merely happens to
-# contain "when" and "it". A Chinese segmenter drops particles as a side effect
-# of segmenting, so a pipeline ported from Chinese has to put this back by hand.
+# quietest?" otherwise scores highest against the park overview, which merely
+# contains "when" and "it", and not against the opening hours.
 STOPWORDS = frozenset("""
 a an the and or but if then than that this these those there here
 i me my we our you your he she it its they them their
@@ -46,9 +61,8 @@ any some all no not only just also very much many more most
 s t don t
 """.split())
 
-# The knowledge base is written out here rather than read from data/ because the
-# measurement in steps 5-6 needs a fixed answer key: every test query has to map
-# to exactly one chunk, and that mapping has to survive edits to the data files.
+# Every test query below maps to exactly one of these chunks. That mapping is the
+# answer key steps 5 to 7 score against.
 KNOWLEDGE_BASE = [
     {
         "id": "kb_001",
@@ -103,19 +117,18 @@ KNOWLEDGE_BASE = [
 ]
 
 # Worded the way a visitor would ask, not the way the source text is written.
-# The first two share no content word at all with their answer - "picnic" against
-# "snacks", "crowds" against "quietest" - which is precisely the case question-side
-# retrieval exists for. The third deliberately does overlap, as a control: it shows
-# what the technique buys when the asker already happens to use the right words.
+# The first two share no content word with their answer: "picnic" against
+# "snacks", "crowds" against "quietest". The third is a control. It uses the
+# chunk's own words, so it shows whether the technique hurts a query that
+# already matches.
 TEST_QUERIES = [
     {"query": "Am I allowed to take a picnic in?", "answer_id": "kb_006"},
     {"query": "What time should I show up to avoid the crowds?", "answer_id": "kb_003"},
     {"query": "How much does it cost to park a car?", "answer_id": "kb_004"},
 ]
 
-BASIC_INSTRUCTION = """You are a question-answering specialist. Given a piece of knowledge,
-write the questions it can answer. Requirements:
-1. Vary the phrasing - direct, indirect and comparative forms.
+BASIC_INSTRUCTION = """You write the questions a piece of knowledge can answer. Requirements:
+1. Vary the phrasing: direct, indirect and comparative forms.
 2. Do not repeat yourself.
 3. Never ask anything the text does not answer.
 
@@ -123,12 +136,12 @@ Return JSON only:
 {"questions": [{"question": "...", "question_type": "direct|indirect|comparative|conditional",
                 "difficulty": "easy|medium|hard"}]}"""
 
-DIVERSE_INSTRUCTION = """You are a question-answering specialist. Write highly varied questions
-for the knowledge below. Vary all four of these:
-1. type - direct, indirect, comparative, conditional, hypothetical, inferential
-2. wording - different sentence shapes, vocabulary and register
-3. difficulty - easy, medium and hard must all appear
-4. angle - ask from different perspectives
+DIVERSE_INSTRUCTION = """You write the questions a piece of knowledge can answer. Make them
+highly varied. Vary all four of these:
+1. type: direct, indirect, comparative, conditional, hypothetical, inferential
+2. wording: different sentence shapes, vocabulary and register
+3. difficulty: easy, medium and hard must all appear
+4. angle: ask from different perspectives
 
 For each question also state whether the knowledge really answers it, and give
 that answer. Be strict: if the text does not contain the answer, say so.
@@ -139,10 +152,7 @@ Return JSON only:
 
 
 def client():
-    """Return an OpenAI-protocol client pointed at DeepSeek.
-
-    Everything here is text generation, so one provider covers the whole script.
-    """
+    """Return an OpenAI-protocol client pointed at DeepSeek, the one provider this script uses."""
     key = os.getenv("DEEPSEEK_API_KEY")
     if not key:
         raise SystemExit("DEEPSEEK_API_KEY is not set. Add it to .env and retry.")
@@ -170,13 +180,7 @@ def ask_json(api, instruction, knowledge, count):
 
 
 def tokenize(text):
-    """Lowercase and split on word characters.
-
-    English needs no segmentation step, so splitting on word characters is the
-    whole tokenizer. The stopword filter is not optional here: a segmenter drops
-    function words as a side effect of segmenting, and word splitting does not,
-    which is why STOPWORDS exists above.
-    """
+    """Lowercase, split into words and drop the stopwords."""
     words = re.findall(r"[a-z0-9]+", text.lower())
     kept = [w for w in words if w not in STOPWORDS]
     # A query made entirely of function words would otherwise become an empty
@@ -190,13 +194,8 @@ def build_index(documents):
 
 
 def retrieve(index, owners, query):
-    """Return (owner_id, score, position) for the best match.
-
-    owners maps each indexed document back to the chunk it belongs to, which is
-    what lets the question index answer in the same currency as the prose index.
-    The position comes back as well, because the chunk id alone hides the thing
-    worth seeing: which generated question actually won the match.
-    """
+    """Return (chunk id, score, position) of the best match. owners maps entries to chunks.
+    The position says which generated question won; the chunk id alone would hide it."""
     scores = index.get_scores(tokenize(query))
     best = max(range(len(scores)), key=lambda i: scores[i])
     return owners[best], float(scores[best]), best
@@ -208,9 +207,16 @@ def short(text, width=72):
     return flat if len(flat) <= width else flat[:width - 1] + "…"
 
 
+def plural(count):
+    """Return "1 query" or "N queries"."""
+    return f"{count} {'query' if count == 1 else 'queries'}"
+
+
 def main():
     api = client()
     sample = KNOWLEDGE_BASE[0]
+
+    # 1. A basic question set
 
     print("=" * 78)
     print("--- 1. A basic question set for one chunk ---")
@@ -221,35 +227,43 @@ def main():
         print(f"     type: {item.get('question_type', '?')}   "
               f"difficulty: {item.get('difficulty', '?')}")
 
+    # 2. A wider set that answers itself
+
     print("\n--- 2. A wider set that answers itself ---")
     diverse = ask_json(api, DIVERSE_INSTRUCTION, sample["text"], DIVERSE_QUESTION_COUNT)
-    for i, item in enumerate(diverse.get("questions", []), 1):
+    items = diverse.get("questions", [])
+    for i, item in enumerate(items, 1):
         mark = "ok " if item.get("is_answerable") else "NO "
         print(f"  {i}. [{mark}] {item.get('question', '')}")
         print(f"     {item.get('question_type', '?')} / {item.get('difficulty', '?')} "
               f"/ {item.get('perspective', '?')}  ->  {short(str(item.get('answer', '')), 56)}")
 
+    # 3. Dropping what the text cannot support
+
     print("\n--- 3. Dropping what the text cannot support ---")
-    print("  The is_answerable and answer fields are the quality gate, not decoration.")
-    print("  A generated question the source cannot answer is a hallucinated question:")
-    print("  index it and retrieval will happily match a chunk that then fails to")
-    print("  answer. Everything below keeps only the questions that passed.")
+    flagged = sum(1 for item in items if not item.get("is_answerable"))
+    print(f"  {flagged} of {len(items)} questions above are marked NO and are dropped.")
+    print("  Indexed, such a question would send a visitor to a chunk that cannot")
+    print("  answer it. Part 4 applies the same check to every chunk.")
+
+    # 4. Questions for the whole knowledge base
 
     print("\n" + "=" * 78)
-    print("--- 4. Generating questions for the whole knowledge base ---")
+    print("--- 4. Questions for the whole knowledge base ---")
     prose_docs, prose_owners = [], []
     question_docs, question_owners = [], []
     for chunk in KNOWLEDGE_BASE:
         prose_docs.append(chunk["text"])
         prose_owners.append(chunk["id"])
 
-        generated = ask_json(api, BASIC_INSTRUCTION, chunk["text"], BASIC_QUESTION_COUNT)
-        questions = [q.get("question", "") for q in generated.get("questions", [])
-                     if q.get("question")]
+        generated = ask_json(api, DIVERSE_INSTRUCTION, chunk["text"], DIVERSE_QUESTION_COUNT)
+        generated = [q for q in generated.get("questions", []) if q.get("question")]
+        questions = [q["question"] for q in generated if q.get("is_answerable")]
         for question in questions:
             question_docs.append(question)
             question_owners.append(chunk["id"])
-        print(f"  {chunk['id']} ({chunk['category']:<11}) -> {len(questions)} questions")
+        print(f"  {chunk['id']} ({chunk['category']:<11}) -> {len(generated)} generated, "
+              f"{len(questions)} kept")
         for question in questions:
             print(f"      {short(question, 68)}")
 
@@ -259,7 +273,9 @@ def main():
     print(f"  question index: {len(question_docs)} documents "
           f"covering the same {len(KNOWLEDGE_BASE)} chunks")
 
-    print("\n--- 5. Scoring both indexes on the same queries ---")
+    # 5. Scoring both indexes
+
+    print("\n--- 5. Scoring both indexes ---")
     rows = []
     for case in TEST_QUERIES:
         query, expected = case["query"], case["answer_id"]
@@ -279,60 +295,50 @@ def main():
     print(f"  prose retrieval accuracy   : {prose_hits / total:6.1%}  ({prose_hits}/{total})")
     print(f"  question retrieval accuracy: {question_hits / total:6.1%}  ({question_hits}/{total})")
 
+    # 6. Per-query detail
+
     print("\n--- 6. Per-query detail ---")
-    print(f"  {'query':<48} {'prose':>9} {'question':>9} {'delta':>8}")
-    print("  " + "-" * 78)
+    print(f"  {'query':<48} {'prose':<11} {'question':<11}")
+    print("  " + "-" * 72)
     for r in rows:
-        delta = r["question_score"] - r["prose_score"]
         prose_mark = "ok" if r["prose_id"] == r["expected"] else "MISS"
         question_mark = "ok" if r["question_id"] == r["expected"] else "MISS"
-        print(f"  {short(r['query'], 46):<48} {r['prose_score']:>6.3f} {prose_mark:>2} "
-              f"{r['question_score']:>6.3f} {question_mark:>2} {delta:>+8.3f}")
+        print(f"  {short(r['query'], 46):<48} {r['prose_score']:6.3f} {prose_mark:<4} "
+              f"{r['question_score']:6.3f} {question_mark:<4}")
         print(f"      matched {r['question_id']} on: {short(r['matched_question'], 56)}")
     print()
-    print("  The matched line is the whole mechanism in one place. The question")
-    print("  index does not retrieve prose at all - it retrieves a generated")
-    print("  question and then follows it back to the chunk that produced it, so")
-    print("  a hit or a miss is decided by how close the asker came to one of the")
-    print("  phrasings generated above, not by the wording of the source text.")
+    print("  Each matched line is a generated question, not source text. The question")
+    print("  index finds the closest generated question and returns the chunk it came")
+    print("  from. A hit depends on how close the visitor came to one of those phrasings.")
+
+    # 7. What the numbers say
 
     flipped = [r for r in rows
                if r["prose_id"] != r["expected"] and r["question_id"] == r["expected"]]
     broke = [r for r in rows
              if r["prose_id"] == r["expected"] and r["question_id"] != r["expected"]]
     no_match = [r for r in rows if r["prose_score"] == 0.0]
-    gained_only = [r for r in rows
-                   if r["prose_id"] == r["expected"] == r["question_id"]
-                   and r["question_score"] > r["prose_score"]]
 
-    print("\n--- What the numbers actually say ---")
+    print("\n--- 7. What the numbers say ---")
     if no_match:
-        print(f"  {len(no_match)} of {total} queries share no content word with any chunk, so")
-        print("  BM25 scores every chunk at zero and the winner is whichever document")
-        print("  argmax happens to reach first. A 0.000 in the prose column is not a")
-        print("  weak match - it is no match at all:")
+        print(f"  {len(no_match)} of {total} queries share no content word with any chunk, so BM25")
+        print("  scores every chunk at zero and max() returns the first one. A 0.000 in")
+        print("  the prose column means nothing matched:")
         for r in no_match:
             print(f"    {short(r['query'], 68)}")
     if flipped:
-        print(f"\n  {len(flipped)} query(s) went from wrong to right. Those are the only ones")
-        print("  that moved the accuracy figure:")
+        print(f"\n  {plural(len(flipped))} went from wrong to right:")
         for r in flipped:
             print(f"    {short(r['query'], 68)}")
             print(f"      prose picked {r['prose_id']}, expected {r['expected']}")
     if broke:
-        print(f"\n  {len(broke)} query(s) went from right to wrong - the generated questions")
-        print("  pulled the winner away from the correct chunk:")
+        print(f"\n  {plural(len(broke))} went from right to wrong. A generated question from")
+        print("  another chunk matched better:")
         for r in broke:
             print(f"    {short(r['query'], 68)}  (picked {r['question_id']})")
-    if gained_only:
-        print(f"\n  {len(gained_only)} query(s) scored higher but kept the same winner. A rising")
-        print("  score is not a better answer - read the hit/miss column, not the delta.")
-    print("\n  The technique pays where the asker's vocabulary and the document's")
-    print("  diverge, and it is not free elsewhere. The control query is the reason")
-    print("  it is in this test set: generated questions add a second vocabulary to")
-    print("  match against, and that extra surface can pull a query towards the wrong")
-    print("  chunk just as easily as towards the right one. Net accuracy is what")
-    print("  matters, not the wins counted on their own.")
+    print("\n  Question retrieval pays where the visitor's words and the document's differ.")
+    print("  The generated questions also bring words of their own, and those can match")
+    print("  the wrong chunk too. Count the net change, not the wins alone.")
 
 
 if __name__ == "__main__":

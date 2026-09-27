@@ -1307,66 +1307,57 @@ loop.
 
 ### 7.1 Scenario one: generated questions and retrieval optimisation
 
-**The insight**: **users ask questions, the store holds statements, and the two do not match.**
-So generate a set of questions for every chunk in advance and **match question against question**.
-(This is 6.7's Doc2Query made concrete.)
+Users ask questions, and the store holds statements, so the two often share few words. The fix
+is to generate questions for every chunk in advance and match question against question. This
+is 6.7's Doc2Query made concrete.
 
-**Three pieces**: ① generate varied questions automatically ② build **a dual retrieval index**
-(source prose and generated questions, both under BM25) ③ evaluate retrieval.
+The knowledge base is six chunks about an invented theme park: basics, prices, opening hours,
+transport, rides and park rules. Three visitor questions each map to one chunk. Two of them
+share no content word with any chunk. The third uses the chunk's own words, as a control.
 
-**Basic version: five questions per chunk**, with the fields `question` / `question_type` /
-`difficulty`, spanning direct, indirect, comparative and conditional types, graded easy / medium /
-hard.
-
-**Wider version: eight questions, with variety broken into four dimensions** — question type
-(adding **hypothetical** and **inferential**), phrasing, difficulty and **perspective**. The output
-grows from three fields to six, and the three additions are the important ones: `perspective`,
-**`is_answerable`** (can the given knowledge answer this question at all) and **`answer`** (the
-answer derived from that knowledge).
-
-> **`is_answerable` plus `answer` are the quality gate, not decoration**: having the model
-> **generate the answer alongside the question** verifies in reverse whether this piece of
-> knowledge can support the question. **A generated question the source cannot answer is a
-> hallucinated question and has to be dropped** — otherwise it poisons the question index and
-> retrieval happily matches a chunk that then fails to answer.
-
-**Dual-index evaluation**: 6 knowledge chunks → a prose index of 6 entries versus a question index
-of **30** (five questions per chunk), scored on 3 test queries each with a known correct chunk.
+- The basic set is five questions for one chunk, with the fields `question`, `question_type`
+  and `difficulty`.
+- The wider set is eight questions, varied by type (adding hypothetical and inferential),
+  wording, difficulty and perspective. It adds `perspective`, `is_answerable` and `answer`.
+- `is_answerable` and `answer` are the quality gate. The model answers its own question from
+  the chunk, and a question the chunk cannot answer is dropped. Indexed, such a question would
+  send a visitor to a chunk without the answer. On the first chunk, 3 of the 8 questions were
+  dropped.
+- For the whole knowledge base the script generates the wider set for every chunk and keeps
+  only the answerable questions: 39 of 48 in the run below. It then builds two BM25 indexes,
+  one on the six chunks and one on the kept questions.
 
 ```
-prose retrieval accuracy: 33.3% (1/3)      question retrieval accuracy: 66.7% (2/3)
+  prose retrieval accuracy   :  33.3%  (1/3)
+  question retrieval accuracy:  33.3%  (1/3)
 ```
 
-| # | Query | Prose score | Question score | Prose | Question |
-| :-: | :--- | :-: | :-: | :-: | :-: |
-| 1 | `Am I allowed to take a picnic in?` | **0.000** | 3.734 | ✗ | ✓ |
-| 2 | `What time should I show up to avoid the crowds?` | **0.000** | 9.106 | ✗ | ✓ |
-| 3 | `How much does it cost to park a car?` | 1.262 | 3.051 | ✓ | **✗** |
+| # | Query | Prose score | Question score | Prose | Question | Matched generated question |
+| :-: | :--- | :-: | :-: | :-: | :-: | :--- |
+| 1 | `Am I allowed to take a picnic in?` | 0.000 | 3.624 | ✗ | ✗ | `How long does it take to reach the park by taxi?` (kb_004) |
+| 2 | `What time should I show up to avoid the crowds?` | 0.000 | 8.979 | ✗ | ✓ | `If you wanted to avoid crowds, when would be the best time to go?` |
+| 3 | `How much does it cost to park a car?` | 1.262 | 2.499 | ✓ | ✗ | `How much does a weekday adult ticket cost?` (kb_002) |
 
-**Four things to read out of this table**:
+- A 0.000 in the prose column means nothing matched. Queries 1 and 2 share no content word with
+  any chunk, so BM25 scores every chunk at zero and `max()` returns the first one, `kb_001`.
+- The question index never retrieves prose. It finds the closest generated question and returns
+  the chunk that produced it, so a hit depends on how close the visitor came to one of those
+  phrasings.
+- The generated questions bring words of their own, and those work in both directions. Query 2
+  was won by `avoid crowds`. Query 1 was lost to a taxi question through the word `take`, and
+  the control query was lost to a ticket question through `cost`.
+- The scores of the two indexes are not compared. They come from two different BM25 corpora
+  (6 long chunks against 39 short questions), so the numbers are on different scales.
 
-1.  **The two 0.000 scores are not "a weak match", they are "no match at all"** — those queries
-    share **not one content word** with any chunk, so BM25 scores every chunk zero and the winner
-    is whichever document argmax reaches first. Rows 1 and 2 both landed on `kb_001` (the general
-    overview) for exactly that reason.
-2.  **The mechanism behind the turnaround is question-to-chunk backtracking**: the question index
-    does not retrieve prose at all — it retrieves **a generated question** and then follows it back
-    to the chunk that produced it. A hit depends on **how close the asker came to one of the
-    generated phrasings**, not on the wording of the source.
-3.  **⚠️ Row 3 went from right to wrong — the most valuable line here.** Generated questions add
-    **a second vocabulary** to the store, and that extra surface can pull a query towards the
-    correct chunk **just as easily as away from it**: this parking question was captured by
-    `kb_002`'s `How much does a weekday adult ticket cost?`.
-4.  **So read the net, not the wins.** Two gained, one lost, net +1 — which is what 33.3% → 66.7%
-    means. **"This technique improves accuracy" and "this technique never misfires" are different
-    claims.**
+The result changes from run to run, because the generated questions change. Four runs with the
+same prompts gave the question index 3/3, 2/3, 1/3 and 1/3; the prose index is 1/3 every time.
+With three test queries, one query flipping moves the accuracy by 33 points. What holds across
+runs is the mechanism: the technique helps where the visitor's words and the document's differ,
+and the extra vocabulary can pull a query to the wrong chunk just as easily. Count the net
+change, not the wins alone.
 
-**Conclusion**: **the wider the gap between how users ask and how documents state things, the more
-question retrieval pays**; but **it is not free** — the benefit depends on the quality and variety
-of the generated questions, and the extra vocabulary works in both directions.
-
-**Where the questions live**: **in the same chunk as the source text** — `chunk = {prose, questions[]}`.
-No extra storage system is required.
+The questions can live in the same chunk as the source text, `chunk = {prose, questions[]}`, so
+no extra storage system is needed.
 
 See `10_kb_question_generation.py`.
 
