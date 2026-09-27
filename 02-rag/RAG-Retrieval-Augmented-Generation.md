@@ -849,10 +849,10 @@ to the model.
 
 **The key distinction: bi-encoder vs cross-encoder**
 
-*   The embedding model used for retrieval is a **bi-encoder** — the query and the document are
+*   The embedding model used for retrieval is a **bi-encoder**: the query and the document are
     encoded **independently** into vectors, which are then compared. The advantage is that document
     vectors can be **computed in advance**, so a search encodes only the query.
-*   A rerank model is a **cross-encoder** — the query and the document go into the model
+*   A rerank model is a **cross-encoder**: the query and the document go into the model
     **together**, and it **emits a relevance score directly**. Far more accurate, but
     **every pair costs a forward pass** and nothing can be precomputed.
 *   ⇒ That is why the two are stages of one pipeline: the bi-encoder is cheap enough to screen, and
@@ -860,7 +860,7 @@ to the model.
 
 **Open-source option**: a local cross-encoder is enough. The script uses
 `cross-encoder/ms-marco-MiniLM-L-6-v2` (tens of megabytes, runs on CPU; larger rerank models are
-typically 2–3 GB). The model is a supervised sequence classifier trained on human-labelled
+typically 2 to 3 GB). The model is a supervised sequence classifier trained on human-labelled
 query-document relevance.
 
 **⚠️ Reading the scores is where this is most often misunderstood**: the output is
@@ -873,12 +873,12 @@ query-document relevance.
 
 **Note that the correct answer also scores negative.** Therefore:
 
-*   **The sign is not a relevance threshold** — no rule of the form "above zero means relevant".
+*   **The sign is not a relevance threshold**: there is no rule of the form "above zero means relevant".
 *   **Only the relative ordering within one query on one corpus carries meaning.**
 *   **Change the model or the chunk size and the scores stop being comparable.** Do not treat them
     as absolute values that travel between settings.
 
-**Commercial API option**: strong multilingual support, **normalised 0–1 scores that are easier to
+**Commercial API option**: strong multilingual support, **normalised 0 to 1 scores that are easier to
 interpret**, ready-made framework integrations, and a particularly good fit for
 **reordering the output of hybrid retrieval (BM25 + vectors)**, measured by hit rate and MRR.
 
@@ -886,28 +886,41 @@ interpret**, ready-made framework integrations, and a particularly good fit for
 | :--- | :--- | :--- |
 | Deployment | Local | Cloud |
 | Cost | Free, but needs memory | Metered, no operations |
-| Scores | Unnormalised logits | Normalised 0–1 |
+| Scores | Unnormalised logits | Normalised 0 to 1 |
 | Fits | Sensitive data, vertical domains | Fast integration, many languages |
 
 **Practice eight: two-stage retrieval** (see `09_rerank_and_multiquery.py`):
-the knowledge base holds 26 paragraph blocks (108 sentence units) from 4 documents.
-Stage one uses BM25 to keep 8 of the 26 paragraphs; stage two uses the cross-encoder to rank
-**the sentences inside** those 8. Step one already **binds headings to their body text**, avoiding
-the heading-block contamination described in 4.6.
+the knowledge base holds 26 paragraph chunks (108 sentence units) from 4 documents.
+Stage one uses BM25 to keep 8 of the 26 paragraphs. Stage two uses the cross-encoder to rank
+**the sentences inside** those 8 and keeps 3. Each paragraph carries its file's heading for BM25,
+so no heading is a chunk of its own (the contamination described in 4.6).
 
-> **The unit fed to the reranker is a setting, not a detail.** Same question, same correct answer —
-> only the amount of surrounding text changes, and the score moves a long way:
+> **The unit fed to the reranker is a setting, not a detail.** Same question, same correct answer.
+> Only the amount of surrounding text changes, and the score moves a long way:
 > ```
 >  -8.60  heading + whole paragraph   (506 chars)
 >  -6.43  whole paragraph             (469 chars)
->  -5.82  the answering sentence only (113 chars)
+>  -5.82  the answering sentence      (113 chars)
 > ```
-> **The answer never moved; only the unrelated text around it did.** Feed a whole paragraph in and
-> the one relevant clause is diluted by everything beside it — which is exactly how a correct
-> passage ends up ranked below a wrong one.
+> If the reranker scored the 8 recalled paragraphs whole instead of by sentence, a wrong one would come first:
+> ```
+>  -5.55  There are broadly three paid VIP products. ...
+>  -6.43  The refund and change policy is strict. The date ca...  <- holds the answer
+>  -7.46  Shanghai Disney Resort sells three ticket types: ...
+> ```
+> **The answer never moved; only the unrelated text around it did.** In a whole paragraph the one
+> relevant clause is diluted by everything beside it.
 
-> **⚠️ Ranking first is not the same as being confident**: on the second question the correct
-> sentence wins by **under a tenth of a point**. That is a coin-flip margin, not a verdict.
+> **Sentences have a cost too.** On `How do I skip the queue on the busiest rides?` the top
+> sentence is `That entrance is far quieter and saves a long walk; ...`. Cut from its paragraph,
+> it no longer says which entrance (the Disneytown gate for Concierge guests), and it does not
+> answer the question. The sentence that does, `Premier Access has its own lane, normally right
+> beside the standard queue.`, ranks seventh at -6.30. Expansion does not change this.
+
+> **Ranking first is not the same as being confident.** Step 5 prints how far each best sentence
+> leads the next one: 0.94, **0.12** and 0.40. On question 2 the correct sentence scores -10.61
+> and the next one, about two-day tickets, is only 0.12 behind. Every candidate for that question
+> sits near -11, so the model finds none of them clearly relevant.
 > **"The reranker put the right answer first" and "the reranker is sure about it" are two
 > different claims.**
 
@@ -920,22 +933,25 @@ This amounts to **measuring one thing with several rulers**, lowering the chance
 phrasing misses.
 
 **Measured** (also in `09_rerank_and_multiquery.py`): after expanding each question into four
-phrasings, what stage one can see changes as follows:
+phrasings, what stage one can see changes as follows. The expanded set is not cut back to 8, so
+the reranker reads all of it.
 
-| Question | Paragraphs recalled | Newly reachable | Did the final answer change? |
+| Question | Paragraphs recalled | Newly reachable | Best answer after expansion |
 | :--- | :---: | :---: | :--- |
-| Can I move my visit to a different day after buying? | 8 → 14 | +6 | No (it was already correct) |
-| **My father is 68 - does he pay less?** | 8 → 22 | **+14** | **Yes: from an irrelevant answer to the correct clause** |
-| How do I skip the queue on the busiest rides? | 8 → 16 | +8 | No |
+| Can I move my visit to a different day after buying? | 8 → 17 or 18 | +9 or +10 | Unchanged, and already correct |
+| **My father is 68. Does he pay less?** | 8 → 22 | **+14** | **Changed: from a two-day ticket sentence to the senior age rule** |
+| How do I skip the queue on the busiest rides? | 8 → 16 | +8 | Unchanged, and still wrong (see 6.3) |
+
+The phrasings come from the model, so the counts move a little from run to run.
 
 **Only the second question was rescued, and it had failed in stage one**: the asker says `father`,
-`68` and `pay less`, while the policy says `aged 65 or over` and `senior rate` —
-**not one word in common**, so BM25 never handed the right paragraph to the reranker.
-**Expansion exists for exactly this case.**
+`68` and `pay less`, while the policy says `aged 65 or over` and `senior rate`. **No word that
+matters is shared** (only `is`), so BM25 never handed the right paragraph to the reranker.
+**Expansion exists for this case.**
 
-> **The point**: query expansion **fixes recall, not ranking**. The other two questions had already
-> recalled the right paragraph, and expansion only added candidates while the best answer did not
-> move a fraction — yet every extra phrasing is another model call.
+> **The point**: query expansion **fixes recall, not ranking**. The first question had already
+> recalled the right paragraph, and the third fails at ranking, so expansion only added
+> candidates. Every extra phrasing is another model call.
 > **Whether it pays depends on whether your users speak a different vocabulary from your documents.**
 
 > **Where it does not apply**: this kind of wrapper suits conventional vector RAG; graph retrieval
