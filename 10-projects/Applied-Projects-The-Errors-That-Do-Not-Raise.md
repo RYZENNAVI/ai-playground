@@ -1278,13 +1278,13 @@ the data spans, and it has to be printed on purpose.**
 
 ---
 
-## 14. Two backends, and a limit in the wrong unit
+## 14. Two backends, their fusion, and a limit in the wrong unit
 
 `10_search_backends_and_ui.py`
 
 ### 14.1 One corpus, two indexes
 
-Eight short policy documents written into the script — no data files, and every question has
+Eight short policy documents written into the script, so there are no data files, and every question has
 a known correct source:
 
 ```python
@@ -1300,6 +1300,8 @@ TOKEN_BUDGET = 220
     estimated tokens in the whole corpus: 1,011
     keyword index built over 15 chunks
     vector index built with gemini-embedding-001 at 768 dimensions
+    rrf fuses the two rankings with k=60; weighted rescales both scores
+    to 0 to 1 per query and gives keyword a weight of 0.5
 ```
 
 Both indexes are built over the same fifteen chunks, so the only variable is the scoring.
@@ -1312,30 +1314,51 @@ matrix = np.asarray(vectors, dtype=float)
 return matrix / np.linalg.norm(matrix, axis=1, keepdims=True)
 ```
 
-### 14.2 On these questions, neither backend dominates
+### 14.2 Fusing the two, and what it costs here
+
+The script fuses the two rankings two ways. BM25 scores have no upper bound, while the cosine
+scores here sit between about 0.46 and 0.75 for every chunk, so adding them raw would let BM25
+decide alone.
+
+*   **Reciprocal rank fusion (RRF)** uses only ranks. Each backend adds `1 / (60 + rank)` to a
+    chunk. There is no weight to tune and no scale to align.
+*   **Weighted fusion** rescales each backend's scores to 0 to 1 for the query (min-max), then
+    adds them with a keyword weight of 0.5.
 
 ```
-    question                                            kind          keyword   vector
-    What does Clause 7.3 cover?                         exact term     rank 1   rank 1
-    What is the aggregate limit under Clause 4.1?       exact term     rank 1   rank 2
-    Someone stole my suitcase at the airport. Am I cov  paraphrase     missed   rank 1
-    I got sick on holiday and had to be flown home. Wh  paraphrase     rank 3   rank 1
-    How long does the insurer have to decide on my cla  paraphrase     rank 2   rank 1
+    question                                  kind           keyword    vector       rrf  weighted
+    What does Clause 7.3 cover?               exact term      rank 1    rank 1    rank 1    rank 1
+    What is the aggregate limit under Clause  exact term      rank 1    rank 2    rank 2    rank 2
+    Someone stole my suitcase at the airport  paraphrase      missed    rank 1    missed    missed
+    I got sick on holiday and had to be flow  paraphrase      rank 3    rank 1    rank 2    rank 2
+    How long does the insurer have to decide  paraphrase      rank 2    rank 1    rank 1    rank 1
+    found, all                                                   4/5       5/5       4/5       4/5
+    found, exact term                                            2/2       2/2       2/2       2/2
+    found, paraphrase                                            2/3       3/3       2/3       2/3
 
-    on exact term   questions: keyword 2 of 2 (mean rank 1.0), vector 2 of 2 (mean rank 1.5)
-    on paraphrase   questions: keyword 2 of 3 (mean rank 2.5), vector 3 of 3 (mean rank 1.0)
+    The vector backend finds everything the keyword backend finds, so fusion
+    has no hit to add. It can only pull a hit down:
+      rrf: Someone stole my suitcase at the airport. Am I covered?
+      weighted: Someone stole my suitcase at the airport. Am I covered?
+    Fusion pays only when each backend finds what the other misses.
+    Step 6 traces the keyword miss to its cause.
 ```
 
-The split is clean and it is mechanical. Term-overlap scoring puts an exact clause number
-first because a rare token carries most of the weight. Embedding similarity finds the clause
-number too — it is scored by what it resembles rather than matched — but is not guaranteed
-the top position the way an exact match is. On a question that shares no vocabulary with its
-answer, term overlap has nothing to work with and one of the three is missed entirely.
+The vector backend misses nothing, so fusion has no hit to add. On the suitcase question the
+keyword backend ranks the right chunk 12th of 15, and that rank pulls it out of the fused top
+three under both methods. The 12th place comes from a tokenizer that keeps sentence-final dots
+(section 15). With it fixed, the keyword backend and both fusions find all five. Fusion only helps when each backend finds something the other misses;
+the five questions were written to pull in opposite directions, but the keyword side never
+wins a question the vector side loses.
 
-**They fail on different questions. That is the reason a system keeps both rather than
-choosing.** The five questions were written to pull in opposite directions, so this shows the
-two are complementary here; it is not a benchmark, and it does not show that neither could
-come out ahead on some other query set.
+The weighted result depends on the weight. A trial run with keyword weights of 0.3, 0.5 and 0.7
+kept the suitcase question only at 0.3, and at 0.3 it lost the first place on the Clause 4.1
+question. Choosing the weight on these five questions would be tuning on the test set.
+
+Three trial corpora tried to give the keyword side its case: five near-identical regional
+schedules that differ only in a reference code, first `RX-41` to `RX-45`, then codes that are
+the same digits in another order (`MA-4172`, `MA-4127`, `MA-1472`). The vector backend put the
+right schedule first every time. The script keeps the original corpus.
 
 ### 14.3 Three chunks is not a limit on anything the model cares about
 
@@ -1352,7 +1375,7 @@ come out ahead on some other query set.
     Budget 220: the largest budgeted context is 220, the largest fixed-count one 243.
 ```
 
-These are estimated tokens — characters divided by four — not a count from the model's
+These are estimated tokens (characters divided by four), not a count from the model's
 tokenizer. Against that estimate the budgeted column reaches the budget and never passes it,
 while varying between two and four chunks; the fixed count passes it at 243. Chunks here run
 from 101 to 437 characters, so three chunks cost whatever those three hold, and the count
@@ -1362,7 +1385,7 @@ does not track the unit being limited.
 > three fragments or three long sections. The constraint downstream is a context window,
 > measured in tokens, so that is the unit the cutoff belongs in.
 
-The budgeting loop is deliberately conservative — it stops *before* the first chunk that
+The budgeting loop is deliberately conservative: it stops *before* the first chunk that
 would exceed the budget, and always keeps at least one. That second property means the budget
 limits what is added rather than guaranteeing a fit: a first chunk larger than the budget is
 kept whole. No chunk in this corpus is that large, so the run never shows it.
@@ -1376,9 +1399,9 @@ for hit in hits:
     spent += cost
 ```
 
-### 14.4 A web interface over the same two backends
+### 14.4 A web interface over the same backends
 
-`--ui` serves a small Blocks page: a question box, a backend selector, a cutoff selector, and
+`--ui` serves a small Blocks page: a question box, a selector for the four backends, a cutoff selector, and
 panes for the retrieved chunks, the context size and the answer. It calls the same
 `search` / `by_token_budget` / `answer` functions the command-line path uses, so the interface
 is a second front end rather than a second implementation.
@@ -1391,60 +1414,62 @@ answer, which is what turns "the answer is wrong" into "the right chunk was neve
 
 ## 15. Peeling a failure back one layer at a time
 
-`10_search_backends_and_ui.py`, final section
+`10_search_backends_and_ui.py`, step 6
 
 When a question fails end to end, the useful first move is not to guess which component is
-broken. It is to establish **which layer** the failure lives in.
+broken. It is to establish **which layer** the failure lives in. Step 6 takes the first
+question a backend missed and goes down one layer at a time:
 
 ```
     Taking the keyword backend on: Someone stole my suitcase at the airport. Am I covered?
-    Layer 1, the answer      : built from ['property-allrisks', 'medical-abroad', 'medical-abroad']
-    Layer 2, the retrieval   : expected baggage-loss, got ['property-allrisks', 'medical-abroad', ...]
+    Layer 1, the answer      : not in the retrieved context.
+    Layer 2, the retrieval   : expected baggage-loss, got ['property-allrisks', 'medical-abroad', 'medical-abroad']
     Layer 3, the raw scoring : the expected document's best chunk sits at rank 12 of 15
                                top score 2.3210, expected document's best 0.7815
-```
+    Layer 4, the tokens      : the question has 'covered', the chunk has 'covered.'
+                               without sentence-final dots the chunk ranks 3 of 15
 
-Three layers, three different repairs:
+    Neither the answer nor BM25 was the problem. The tokenizer keeps the dot
+    in clause numbers such as 7.3, and with it every sentence-final dot, so
+    these words never match. Nothing raised an error; the chunk just ranked lower.
+```
 
 | Layer | If the failure is here | The repair |
 | :--- | :--- | :--- |
 | **The answer** | The right chunks were retrieved and the reply is still wrong | prompt, schema, model |
 | **The retrieval** | The right document exists but did not make the cutoff | scoring, k, budget, a second backend |
 | **The raw scoring** | The document is not in the index at all | ingestion, chunking, parsing |
+| **The tokens** | Query and chunk share a word, but not as the same token | the tokenizer |
 
-The script's third layer reports that last case rather than failing on it: when no chunk of
-the expected document appears anywhere in the full ranking, it says so and points upstream.
-An earlier version took the minimum of an empty rank list there and would have raised on
-exactly the failure the table says to look for.
+The first three layers alone would stop at "rank 12 of 15" and blame the scoring. The fourth
+shows why the score is low. The tokenizer, `[a-z0-9.]+`, keeps the dot so that clause numbers
+such as `7.3` stay whole, and so every sentence-final word keeps its dot as well: 39 of the 650
+tokens in the corpus end in one. The baggage clause ends a sentence with `not covered.`, the
+question asks `Am I covered?`, and the two never match. With the dots stripped, the same BM25
+puts the baggage chunk third.
 
-Here the answer was never the problem: the document was in the index the whole time and the
-scoring put it at rank 12 of 15. **No amount of prompt work reaches rank 12.** That is a
-different repair from anything that could be done to the model's instructions, and knowing
-which one you need is worth more than any single fix.
+The script keeps this tokenizer on purpose, as the failure step 6 exists to find: nothing
+raises, the keyword backend just ranks the right chunk lower. It is also what drags both
+fusions down in 14.2. With the fixed tokenizer the keyword backend finds all five questions,
+and so do both fusions.
 
-The model's reply on that query is itself the correct behaviour under the circumstances:
+When no chunk of the expected document appears anywhere in the ranking, the third layer says
+so and points upstream rather than failing on an empty list.
 
-```
-        keyword   retrieved [property-allrisks, medical-abroad]
-                  not in the retrieved context.
-```
-
-It declined rather than answering from unrelated clauses. A pipeline that refuses when the
-context does not contain the answer is doing the right thing with the wrong input — which is
-precisely why the score has to be attributed to retrieval and not to generation.
-
-A refusal on its own does not locate the failure, though, and a later run shows why. On the
-same question the vector backend retrieved the right clause first:
+The keyword backend's reply on this question is the right behaviour for its input: it declined
+rather than answer from unrelated clauses. A refusal alone does not locate the failure,
+though. On the same question the vector backend retrieved the right clause first and still
+declined:
 
 ```
         vector    retrieved [baggage-loss, travel-delay]
                   Not in the retrieved context.
 ```
 
-The answer layer declined with the correct document in hand. The clause covers baggage stolen
-while in a carrier's custody, and the question does not say where the suitcase was, so the
-refusal may be defensible — but it is a decision made at the answer layer, and no change to
-retrieval reaches it. That is the first row of the table above, in the same run as the third.
+The clause covers baggage stolen while in a carrier's custody, and the question does not say
+where the suitcase was, so the refusal may be defensible. It is a decision made at the answer
+layer, and no change to retrieval reaches it. That is the first row of the table above, in the
+same run as the fourth.
 
 ---
 

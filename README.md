@@ -280,9 +280,9 @@ See [Low-Code-Platforms-What-The-Canvas-Runs.md](09-lowcode-platforms/Low-Code-P
 | 07 | `07_label_leakage_and_importance_views.py` | A label one column and one threshold reproduce, and four importance measures that disagree on eleven features out of twelve |
 | 08 | `08_association_rules_sample_unit.py` | The same holdings mined under three sample units, one of which makes every lift exactly 1.0 by construction |
 | 09 | `09_cohort_is_not_a_time_series.py` | Neighbouring points sharing none of their population, a shuffle test, and two seasonal terms with no observations under them |
-| 10 | `10_search_backends_and_ui.py` | Keyword and vector retrieval over one corpus, a cutoff in tokens rather than rows, and a failure isolated one layer at a time |
+| 10 | `10_search_backends_and_ui.py` | Keyword and vector retrieval over one corpus, fused by RRF and by weighted sum, a cutoff in tokens rather than rows, and a failure isolated one layer at a time |
 | 11 | `11_answer_routing_and_citation.py` | Two routers before answering, a four-field schema, and every cited page checked against the pages actually supplied |
 
-Run `python 10_search_backends_and_ui.py --ui` to serve the same two backends behind a small web interface.
+Run `python 10_search_backends_and_ui.py --ui` to serve the same backends behind a small web interface.
 
 See [Applied-Projects-The-Errors-That-Do-Not-Raise.md](10-projects/Applied-Projects-The-Errors-That-Do-Not-Raise.md) for the concepts behind these scripts.

@@ -1,17 +1,25 @@
-"""Serve the same corpus from two retrieval backends, cut the context two ways, and answer from each.
+"""This script answers questions about an invented insurer's policy wording.
+The eight documents are written into the script, and each question names the
+document that answers it, so retrieval can be scored rather than judged. The
+same chunks go to a keyword index (BM25) and a vector index. The two rankings
+are also fused two ways. Reciprocal rank fusion (RRF) adds 1 / (60 + rank) from
+each backend and never looks at the scores. The weighted fusion rescales each
+backend's scores to 0 to 1 for the question and adds them half and half. Raw
+scores cannot be added: BM25 has no upper bound and cosine does.
 
-Demonstrates that a retrieval failure has to be located before it can be fixed:
-    1. Build a policy corpus and split it into chunks of a stated size.
-    2. Index those chunks once for keyword scoring and once for vector scoring.
-    3. Run a query set through both backends and score the documents they return.
-    4. Cut the retrieved context to a fixed number of chunks, and measure what that costs.
-    5. Cut it to a token budget instead, and measure the same thing again.
-    6. Answer each query from each backend, and read the answers against the source.
-    7. Peel the same failing query back a layer at a time until the cause is visible.
+The run prints six parts:
+    1. The corpus, chunked. Windows of 60 words with 15 overlapping.
+    2. Two indexes and two fusions. The four backends the rest of the run uses.
+    3. Retrieval scores. Each question through each backend, and the rank of the
+       expected document if it is in the top 3.
+    4. Two ways to cut the context. The same retrieved chunks cut to three, and
+       to an estimated budget of 220 tokens.
+    5. Answers. Gemini answers each question from the keyword backend's chunks
+       and from the vector backend's.
+    6. Peeling a failure back. The first question a backend missed, traced one
+       layer at a time from the answer down to the cause.
 
-Run with --ui to serve the same two backends behind a small web interface.
-
-Module 10: Applied Projects - Retrieval Backends and Context Budgets.
+Run with --ui to serve the same backends behind a small web interface.
 """
 
 import argparse
@@ -35,6 +43,9 @@ CHUNK_OVERLAP = 15
 TOP_K = 3
 TOKEN_BUDGET = 220
 CHARS_PER_TOKEN = 4
+# RRF's usual constant: it keeps the top rank of one backend from outweighing the other.
+RRF_K = 60
+KEYWORD_WEIGHT = 0.5
 
 EMBED_MODEL = "gemini-embedding-001"
 EMBED_DIMENSIONS = 768
@@ -112,8 +123,8 @@ CORPUS = {
     """,
 }
 
-# Each question names the document that answers it, so retrieval can be scored
-# rather than judged. The two groups are chosen to pull in opposite directions.
+# The two groups are meant to favour opposite backends: exact terms the keyword
+# index, paraphrases the vector index. Step 3 shows whether they do.
 QUESTIONS = [
     ("What does Clause 7.3 cover?", "employer-liability", "exact term"),
     ("What is the aggregate limit under Clause 4.1?", "travel-delay", "exact term"),
@@ -125,12 +136,8 @@ QUESTIONS = [
 
 
 def chunk_documents() -> list:
-    """Split every document into overlapping windows of whole words.
-
-    Windows overlap so a sentence that straddles a boundary still appears intact in
-    one of them. Every chunk carries the name of the document it came from, which is
-    what makes a retrieved chunk scoreable against the expected source.
-    """
+    """Split every document into overlapping windows of whole words, each tagged with its document.
+    The overlap keeps a sentence that straddles a boundary whole in one of the windows."""
     chunks = []
     for name, text in CORPUS.items():
         words = " ".join(text.split()).split(" ")
@@ -149,38 +156,31 @@ def chunk_documents() -> list:
 
 
 def tokenize(text: str) -> list:
-    """Lowercase and split into word characters, which is what the keyword index scores."""
+    """Lowercase and split into words, keeping the dot inside clause numbers such as 7.3.
+    Every sentence-final dot is kept too; step 6 shows what that costs."""
     return re.findall(r"[a-z0-9.]+", text.lower())
 
 
 class KeywordBackend:
-    """Score chunks by term overlap, the way a text index does.
-
-    Rare terms carry the most weight, so an exact clause number or an unusual noun
-    ranks its chunk highly. A word the query never uses contributes nothing, which
-    is the property that makes this backend precise and brittle at the same time.
-    """
+    """Score chunks by BM25, where rare words such as a clause number weigh most.
+    A word the question never uses adds nothing, which makes it precise and brittle."""
 
     name = "keyword"
 
-    def __init__(self, chunks: list):
+    def __init__(self, chunks: list, split=tokenize):
         self.chunks = chunks
-        self.index = BM25Okapi([tokenize(chunk["text"]) for chunk in chunks])
+        self.split = split
+        self.index = BM25Okapi([split(chunk["text"]) for chunk in chunks])
 
     def search(self, query: str, limit: int) -> list:
-        scores = self.index.get_scores(tokenize(query))
+        scores = self.index.get_scores(self.split(query))
         order = np.argsort(scores)[::-1][:limit]
         return [dict(self.chunks[i], score=float(scores[i])) for i in order]
 
 
 class VectorBackend:
-    """Score chunks by cosine similarity between embeddings of the query and the chunk.
-
-    Embeddings place text that means similar things near each other, so a question
-    that shares no words with its answer can still find it. An identifier is scored
-    the same way, by what it resembles rather than by matching it, so it can still be
-    found but is not guaranteed the top position the way an exact match is.
-    """
+    """Score chunks by the cosine similarity of their embeddings to the question's,
+    so a question can find an answer that shares none of its words."""
 
     name = "vector"
 
@@ -209,12 +209,35 @@ class VectorBackend:
         return [dict(self.chunks[i], score=float(scores[i])) for i in order]
 
 
+class HybridBackend:
+    """Fuse the keyword and vector rankings of every chunk, by RRF or by a weighted sum."""
+
+    def __init__(self, keyword: KeywordBackend, vector: VectorBackend, method: str):
+        self.chunks = keyword.chunks
+        self.backends = ((keyword, KEYWORD_WEIGHT), (vector, 1 - KEYWORD_WEIGHT))
+        self.name = method
+
+    def search(self, query: str, limit: int) -> list:
+        total = len(self.chunks)
+        fused = np.zeros(total)
+        for backend, weight in self.backends:
+            hits = backend.search(query, total)
+            if self.name == "rrf":
+                for rank, hit in enumerate(hits, start=1):
+                    fused[hit["position"]] += 1 / (RRF_K + rank)
+            else:
+                scores = np.array([hit["score"] for hit in hits])
+                spread = scores.max() - scores.min()
+                scaled = (scores - scores.min()) / spread if spread else np.zeros(total)
+                for hit, value in zip(hits, scaled):
+                    fused[hit["position"]] += weight * value
+        order = np.argsort(fused)[::-1][:limit]
+        return [dict(self.chunks[i], score=float(fused[i])) for i in order]
+
+
 def call_with_retry(client, kind: str = "chat", **kwargs):
     """Send one request, backing off when the provider answers with a rate limit.
-
-    Indexing a corpus sends one request per chunk in a burst, which is exactly the
-    shape that trips a per-minute limit even when the daily quota is untouched.
-    """
+    Indexing sends one request per chunk in a burst, which trips per-minute limits."""
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
             if kind == "embedding":
@@ -237,15 +260,8 @@ def by_count(hits: list, limit: int) -> list:
 
 
 def by_token_budget(hits: list, budget: int) -> list:
-    """Keep chunks until the estimated token count would exceed the budget.
-
-    The first chunk is always kept, even if it alone is over the budget, so the budget
-    is a limit on what gets added, not a guarantee that the context fits under it.
-    Tokens are estimated as characters divided by CHARS_PER_TOKEN, not counted by the
-    model's tokenizer. The unit here is the one the model is actually limited by. A count of chunks only
-    stands in for it while every chunk is the same size, and stops standing in for it
-    the moment the corpus holds documents of different lengths.
-    """
+    """Keep chunks until the estimated tokens would pass the budget, but always keep the first.
+    Tokens are characters / CHARS_PER_TOKEN, an estimate rather than a tokenizer count."""
     kept, spent = [], 0
     for hit in hits:
         cost = max(1, len(hit["text"]) // CHARS_PER_TOKEN)
@@ -280,12 +296,8 @@ def answer(client, question: str, hits: list) -> str:
 
 
 def pick_client() -> OpenAI:
-    """Return a client for the one provider this script uses for both roles.
-
-    Retrieval needs embeddings and answering needs chat, and keeping both on one
-    provider means one key, one base URL and one quota to reason about when
-    something starts failing.
-    """
+    """Return a Gemini client for both embeddings and chat, or None without a key.
+    One provider means one key and one quota to check when something fails."""
     key = os.getenv("GEMINI_API_KEY")
     if not key:
         return None
@@ -294,12 +306,7 @@ def pick_client() -> OpenAI:
 
 
 def locate(hits: list, expected: str) -> tuple:
-    """Return the rank and score of the expected document's best chunk, or (None, None).
-
-    The hits arrive best first, so the first chunk of the document is its best. None
-    means no chunk of the document is in the ranking at all: the failure is upstream
-    of scoring, and the diagnosis has to say so rather than fail on an empty list.
-    """
+    """Return the rank and score of the expected document's best chunk, or (None, None)."""
     for rank, hit in enumerate(hits, start=1):
         if hit["document"] == expected:
             return rank, hit["score"]
@@ -325,7 +332,7 @@ def score_backends(backends: list) -> dict:
 
 
 def build_ui(backends: dict, client):
-    """Build a small web interface over the same two backends, without launching it."""
+    """Build a small web interface over the same backends, without launching it."""
     import gradio as gr
 
     def respond(question: str, backend_name: str, cutoff: str):
@@ -364,9 +371,10 @@ def main() -> None:
 
     client = pick_client()
     if client is None:
-        print("No GEMINI_API_KEY found. This script uses one provider for both the")
-        print("embeddings and the answers, so that key is required.")
+        print("(no GEMINI_API_KEY; this script needs it for both the embeddings and the answers)")
         return
+
+    # 1. The corpus, chunked
 
     chunks = chunk_documents()
     print("--- 1. The corpus, chunked ---")
@@ -377,43 +385,60 @@ def main() -> None:
           f"mean {sum(lengths) / len(lengths):.0f}")
     print(f"    estimated tokens in the whole corpus: {estimate_tokens(chunks):,}")
 
-    print("\n--- 2. Two indexes over the same chunks ---")
+    # 2. Two indexes and two fusions
+
+    print("\n--- 2. Two indexes and two fusions ---")
     keyword = KeywordBackend(chunks)
     print(f"    keyword index built over {len(chunks)} chunks")
     vector = VectorBackend(chunks, client)
     print(f"    vector index built with {EMBED_MODEL} at {EMBED_DIMENSIONS} dimensions")
-    backends = {"keyword": keyword, "vector": vector}
+    backends = {"keyword": keyword, "vector": vector,
+                "rrf": HybridBackend(keyword, vector, "rrf"),
+                "weighted": HybridBackend(keyword, vector, "weighted")}
+    print(f"    rrf fuses the two rankings with k={RRF_K}; weighted rescales both scores")
+    print(f"    to 0 to 1 per query and gives keyword a weight of {KEYWORD_WEIGHT}")
 
-    print(f"\n--- 3. {len(QUESTIONS)} questions through both backends, top {TOP_K} ---")
-    scored = score_backends([keyword, vector])
-    print(f"    {'question':<52}{'kind':<12}{'keyword':>9}{'vector':>9}")
+    # 3. Retrieval scores
+
+    print(f"\n--- 3. Retrieval scores, {len(QUESTIONS)} questions through each backend, "
+          f"top {TOP_K} ---")
+    scored = score_backends(list(backends.values()))
+    print(f"    {'question':<42}{'kind':<12}" + "".join(f"{name:>10}" for name in backends))
     for i, (question, expected, kind) in enumerate(QUESTIONS):
-        left = scored["keyword"][i]
-        right = scored["vector"][i]
-        left_text = f"rank {left['rank']}" if left["hit"] else "missed"
-        right_text = f"rank {right['rank']}" if right["hit"] else "missed"
-        print(f"    {question[:50]:<52}{kind:<12}{left_text:>9}{right_text:>9}")
-    for name in ("keyword", "vector"):
-        hits = sum(1 for row in scored[name] if row["hit"])
-        print(f"    {name:<10} found the expected document for {hits} of {len(QUESTIONS)}")
-
+        cells = [f"rank {scored[name][i]['rank']}" if scored[name][i]["hit"] else "missed"
+                 for name in backends]
+        print(f"    {question[:40]:<42}{kind:<12}" + "".join(f"{cell:>10}" for cell in cells))
     exact = [i for i, question in enumerate(QUESTIONS) if question[2] == "exact term"]
     para = [i for i, question in enumerate(QUESTIONS) if question[2] == "paraphrase"]
-    for label, group in (("exact term", exact), ("paraphrase", para)):
-        left = sum(1 for i in group if scored["keyword"][i]["hit"])
-        right = sum(1 for i in group if scored["vector"][i]["hit"])
-        left_ranks = [scored["keyword"][i]["rank"] for i in group if scored["keyword"][i]["hit"]]
-        right_ranks = [scored["vector"][i]["rank"] for i in group if scored["vector"][i]["hit"]]
-        left_mean = f"{np.mean(left_ranks):.1f}" if left_ranks else "-"
-        right_mean = f"{np.mean(right_ranks):.1f}" if right_ranks else "-"
-        print(f"    on {label:<12} questions: keyword {left} of {len(group)} "
-              f"(mean rank {left_mean}), vector {right} of {len(group)} "
-              f"(mean rank {right_mean})")
-    print("\n    On these questions, chosen to pull in opposite directions, neither backend")
-    print("    dominates. They fail on different questions, and the split above is the")
-    print("    reason a system keeps both rather than choosing.")
+    for label, group in (("all", range(len(QUESTIONS))), ("exact term", exact),
+                         ("paraphrase", para)):
+        counts = [f"{sum(1 for i in group if scored[name][i]['hit'])}/{len(group)}"
+                  for name in backends]
+        print(f"    {'found, ' + label:<54}" + "".join(f"{count:>10}" for count in counts))
 
-    print(f"\n--- 4-5. Two ways to cut the context ---")
+    # Fusion can only add a hit that one backend has and the other lacks.
+    missed = {name: {i for i, row in enumerate(scored[name]) if not row["hit"]}
+              for name in backends}
+    if missed["keyword"] - missed["vector"] and missed["vector"] - missed["keyword"]:
+        print("\n    The two backends miss different questions, which is the case fusion is for.")
+    else:
+        strong, weak = (("vector", "keyword") if len(missed["vector"]) <= len(missed["keyword"])
+                        else ("keyword", "vector"))
+        print(f"\n    The {strong} backend finds everything the {weak} backend finds, so fusion")
+        print("    has no hit to add. It can only pull a hit down:")
+        for name in ("rrf", "weighted"):
+            lost = missed[name] - missed[strong]
+            for i in sorted(lost):
+                print(f"      {name}: {QUESTIONS[i][0]}")
+            if not lost:
+                print(f"      {name}: nothing lost on this run")
+        print("    Fusion pays only when each backend finds what the other misses.")
+        if missed[weak]:
+            print(f"    Step 6 traces the {weak} miss to its cause.")
+
+    # 4. Two ways to cut the context
+
+    print("\n--- 4. Two ways to cut the context ---")
     print(f"    {'question':<40}{'fixed count':>22}{'token budget':>24}")
     print(f"    {'':<40}{'chunks':>10}{'tokens':>12}{'chunks':>12}{'tokens':>12}")
     largest_counted, largest_budgeted = 0, 0
@@ -432,17 +457,22 @@ def main() -> None:
     print("    whatever those three happen to hold. The count does not track the unit")
     print("    being limited.")
 
-    print("\n--- 6. Answers from each backend ---")
+    # 5. Answers
+
+    print("\n--- 5. Answers from the keyword and vector backends ---")
+    replies = {}
     for i, (question, expected, kind) in enumerate(QUESTIONS):
         print(f"\n    Q: {question}   (expected source: {expected})")
         for name in ("keyword", "vector"):
             hits = by_token_budget(scored[name][i]["hits"], TOKEN_BUDGET)
-            reply = answer(client, question, hits)
+            replies[name, i] = " ".join(answer(client, question, hits).split())
             sources = ", ".join(dict.fromkeys(hit["document"] for hit in hits))
             print(f"        {name:<9} retrieved [{sources}]")
-            print(f"        {'':<9} {reply[:150]}")
+            print(f"        {'':<9} {replies[name, i][:150]}")
 
-    print("\n--- 7. Peeling a query back one layer at a time ---")
+    # 6. Peeling a failure back
+
+    print("\n--- 6. Peeling a failure back one layer at a time ---")
     failing = next(
         (i for i in range(len(QUESTIONS))
          if not scored["keyword"][i]["hit"] or not scored["vector"][i]["hit"]),
@@ -455,8 +485,7 @@ def main() -> None:
     question, expected, kind = QUESTIONS[failing]
     broken = "keyword" if not scored["keyword"][failing]["hit"] else "vector"
     print(f"    Taking the {broken} backend on: {question}")
-    print(f"    Layer 1, the answer      : built from "
-          f"{scored[broken][failing]['returned']}")
+    print(f"    Layer 1, the answer      : {replies[broken, failing][:60]}")
     print(f"    Layer 2, the retrieval   : expected {expected}, "
           f"got {scored[broken][failing]['returned']}")
     hits = backends[broken].search(question, len(chunks))
@@ -470,9 +499,26 @@ def main() -> None:
           f"rank {rank} of {len(hits)}")
     print(f"                               top score {hits[0]['score']:.4f}, "
           f"expected document's best {best:.4f}")
-    print("\n    The answer was never the problem. The document was in the index the")
-    print("    whole time and the scoring put it below the cutoff, which is a different")
-    print("    repair from anything that could be done to the prompt.")
+    stuck = []
+    if broken == "keyword":
+        question_words = set(tokenize(question))
+        stuck = sorted({word for word in tokenize(hits[rank - 1]["text"])
+                        if word.endswith(".") and word[:-1] in question_words})
+    if not stuck:
+        print("\n    The answer was never the problem. The document was in the index the")
+        print("    whole time and the scoring put it below the cutoff, which is a different")
+        print("    repair from anything that could be done to the prompt.")
+        return
+    plain = KeywordBackend(chunks, split=lambda text: [w.rstrip(".") for w in tokenize(text)])
+    plain_rank, _ = locate(plain.search(question, len(chunks)), expected)
+    print(f"    Layer 4, the tokens      : the question has "
+          f"{', '.join(repr(word[:-1]) for word in stuck)}, the chunk has "
+          f"{', '.join(repr(word) for word in stuck)}")
+    print(f"                               without sentence-final dots the chunk ranks "
+          f"{plain_rank} of {len(chunks)}")
+    print("\n    Neither the answer nor BM25 was the problem. The tokenizer keeps the dot")
+    print("    in clause numbers such as 7.3, and with it every sentence-final dot, so")
+    print("    these words never match. Nothing raised an error; the chunk just ranked lower.")
 
 
 if __name__ == "__main__":
@@ -486,6 +532,9 @@ if __name__ == "__main__":
         ui_backends = {"keyword": KeywordBackend(chunks)}
         if client is not None:
             ui_backends["vector"] = VectorBackend(chunks, client)
+            for method in ("rrf", "weighted"):
+                ui_backends[method] = HybridBackend(
+                    ui_backends["keyword"], ui_backends["vector"], method)
         build_ui(ui_backends, client).launch(share=known.share)
     else:
         main()
