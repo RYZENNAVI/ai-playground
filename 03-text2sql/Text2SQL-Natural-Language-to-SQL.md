@@ -782,10 +782,11 @@ from langchain_community.utilities import SQLDatabase
 from langchain_openai import ChatOpenAI
 
 database = SQLDatabase.from_uri(db_uri)
-llm = ChatOpenAI(model=MODEL, base_url=BASE_URL, temperature=0)
+llm = ChatOpenAI(model=MODEL, base_url=BASE_URL, temperature=0.01)
 toolkit = SQLDatabaseToolkit(db=database, llm=llm)
 agent = create_sql_agent(
-    llm=llm, toolkit=toolkit, verbose=True, max_iterations=MAX_ITERATIONS
+    llm=llm, toolkit=toolkit, verbose=True, max_iterations=MAX_ITERATIONS,
+    agent_executor_kwargs={"return_intermediate_steps": True},
 )
 ```
 
@@ -799,10 +800,11 @@ Three LangChain objects, one job each:
 
 ⚠️ **Two parameters that must be set deliberately:**
 
-- **`temperature=0`** — the same question should produce the same query
-- **`max_iterations`** — **this cap is not optional.** Without it, an agent that cannot work something
-  out will retry indefinitely. The script sets it to **5**: enough to answer a well-posed question,
-  short enough to make a stuck one obvious
+- `temperature=0.01`, because the task has one right answer.
+- `max_iterations` stops an agent that cannot settle on an answer. The script sets it to 8. The coded
+  question in chapter 12 takes six steps (five tool calls and the final answer), and an earlier cap of
+  5 cut it off one step before it answered, so the run printed "Agent stopped due to iteration limit".
+- `return_intermediate_steps=True` keeps the tool calls, so the script can count them.
 
 ⚠️ **Version churn is this route's standing tax.** These APIs have moved between major releases —
 `create_sql_agent` now lives in `langchain_community.agent_toolkits.sql.base` rather than
@@ -894,16 +896,16 @@ so nothing can restore them when the DDL is rebuilt. It is the cost of the refle
 Attaching three rows is a sound idea — **samples reveal what comments failed to state**: the real
 date format, the magnitude of an amount, the actual values in a status column.
 
-In testing they even **partly compensated for the missing comments** (chapter 12). The limits are
-just as definite:
+In testing the rows showed the agent that `policy_status` holds short codes, and it then queried the
+distinct values itself (chapter 12). The limits are just as definite:
 
 - **Three rows cannot cover an enumeration** — a three-valued column will often show one or two
 - **Seeing a value is not knowing it** — `IF` is guessable as *in force*; `TM` is not
 - **Sampling bias** — the first rows are usually the oldest, carrying legacy formats
 - **Over-reliance** — three rows of `IF` suggest the column has only that value
 
-⇒ **Samples supplement an enumeration statement; they do not replace one.** Whether they rescue a
-query is a matter of luck: **does the code you need happen to appear in those particular rows.**
+⇒ **Samples supplement an enumeration statement; they do not replace one.** Neither the rows nor a
+`SELECT DISTINCT` say what a code means.
 
 ---
 
@@ -929,54 +931,49 @@ SELECT COUNT(*) FROM policies WHERE policy_status = 'IF'
 
 ### 12.2 Question One: Sample Rows Suffice
 
-The agent walked the full four steps and answered correctly. This is the toolkit's comfort zone —
+The agent made four tool calls and answered correctly in all three runs. This is the toolkit's comfort zone —
 **everything needed is in the column names, so losing the comments costs nothing.**
 
-### 12.3 Question Two: The Sample Rows Rescued It
+### 12.3 Question Two: The Agent Guessed the Code
 
-⚠️ **A result that differed from expectation, recorded as it happened.**
+The expectation was that the agent would find `policy_status`, not know what `IF` meant, and fail.
 
-The expectation was that the agent would find `policy_status`, not know what `IF` meant, and retry
-variations until it hit the `max_iterations=5` cap.
-
-**It answered correctly** — the reference SQL returns 43 policies in force, and so did the agent.
-
-**Why**: the three sample rows attached by `sql_db_schema` happened to show `IF` in all three:
+In three runs on 2026-09-27 it took the same five tool calls every time:
 
 ```
-policy_number  customer_id  product_id  policy_status  ...
-100001         19           8           IF             ...
-100002         34           6           IF             ...
-100003         22           6           IF             ...
+sql_db_list_tables    claims, customers, daily_sales, policies, products
+sql_db_schema         policies (three sample rows, all IF)
+sql_db_query          SELECT DISTINCT policy_status FROM policies  ->  IF, LP, TM
+                      Thought: 'IF' likely stands for "In Force".
+sql_db_query_checker  SELECT COUNT(*) FROM policies WHERE policy_status = 'IF'
+sql_db_query          same query  ->  43
+Final Answer: There are 43 policies still in force.
 ```
 
-The model inferred that *in force* corresponds to `IF` and wrote the correct predicate.
+The reference SQL also returns 43. With the earlier cap of 5 the final answer was cut off after the
+fifth tool call, and the run printed "Agent stopped due to iteration limit or time limit" even though
+the agent had the right number.
 
-**This outcome says something more useful than the expected one would have:**
+- The agent was right because it guessed well, not because it knew. No comment reached it. It listed
+  the codes and read `IF` as the initials of *in force*.
+- The guess works because this code spells its meaning. A code that does not, such as an internal
+  number, would give it nothing to read.
+- Losing the comments is certain. Whether that causes a wrong answer depends on how guessable the
+  needed code is.
 
-1. **It was right, but not because it knew — because it guessed well.** The question said "still in
-   force" and the sample showed `IF`; those two are close enough that a guess lands often
-2. **A different code breaks it.** Ask the same question about `TM` (terminated) or `LP` (lapsed) and
-   neither value appears in the first three rows at all
-3. **It depends on the data distribution, not on the schema.** 43 of 60 policies are `IF`, so the
-   first three rows are very likely to be `IF`. Shift the distribution and this run fails
-
-⇒ **The corrected conclusion**: losing the comments is **certain**; whether it causes a failure is
-**probabilistic** — it turns on whether the needed code happens to appear in the sample, and whether
-it resembles its own English meaning.
-
-**"It ran" and "it is reliable" are different claims.** One correct run does not validate a route.
-The real test is **what the correctness rests on**: resting on the schema is reliable, resting on
-sampling luck is not.
+"It ran" and "it is reliable" are different claims. The real test is what the correctness rests on:
+resting on the schema is reliable, resting on a guess is not.
 
 ### 12.4 Question Three: The Parser Fails
 
-There is no `PolicyHolderDetails` table. The agent listed the tables, asked for the schema, and broke:
+There is no `PolicyHolderDetails` table. In all three runs the agent listed the tables, noted that
+the table was missing, looked at the schema of `policies` and `customers`, and then broke:
 
 ```
+Action: sql_db_list_tables
+Thought: I notice the database doesn't contain a table called "PolicyHolderDetails".
 Action: sql_db_schema
-Action Input: "PolicyHolderDetails"
-Observation: Error: table_names {'PolicyHolderDetails'} not found in database
+Action Input: policies, customers
 ...
 ValueError: An output parsing error occurred. In order to pass this error back
 to the agent and have it try again, pass `handle_parsing_errors=True` to the
@@ -1021,15 +1018,17 @@ something to depend on.
 - Automatic schema reflection — no schema document to maintain
 - Four tools for free
 - An agent that runs the whole loop from question to answer
-- Sample rows that sometimes cover for the missing comments
+- Sample rows and its own queries, from which it can guess a readable code
 
 **What it costs**:
 
-1. **Reflection discards column comments** — on a database built from stored codes, correctness
-   degrades into "did the sample happen to contain that value"
+1. **Reflection discards column comments**, so on a database built from stored codes, correctness
+   rests on whether the agent can guess what a code means
 2. **A missing table raises a parsing exception** instead of answering
 3. **Similar table names** cause repeated attempts, and repeated attempts are slow
-4. **Four to six model calls per question**, several times the latency of a single-call approach
+4. **Several model calls per question.** The runs took 4 tool calls for question one and 5 for
+   question two, each chosen by a model call, plus the final answer and the query checker's own call.
+   Script 02 made one model call per question
 5. **Frequent API migrations** between major versions
 
 ⇒ The conclusion points straight at the next route: **assemble the context yourself, and put exactly
@@ -2137,15 +2136,14 @@ Everything in this chapter came out of running the code. **None of it is visible
 
 Covered in chapter 12 and worth restating as a finding.
 
-Reflection discards column comments — **that half is deterministic**. But in the measured run the
-agent still answered the coded question correctly, because the three sample rows attached to the
-schema **happened to contain the code it needed**, and that code (`IF`) resembles its own meaning
-(*in force*).
+Reflection discards column comments, and that half is deterministic. But in the measured runs the
+agent still answered the coded question correctly: it queried the distinct codes and read `IF` as the
+initials of *in force*.
 
-⇒ **The failure is probabilistic, and its probability depends on the data distribution.** Which means
-the honest statement about this route is not "it breaks" but:
+⇒ **The failure depends on how guessable the needed code is.** Which means the honest statement about
+this route is not "it breaks" but:
 
-> **Its correctness rests on sampling luck rather than on the schema.**
+> **Its correctness rests on a guess rather than on the schema.**
 
 **A route that passes once has not been validated.** What has to be examined is what the passing
 rested on.
@@ -2399,7 +2397,7 @@ Every script has been run. From the most recent full pass:
 | :--- | :--- |
 | 01 | 5 tables, **38 column comments**, 325 rows (40 customers, 10 products, 60 policies, 35 claims, 180 days), fixed seed |
 | 02 | DDL style 7/7, using the table's code 3/3; both prose styles 4/7 with 0/3, writing `'Denied'`, `'Lapsed'` and `'Active'` in place of the codes (three runs, same scores) |
-| 03 | Reflection drops every column comment; a missing table raises a parsing exception; **the coded question was answered correctly this run (43 policies, matching the reference SQL) because the sample rows happened to contain `IF`** |
+| 03 | Reflection drops every column comment; a missing table raises a parsing exception in all three runs; the coded question was answered correctly (43, matching the reference SQL) after the agent queried the distinct codes and guessed that `IF` means in force; 4 and 5 tool calls |
 | 04 | Retrieved 5 DDL statements, 5 notes and 3 pairs; answered the lapsed-policy question with 13 policies and 13632.0 annual premium; correction took `COUNT(*) FROM customers` from 40 to **35** |
 | 05 | Four blocked and four passed across all three layers; read-only connection verified as non-writable; benchmark **7/7** — single 3/3, two-table 2/2, three-table 2/2 |
 | 06 | All four tools fired; regression recovered year-end new at **$789.07** and renewal at **$549.15** against true values of 806 and 533 (**−2.1% / +3.0%**) |
@@ -2408,8 +2406,8 @@ Every script has been run. From the most recent full pass:
 
 - **The scores for 02** gave 4/7, 4/7 and 7/7 in three runs on 2026-09-27. Earlier runs recorded 3/7
   for the prose styles
-- **The coded question in 03** — it passed this time because all three sample rows showed `IF`. A
-  different code or a different data distribution changes that. See 12.3
+- **The coded question in 03** passed in three runs because `IF` is easy to guess. A code that does
+  not spell its meaning would not be. See 12.3
 
 ### 26.2 Three Findings Worth Keeping
 
@@ -2421,9 +2419,9 @@ comments are dead weight. The gap only appears once the statuses are real stored
 **2 — Comment loss is certain; failure is probabilistic.**
 SQLite retains the commented DDL in `sqlite_master`, but SQLAlchemy rebuilds the DDL from parsed
 metadata and **the comments are not in the rebuild**. Yet the agent still answered correctly, because
-the sample rows happened to carry the code it needed.
-⇒ **Correctness degraded from resting on the schema to resting on sampling luck. One passing run does
-not validate a route.**
+it listed the codes and guessed that `IF` means in force.
+⇒ **Correctness degraded from resting on the schema to resting on a guess. One passing run does not
+validate a route.**
 
 **3 — Regression recovered numbers no column holds.**
 `daily_sales` stores per-segment volumes and a daily total, **never a per-segment price**. A fit over

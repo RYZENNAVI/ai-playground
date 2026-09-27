@@ -1,15 +1,29 @@
-"""Let a toolkit introspect the database instead of pasting a schema into a prompt.
+"""Answer questions with LangChain's SQL agent, which reads the schema itself.
 
-Demonstrates what a database-aware toolkit gains, and what it quietly loses:
-    1. Open the database through a wrapper that can read its own structure.
-    2. Compare the wrapper's schema text against what the database really stores.
-    3. List the tools the agent was handed.
-    4. Answer a question that needs only column names and sample rows.
-    5. Answer one that needs a stored code, and watch the agent hunt for meaning.
-    6. Ask about a table that does not exist, to see the framework's failure mode.
-    7. Weigh the round trips against the single call used in script 02.
+Script 02 pasted the schema into the prompt. Here LangChain's SQLDatabaseToolkit
+reads it from the database by reflection, and create_sql_agent builds a ReAct
+agent on DeepSeek that calls the toolkit's four tools until it can answer.
+Reflection rebuilds each CREATE TABLE from the table structure. Types and keys
+survive, but the column comments that explain the status codes are lost. The
+toolkit attaches three sample rows per table instead.
 
-Module 03: Text2SQL - Database Toolkit Agent.
+The agent gets three questions: one that column names can answer, one that needs
+the meaning of the code 'IF', and one about a table that does not exist.
+
+The run prints seven parts:
+    1. Opening the database through the wrapper. The five tables it found.
+    2. What the wrapper's schema text keeps, and what it drops. Whether the
+       comment 'IF = in force' survives reflection.
+    3. Tools handed to the agent.
+    4. A question the sample rows can answer. The average premium per
+       product type.
+    5. A question that needs the meaning of a stored code. How many policies
+       are in force. No comment tells the agent what 'IF' means, so it lists
+       the codes and guesses from the letters.
+    6. A table that does not exist. The ReAct output parser raises an error
+       when the model answers in plain prose.
+    7. Verdict. The agent's answer to part 5 against the hand-written SQL, and
+       the tool calls each question took.
 """
 
 import os
@@ -41,21 +55,15 @@ MISSING_TABLE_QUESTION = "Describe the PolicyHolderDetails table."
 
 REFERENCE_SQL = "SELECT COUNT(*) FROM policies WHERE policy_status = 'IF'"
 
-# Without a cap the agent will keep re-running the same aggregate while it tries
-# to work out what a status code means. Five steps is enough to answer a
-# well-posed question and short enough to make a stuck one obvious.
-MAX_ITERATIONS = 5
+# The cap only stops an agent that cannot settle on an answer. The coded
+# question takes six steps (five tool calls and the final answer), so 5 cut it
+# off just before it answered.
+MAX_ITERATIONS = 8
 
 
 def build_agent(db_uri):
-    """Wire up the toolkit agent.
-
-    The imports sit inside the function for two reasons: the LangChain stack is
-    heavy enough that the rest of the module should not pay to import it, and
-    these paths move between releases. In langchain 1.3 the agent constructor
-    lives in langchain_community, not in langchain.agents where older code
-    looks for it.
-    """
+    """Build the database wrapper, the toolkit and a ReAct SQL agent on DeepSeek.
+    In langchain 1.3 create_sql_agent lives in langchain_community."""
     from langchain_community.agent_toolkits.sql.base import create_sql_agent
     from langchain_community.agent_toolkits.sql.toolkit import SQLDatabaseToolkit
     from langchain_community.utilities import SQLDatabase
@@ -71,20 +79,18 @@ def build_agent(db_uri):
     llm = ChatOpenAI(model=MODEL, temperature=0.01, api_key=key, base_url=BASE_URL)
     toolkit = SQLDatabaseToolkit(db=database, llm=llm)
     agent = create_sql_agent(
-        llm=llm, toolkit=toolkit, verbose=True, max_iterations=MAX_ITERATIONS
+        llm=llm,
+        toolkit=toolkit,
+        verbose=True,
+        max_iterations=MAX_ITERATIONS,
+        agent_executor_kwargs={"return_intermediate_steps": True},
     )
     return database, toolkit, agent
 
 
 def compare_schema_sources(db_path, database):
-    """Show that reflection rebuilds the DDL and drops the column comments.
-
-    SQLite keeps the exact CREATE TABLE text it was given, comments included, in
-    sqlite_master. The wrapper does not read that text - it reflects the table
-    through SQLAlchemy and prints a reconstruction, which carries types and keys
-    but no comments. That gap is the whole point of this step: the toolkit
-    recovers the structure automatically and loses the meaning automatically.
-    """
+    """Return the stored and the reflected CREATE TABLE for policies. SQLite keeps
+    the original text with its comments; the wrapper rebuilds it without them."""
     connection = sqlite3.connect(db_path)
     try:
         stored = connection.execute(
@@ -99,56 +105,61 @@ def compare_schema_sources(db_path, database):
 
 
 def ask(agent, question, label):
-    """Run one question, returning the answer or the exception it raised."""
+    """Run one question. Return (answer, tool calls), or (None, None) if it raised."""
     print(f"  Q: {question}\n")
     try:
         result = agent.invoke({"input": question})
         print(f"\n  {label}: {result['output']}")
-        return result["output"]
+        return result["output"], len(result["intermediate_steps"])
     except Exception as error:
         print(f"\n  {label} raised {type(error).__name__}: {str(error)[:150]}")
-        return None
+        return None, None
 
 
 def main():
     db_path = _db.ensure_database()
     db_uri = f"sqlite:///{db_path}"
 
+    # 1. Opening the database through the wrapper
     print("--- 1. Opening the database through the wrapper ---")
     database, toolkit, agent = build_agent(db_uri)
     print(f"  uri: {db_uri}")
     print(f"  tables discovered: {database.get_usable_table_names()}")
-    print("  Nobody pasted a schema in - the wrapper read the structure itself.")
+    print("  Nobody pasted a schema in. The wrapper read the structure itself.")
 
+    # 2. What the wrapper's schema text keeps, and what it drops
     print("\n--- 2. What the wrapper's schema text keeps, and what it drops ---")
-    stored, reflected, in_stored, in_reflected = compare_schema_sources(db_path, database)
+    _, _, in_stored, in_reflected = compare_schema_sources(db_path, database)
     print(f"  stored CREATE TABLE contains 'IF = in force': {in_stored}")
     print(f"  wrapper's schema text contains it:           {in_reflected}")
     print("  The wrapper reflects the table and rebuilds the DDL, so types and")
-    print("  keys survive but the column comments do not. It does attach three")
-    print("  sample rows, which is the only clue left about stored values.")
+    print("  keys survive but the column comments do not. It attaches three")
+    print("  sample rows, but neither they nor the DDL say what a code means.")
 
+    # 3. Tools handed to the agent
     print("\n--- 3. Tools handed to the agent ---")
     for tool in toolkit.get_tools():
         print(f"  {tool.name:<22} {tool.description.splitlines()[0][:66]}")
 
+    # 4. A question the sample rows can answer
     print("\n--- 4. A question the sample rows can answer ---")
-    ask(agent, PLAIN_QUESTION, "Answer")
+    _, plain_calls = ask(agent, PLAIN_QUESTION, "Answer")
 
+    # 5. A question that needs the meaning of a stored code
     print("\n--- 5. A question that needs the meaning of a stored code ---")
-    print("  Watch for repeated queries: the agent can see 'IF', 'LP' and 'TM'")
-    print("  in the data but has nothing telling it which one means in force.")
-    coded = ask(agent, CODED_QUESTION, "Answer")
+    print("  The sample rows show only 'IF'. Nothing in the schema text says what")
+    print("  'IF', 'LP' or 'TM' mean, so the agent has to guess from the letters.")
+    coded, coded_calls = ask(agent, CODED_QUESTION, "Answer")
 
+    # 6. A table that does not exist
     print("\n--- 6. A table that does not exist ---")
-    # The parser expects every reply to stay in the Action / Action Input shape.
-    # Noticing a missing table pushes the agent towards plain prose, which the
-    # parser may or may not accept depending on how the sentence lands - the
-    # same question raises on one run and returns on the next. That instability
-    # is the point worth seeing, so both outcomes are handled rather than one
-    # being presented as the behaviour.
-    ask(agent, MISSING_TABLE_QUESTION, "Answer")
+    # The parser expects every reply in the Action / Action Input shape. Noticing
+    # a missing table pushes the model towards plain prose, and so far that has
+    # raised on every run. ask() still handles an answer too, because whether
+    # the parser accepts the prose depends on how the model words it.
+    missing, missing_calls = ask(agent, MISSING_TABLE_QUESTION, "Answer")
 
+    # 7. Verdict
     print("\n--- 7. Verdict ---")
     connection = sqlite3.connect(db_path)
     try:
@@ -156,12 +167,20 @@ def main():
     finally:
         connection.close()
     print(f"  Hand-written SQL says {truth} policies are in force.")
-    print(f"  Agent answered: {coded if coded else 'no answer within the step cap'}")
-    print()
-    print("  The toolkit removes the work of describing a schema and adds sample")
-    print("  rows for free, but it reaches the model through reflection, which is")
-    print("  exactly where the comments are lost. Script 02 pastes the raw CREATE")
-    print("  TABLE text instead: one call, no introspection, comments intact.")
+    if coded is None or coded.startswith("Agent stopped"):
+        print(f"  The agent gave no answer within the cap of {MAX_ITERATIONS} steps.")
+    elif str(truth) in coded:
+        print(f"  The agent matched {truth}, but only by guessing that 'IF' means in")
+        print("  force. The comment that says so never reached it.")
+    else:
+        print(f"  The agent's answer does not contain {truth}: {coded}")
+
+    part6 = "raised before finishing" if missing is None else f"took {missing_calls}"
+    print(f"\n  Tool calls: part 4 took {plain_calls}, part 5 took {coded_calls},"
+          f" part 6 {part6}.")
+    print("  The agent makes a model call to choose each tool and one more for")
+    print("  the final answer, and sql_db_query_checker calls the model as well.")
+    print("  Script 02 used one model call per question.")
 
 
 if __name__ == "__main__":
