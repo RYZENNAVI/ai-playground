@@ -17,7 +17,7 @@ libraries. One script, 02-08, also calls the Tavily search API over plain HTTP.
 |--------|--------|
 | [01-llm-foundation](01-llm-foundation/) | Chat protocol · prompt engineering · function calling · tool-loop agents · multimodal extraction · local deployment (Ollama, Transformers) |
 | [02-rag](02-rag/) | Embeddings · chunking · vector databases · RAG pipelines · rerank · query rewrite · multimodal RAG · knowledge-base curation & versioning · GraphRAG |
-| [03-text2sql](03-text2sql/) (reviewing) | Natural language to SQL · schema prompting · SQL agents · query safety · result evaluation |
+| [03-text2sql](03-text2sql/) | Natural language to SQL · schema prompting · SQL agents · query safety · result evaluation |
 | [04-agents](04-agents/) (reviewing) | Prompt templates & memory · chain orchestration · ReAct agents · MCP / A2A · LangGraph architectures |
 | [05-fine-tuning](05-fine-tuning/) (reviewing) | Low-rank adaptation · supervised fine-tuning · reward-driven training · decode-time thinking budget · vision adapters |
 | [06-multimodal-vision](06-multimodal-vision/) (reviewing) | Classical vision (colour, edges, Hough, HOG, Haar) · optical flow · training mechanics & loss behaviour · detection, segmentation and pose · attention & self-supervision · vision-language auditing · split and submission audits |
@@ -156,7 +156,7 @@ See [RAG-Retrieval-Augmented-Generation.md](02-rag/RAG-Retrieval-Augmented-Gener
 | # | Script | Feature |
 |---|--------|---------|
 | 01 | `01_build_insurance_db.py` | Local SQLite from a fixed seed: five tables, commented DDL, idempotent rebuild |
-| 02 | `02_prompt_to_sql.py` | Three prompt styles scored on rows *and* on stored-literal use, then retrieval-augmented |
+| 02 | `02_prompt_to_sql.py` | Three prompt styles scored on rows *and* on stored-literal use, then a retrieved example that only helps with its reason |
 | 03 | `03_langchain_sql_agent.py` | LangChain SQLDatabaseToolkit: what reflection gains, and the comments it drops |
 | 04 | `04_vanna_text2sql.py` | Vanna over a local vector store: DDL, documentation and verified pairs, with corrections |
 | 05 | `05_sql_quality_gate.py` | Screening, static rules, second-opinion review, read-only execution, benchmark by join depth |

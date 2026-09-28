@@ -15,8 +15,11 @@ also checks whether each query used the code the table stores, and prints the
 value it wrote instead.
 
 The last two parts try few-shot retrieval. Six hand-written question and SQL
-pairs are searched by TF-IDF, and the closest ones are pasted in front of the
-question.
+pairs are searched by TF-IDF, and the closest ones are pasted in front of a
+question the schema cannot answer: how many customers Kingsford has. The house
+rule is that closed accounts are not customers, and only the first example
+follows it. Part 6 asks three times: without examples, with the examples as
+bare SQL, and with the reason for the rule written above the SQL.
 
 The run prints six parts:
     1. Benchmark. The 7 questions.
@@ -25,10 +28,10 @@ The run prints six parts:
        result and, on the three status questions, what the table stores and
        what the query wrote.
     4. Scores. Rows right and table codes used, per style.
-    5. Retrieving similar verified examples. For each question C got wrong, or
-       for the last question when C got all 7 right.
-    6. Re-asking with those examples. C already got the last question right
-       without them, so a pass on it says nothing about the examples.
+    5. Retrieving similar verified examples. The Kingsford question, the words
+       it shares with the example questions, and the closest examples.
+    6. Asking with and without the examples. The count from each of the three
+       prompts, against the hand-written answer.
 """
 
 import os
@@ -176,38 +179,53 @@ BENCHMARK = [
     ),
 ]
 
-# Hand-written question and SQL pairs, each checked against the database. Part 5
-# retrieves from this list and part 6 pastes what it finds into the prompt. Only
-# checked SQL belongs here, because a wrong example teaches the model the mistake.
+# Hand-written question and SQL pairs, each checked against the database, with
+# the reason for any house rule the SQL follows. Part 5 retrieves from this list
+# and part 6 pastes what it finds into the prompt. Only checked SQL belongs here,
+# because a wrong example teaches the model the mistake.
 VERIFIED_EXAMPLES = [
     (
         "How many customers do we have?",
-        "SELECT COUNT(*) FROM customers",
+        "SELECT COUNT(*) FROM customers WHERE customer_status IN ('A', 'L')",
+        "Closed accounts are not counted as customers.",
     ),
     (
         "Which customers are married?",
         "SELECT customer_id, name FROM customers WHERE marital_status = 'Married'",
+        None,
     ),
     (
         "List every claim that is still pending, with its handler.",
         "SELECT claim_number, handler, claim_date FROM claims "
         "WHERE claim_status = 'PND'",
+        None,
     ),
     (
         "Show each customer together with the policies they hold.",
         "SELECT c.name, p.policy_number, p.policy_status FROM customers c "
         "JOIN policies p ON c.customer_id = p.customer_id",
+        None,
     ),
     (
         "What is the total claim amount per claim type?",
         "SELECT claim_type, SUM(claim_amount) FROM claims GROUP BY claim_type",
+        None,
     ),
     (
         "Which products are no longer sold?",
         "SELECT product_name, product_type FROM products "
         "WHERE product_status = 'Retired'",
+        None,
     ),
 ]
+
+# Kingsford has six customers, one of them closed. The schema does not say that
+# closed accounts do not count, so the answer depends on the first example.
+RETRIEVAL_QUESTION = "How many customers do we have in Kingsford?"
+RETRIEVAL_ANSWER = (
+    "SELECT COUNT(*) FROM customers "
+    "WHERE city = 'Kingsford' AND customer_status IN ('A', 'L')"
+)
 
 
 def make_client():
@@ -310,27 +328,36 @@ def build_retriever():
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.metrics.pairwise import cosine_similarity
 
-    questions = [q for q, _ in VERIFIED_EXAMPLES]
+    questions = [example[0] for example in VERIFIED_EXAMPLES]
     vectoriser = TfidfVectorizer(stop_words="english").fit(questions)
     matrix = vectoriser.transform(questions)
+    analyse = vectoriser.build_analyzer()
 
     def retrieve(query, top_k=2, threshold=0.05):
+        """Return the query's words that are in the vocabulary, and the hits."""
+        kept = [word for word in analyse(query) if word in vectoriser.vocabulary_]
         scores = cosine_similarity(vectoriser.transform([query]), matrix)[0]
         ranked = sorted(enumerate(scores), key=lambda pair: pair[1], reverse=True)
-        return [
-            (VERIFIED_EXAMPLES[i][0], VERIFIED_EXAMPLES[i][1], score)
+        hits = [
+            (VERIFIED_EXAMPLES[i], score)
             for i, score in ranked[:top_k]
             if score >= threshold
         ]
+        return kept, hits
 
     return retrieve
 
 
-def prompt_with_examples(question, schema, examples):
-    """Build style C again, with retrieved question/SQL pairs pasted in front."""
-    block = "\n".join(
-        f"-- Q: {q}\n{sql};" for q, sql, _ in examples
-    )
+def prompt_with_examples(question, schema, hits, reasons):
+    """Build style C again, with retrieved question/SQL pairs pasted in front.
+    With reasons, an example's house rule goes above its SQL as a comment."""
+    lines = []
+    for (example_q, sql, reason), _ in hits:
+        lines.append(f"-- Q: {example_q}")
+        if reasons and reason:
+            lines.append(f"-- {reason}")
+        lines.append(f"{sql};")
+    block = "\n".join(lines)
     return f"""-- language: SQL
 ### Similar questions answered before:
 {block}
@@ -379,36 +406,37 @@ def main():
         # 5. Retrieving similar verified examples
         print("\n--- 5. Retrieving similar verified examples ---")
         retrieve = build_retriever()
-        failed = [
-            BENCHMARK[i]
-            for i, ok in enumerate(rows_ok["C create-table"])
-            if not ok
+        kept, hits = retrieve(RETRIEVAL_QUESTION)
+        print(f"  Q: {RETRIEVAL_QUESTION}")
+        print(f"  words it shares with the example questions: "
+              f"{', '.join(kept) or 'none'}")
+        for (example_q, _, _), score in hits:
+            print(f"    {score:.3f}  {example_q}")
+
+        # 6. Asking with and without the examples
+        print("\n--- 6. Asking with and without the examples ---")
+        expected = run_sql(connection, RETRIEVAL_ANSWER)
+        print(f"  hand-written SQL: {expected[0][0]}")
+        prompts = [
+            ("no examples",
+             PROMPT_C.format(question=RETRIEVAL_QUESTION, schema=schema)),
+            ("examples, SQL only",
+             prompt_with_examples(RETRIEVAL_QUESTION, schema, hits, reasons=False)),
+            ("examples with reason",
+             prompt_with_examples(RETRIEVAL_QUESTION, schema, hits, reasons=True)),
         ]
-        fell_back = not failed
-        if fell_back:
-            print("  style C answered everything; showing retrieval on one question anyway")
-            failed = BENCHMARK[-1:]
-
-        for question, _, _ in failed:
-            found = retrieve(question)
-            print(f"\n  Q: {question}")
-            for example_q, _, score in found:
-                print(f"    {score:.3f}  {example_q}")
-
-        # 6. Re-asking with those examples
-        print("\n--- 6. Re-asking with those examples ---")
-        if fell_back:
-            print("  this question already passed without examples, so this part")
-            print("  only shows the prompt shape, not that the examples helped")
-        for question, gold, _ in failed:
-            examples = retrieve(question)
-            if not examples:
-                print(f"  no example passed the threshold for: {question}")
-                continue
-            sql = ask_for_sql(client, prompt_with_examples(question, schema, examples))
-            ok = rows_match(run_sql(connection, sql), run_sql(connection, gold))
-            print(f"  {'pass' if ok else 'still wrong'}: {question}")
-            print("\n".join(f"    {line}" for line in sql.splitlines()))
+        for label, prompt in prompts:
+            sql = ask_for_sql(client, prompt)
+            rows = run_sql(connection, sql)
+            if rows is None:
+                shown = "error"
+            elif len(rows) == 1 and len(rows[0]) == 1:
+                shown = str(rows[0][0])
+            else:
+                shown = f"{len(rows)} rows"
+            verdict = "right" if rows_match(rows, expected) else "wrong"
+            print(f"  {label:<22}{shown:<8}{verdict}")
+            print(f"      {' '.join(sql.split())}")
     finally:
         connection.close()
 
