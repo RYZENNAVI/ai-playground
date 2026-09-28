@@ -1,20 +1,26 @@
-"""Rebuild a matrix from a handful of rank-1 terms using the singular value decomposition.
+"""Truncated SVD: rebuild a matrix from its largest rank-1 terms, the low-rank shape LoRA assumes.
 
-Works through the low-rank approximation that adapter methods assume, and marks
-where the demonstration stops and the assumption begins:
-    1. Decompose a 3x2 matrix by hand and check the numbers against scipy.
-    2. Show that singular values are the square roots of the eigenvalues of A_T A.
-    3. Show that singular vector signs flip in pairs, so U and V must flip together.
-    4. Render a test image locally instead of shipping a photograph.
-    5. Rebuild the image from the top k singular values and measure the error.
-    6. Count the numbers each rank costs, which is what "compression" really means.
-    7. Read the singular value spectrum to decide how small k is allowed to be.
-    8. Measure that spectrum against a full-rank floor and a rank-2 ceiling, so
-       "it drops fast" is a position between two references, not an adjective.
-    9. Read a stand-in weight update the same way, to show the shape an adapter
-       assumes without pretending an image proves anything about a real one.
+SVD writes a matrix as a sum of rank-1 terms, each weighted by a singular value.
+Keeping the k largest terms gives a rank-k matrix. Its error depends only on the
+weights left out, so the spectrum says how small k can be.
 
-Module 05: Fine-Tuning - Low-Rank Reconstruction.
+The run prints seven parts:
+    1. A 3x2 matrix, decomposed. The two singular values are the square roots of
+       the eigenvalues of A_T A, and the two rank-1 terms add back up to A.
+    2. Signs flip in pairs. Negating column 1 of U alone changes the product.
+       Negating row 1 of V_T as well restores A.
+    3. A test image. A 512x512 grayscale drawing: a diagonal gradient, a ring, a
+       rectangle, stripes, a triangle, the word RANK and noise.
+    4. Rebuilds at k = 1 to 200. The relative error and the stored numbers for
+       each k, the same count for a 1000x1000 matrix, and the rebuilt images
+       saved to outputs/.
+    5. The spectrum of the image. The k that 90, 95 and 99 percent of the energy
+       need, and the relative error at k = 1, 2, 3 and 8, which energy share
+       understates.
+    6. A floor and a ceiling. Gaussian noise (full rank) and the gradient
+       background (rank 2), read the same way as the image.
+    7. A stand-in weight update. A rank-12 product plus noise, read the same way.
+       It shows the shape LoRA assumes and proves nothing about real updates.
 """
 
 import sys
@@ -32,22 +38,14 @@ IMAGE_SIZE = 512
 RANKS = (1, 2, 5, 10, 20, 50, 100, 200)
 ENERGY_TARGETS = (0.90, 0.95, 0.99)
 ADAPTER_SIZE = 512
-# Deliberately not 8. Step 7 reports that the image needs k = 8 to reach 99
-# percent of its energy, and that 8 is a measured result; this one is an input
-# written down before the matrix exists. Two unrelated matrices sharing the
-# number reads like a finding carried over from one to the other, which is
-# exactly the connection step 9 exists to deny.
+# Not 8: part 5 measures k = 8 for the image, and sharing the number would read
+# as if that result carried over to this matrix.
 ADAPTER_RANK = 12
 
 
 def hand_decomposition():
-    """Step 1-2. Decompose a 3x2 matrix and tie singular values back to eigenvalues.
-
-    The matrix is small enough to follow term by term, which makes the identity
-    sigma_i = sqrt(lambda_i) checkable rather than something to take on faith:
-    the eigenvalues of A_T A come out as 6.854 and 0.146, and the singular
-    values as their square roots, 2.618 and 0.382.
-    """
+    """Part 1. Decompose a 3x2 matrix and add its rank-1 terms back up to A.
+    It is small enough to check by hand: the eigenvalues of A_T A are 6.854 and 0.146."""
     matrix = np.array([[1.0, 2.0], [1.0, 1.0], [0.0, 0.0]])
     print("A =")
     print(matrix)
@@ -64,8 +62,7 @@ def hand_decomposition():
     print("singular values squared:", values**2)
     print("sqrt of eigenvalues    :", np.sqrt(eigenvalues))
 
-    # The whole point of the decomposition: A is a weighted sum of rank-1 blocks,
-    # and the singular value is the weight. Print each block on its own.
+    # Each singular value weights one rank-1 term. Print the terms one by one.
     print("\nA as a sum of rank-1 terms:")
     total = np.zeros_like(matrix)
     for index, value in enumerate(values):
@@ -80,14 +77,8 @@ def hand_decomposition():
 
 
 def sign_pairing(matrix, left, values, right_t):
-    """Step 3. Flip one column of U alone, then flip the matching row of V_T too.
-
-    Singular vector signs are only fixed up to pairs. Negating column j of U and
-    row j of V_T leaves the product untouched, but negating just one of them
-    silently produces a different matrix. Writing down a decomposition with the
-    signs "tidied up" on one side only is therefore wrong even though every
-    individual number in it is right.
-    """
+    """Part 2. Negate column 1 of U alone, then row 1 of V_T as well.
+    After the first flip each vector is still a valid singular vector, but the product changes."""
     diagonal = np.diag(values)
 
     broken_left = left.copy()
@@ -106,22 +97,16 @@ def sign_pairing(matrix, left, values, right_t):
 
 
 def render_test_image(size):
-    """Step 4. Draw a grayscale test image so no external photograph is needed.
-
-    The drawing deliberately mixes three kinds of structure, because each one
-    behaves differently under truncation: smooth gradients are captured by the
-    first few terms, hard edges need mid-range terms, and fine text plus noise
-    live in the long tail that truncation throws away first.
-    """
-    # A smooth diagonal gradient background. It is an outer sum of two vectors,
-    # so its rank is exactly 2 - which is why step 8 has to report it as a
-    # ceiling rather than let it pass for ordinary image content.
+    """Part 3. Draw a grayscale test image, so no photograph is needed."""
+    # A diagonal gradient. It is an outer sum of two vectors, so its rank is
+    # exactly 2, and part 6 uses it as the ceiling.
     ramp = np.linspace(0, 120, size, dtype=np.float64)
     background = ramp[:, None] + ramp[None, :] * 0.6
     image = Image.fromarray(np.clip(background, 0, 255).astype(np.uint8), mode="L")
     draw = ImageDraw.Draw(image)
 
-    # Hard-edged shapes: mid-range singular values.
+    # Shapes along rows and columns come back at k = 2. The ring needs about 10
+    # terms, RANK about 20, and the diagonal triangle is still blurred at k = 50.
     draw.ellipse([size * 0.08, size * 0.10, size * 0.46, size * 0.48], fill=235)
     draw.ellipse([size * 0.16, size * 0.18, size * 0.38, size * 0.40], fill=40)
     draw.rectangle([size * 0.55, size * 0.10, size * 0.92, size * 0.34], fill=200)
@@ -136,7 +121,6 @@ def render_test_image(size):
             width=3,
         )
 
-    # Fine text: the first detail to disappear when k gets small.
     try:
         font = ImageFont.truetype("arial.ttf", int(size * 0.06))
     except OSError:
@@ -157,21 +141,15 @@ def truncate(left, values, right_t, k):
 
 
 def storage_numbers(rows, columns, k):
-    """Step 6. Count stored numbers for a rank-k factorisation and for the full matrix.
-
-    A rank-k factorisation keeps k columns of U, k singular values and k rows of
-    V_T, so it costs k * (rows + columns + 1) numbers against rows * columns for
-    the dense matrix. For a 1000x1000 matrix at k=3 that is 6003 against
-    1000000, which is 0.6 percent, not 6 percent - the ratio is easy to misplace
-    by a factor of ten, so the script prints both sides of the division.
-    """
+    """Count the numbers a rank-k factorisation stores (k columns of U, k singular
+    values, k rows of V_T) against rows * columns for the dense matrix."""
     dense = rows * columns
     factored = k * (rows + columns + 1)
     return factored, dense, factored / dense
 
 
 def reconstruction_table(array, ranks):
-    """Step 5-6. Rebuild the image at several ranks and report error and cost."""
+    """Part 4. Rebuild the image at several ranks and report error and storage."""
     rows, columns = array.shape
     left, values, right_t = svd(array, full_matrices=False)
     frobenius = np.linalg.norm(array)
@@ -188,7 +166,7 @@ def reconstruction_table(array, ranks):
         factored, dense, ratio = storage_numbers(rows, columns, k)
         print(f"{k:>5} {error:>10.2%} {factored:>10d} {dense:>10d} {ratio:>8.2%}")
 
-    print("\nSame accounting on a 1000x1000 matrix, where the ratio is easy to misstate:")
+    print("\nSame accounting on a 1000x1000 matrix:")
     for k in (3, 10, 50):
         factored, dense, ratio = storage_numbers(1000, 1000, k)
         print(f"  k={k:<3d} {factored:>8d} / {dense:<8d} = {ratio:.2%}")
@@ -196,13 +174,8 @@ def reconstruction_table(array, ranks):
 
 
 def spectrum(values, targets):
-    """Step 7. Report how many terms each share of the total energy needs.
-
-    Energy is the squared singular value, because the squares add up to the
-    squared Frobenius norm of the matrix. The rank needed for 90 percent is
-    usually a small fraction of the full rank, and that gap is exactly what
-    makes truncation worth doing.
-    """
+    """Part 5. Report how many terms each share of the energy needs. Energy is the
+    squared singular value, because the squares add up to the squared Frobenius norm."""
     energy = values**2
     cumulative = np.cumsum(energy) / energy.sum()
     print(f"\nFirst ten singular values: {np.round(values[:10], 2)}")
@@ -212,10 +185,9 @@ def spectrum(values, targets):
         print(f"  {target:.0%} of the energy needs k = {needed} of {len(values)} terms.")
 
     # Energy share flatters the truncation, because energy is the square of the
-    # error. Relative error equals sqrt(1 - cumulative energy), so a rank that
-    # captures 90 percent of the energy still rebuilds the matrix with about a
-    # third of its magnitude wrong, and the rebuilt image at that rank has lost
-    # every hard edge. Pick k by reconstruction error, not by energy percentage.
+    # error: relative error = sqrt(1 - cumulative energy). So k = 2 holds over 90
+    # percent of the energy but leaves 27 percent of the matrix wrong: the stripes
+    # are sharp, the ring is still a block. Pick k by error, not by energy share.
     print("\nEnergy share against relative error (error = sqrt(1 - energy)):")
     for k in (1, 2, 3, 8):
         if k <= len(values):
@@ -225,21 +197,11 @@ def spectrum(values, targets):
     decade = min(len(values), 200)
     decay = values[0] / values[decade - 1]
     print(f"\nSingular value 1 is {decay:.1f}x larger than singular value {decade}.")
-    print("A spectrum that drops this fast is what makes a low-rank stand-in usable;")
-    print("step 8 puts that drop next to a floor and a ceiling, because on its own")
-    print("the number says nothing about how much of it was drawn in on purpose.")
 
 
 def baselines(image_values, size):
-    """Step 8. Place the image spectrum between a full-rank floor and a rank-2 ceiling.
-
-    "The spectrum drops fast" says nothing until something that does not drop is
-    measured beside it. Gaussian noise is full rank by construction, so it is the
-    floor. The gradient background drawn in step 4 is an outer sum, so it is
-    exactly rank 2 and is the ceiling - and it is also the largest thing inside
-    the test image, which is why the image's own numbers are flattered and have
-    to be read as a position between the two rather than as typical of a photograph.
-    """
+    """Part 6. Place the image spectrum between a full-rank floor and a rank-2 ceiling.
+    The noise is full rank by construction, and part 3's gradient background is exactly rank 2."""
     rng = np.random.default_rng(11)
     noise_values = svd(rng.normal(0.0, 1.0, (size, size)), compute_uv=False)
 
@@ -263,20 +225,15 @@ def baselines(image_values, size):
         ratio = f"{values[0] / tail:.1f}" if tail > floor else "exhausted"
         print(f"{label:<24} {rank:>6d} {ratio:>11} {share:>11.2%}"
               f" {np.sqrt(max(0.0, 1 - share)):>10.2%}")
-    print("\nThe image sits between the two, and closer to the ceiling than a photograph")
-    print("would, because the rank-2 background is the largest thing drawn into it.")
+
+    background_share = (background_values**2).sum() / (image_values**2).sum()
+    print(f"\nThe gradient background alone holds {background_share:.0%} of the image's energy,")
+    print("so the image sits close to the ceiling.")
 
 
 def weight_update_spectrum(size, rank):
-    """Step 9. Read a stand-in fine-tuning update with the same accounting.
-
-    An image is low rank because neighbouring pixels resemble each other. A
-    weight update would have to be low rank for entirely different reasons, so
-    nothing measured above carries over to it on its own. This builds a matrix
-    that has the property an adapter assumes - a rank-r product plus full-rank
-    noise - and reads it the same way, which makes the assumed shape visible.
-    It is a picture of the assumption, not evidence that real updates hold it.
-    """
+    """Part 7. Read a stand-in update, a rank-r product plus full-rank noise, the same way.
+    Nothing measured on the image carries over: this matrix was built to have the low-rank shape."""
     rng = np.random.default_rng(23)
     product = rng.normal(0.0, 1.0, (size, rank)) @ rng.normal(0.0, 1.0, (rank, size))
     product = product / np.sqrt(rank)
@@ -292,8 +249,8 @@ def weight_update_spectrum(size, rank):
               f" {np.sqrt(max(0.0, 1 - share)):.2%}")
     factored, dense, ratio = storage_numbers(size, size, rank)
     print(f"  stored at rank {rank}: {factored} / {dense} = {ratio:.2%} of the dense update")
-    print(f"  the cliff after term {rank} is what an adapter bets on. This matrix was")
-    print("  built with that cliff, so it shows the bet - it does not settle it.")
+    print(f"  The drop after term {rank} is the shape LoRA assumes. This matrix was built")
+    print("  with it, so it shows the assumption and does not test it.")
 
 
 def save_reconstructions(array, left, values, right_t, ranks, directory):
@@ -313,30 +270,27 @@ def save_reconstructions(array, left, values, right_t, ranks, directory):
 
 
 def main():
-    print("--- 1. Decompose a 3x2 matrix ---")
+    print("--- 1. A 3x2 matrix, decomposed ---")
     matrix, left, values, right_t = hand_decomposition()
 
-    print("\n--- 2. Singular values against eigenvalues: shown above ---")
-
-    print("\n--- 3. Singular vector signs flip in pairs ---")
+    print("\n--- 2. Signs flip in pairs ---")
     sign_pairing(matrix, left, values, right_t)
 
-    print("\n--- 4. Render a test image locally ---")
+    print("\n--- 3. A test image ---")
     array = render_test_image(IMAGE_SIZE)
 
-    print("\n--- 5-6. Rebuild from the top k terms and count the cost ---")
+    print("\n--- 4. Rebuilds at k = 1 to 200 ---")
     image_left, image_values, image_right_t = reconstruction_table(array, RANKS)
+    save_reconstructions(array, image_left, image_values, image_right_t, RANKS, OUTPUT_DIR)
 
-    print("\n--- 7. Read the singular value spectrum ---")
+    print("\n--- 5. The spectrum of the image ---")
     spectrum(image_values, ENERGY_TARGETS)
 
-    print("\n--- 8. The same spectrum against a floor and a ceiling ---")
+    print("\n--- 6. A floor and a ceiling ---")
     baselines(image_values, IMAGE_SIZE)
 
-    print("\n--- 9. A stand-in weight update, read the same way ---")
+    print("\n--- 7. A stand-in weight update ---")
     weight_update_spectrum(ADAPTER_SIZE, ADAPTER_RANK)
-
-    save_reconstructions(array, image_left, image_values, image_right_t, RANKS, OUTPUT_DIR)
 
 
 if __name__ == "__main__":
