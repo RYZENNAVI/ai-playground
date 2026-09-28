@@ -453,18 +453,17 @@ is not a control.**
 ---
 ## 6. The ReAct loop, written by hand
 
-`03_react_loop_from_scratch.py` uses no agent framework at all. Only a chat completion call, a
-regex, and a `while` loop. It exists to show that the four things a framework does for you are
-each one line of text handling.
+`03_react_loop_from_scratch.py` runs a ReAct loop with no agent framework: a chat completion
+call, a regex and a `for` loop. The numbers below come from DeepSeek runs on 2026-09-28.
 
-### 6.1 The four things
+### 6.1 The four jobs a framework hides
 
-1. **Render the tool names and descriptions into the prompt as plain text.**
-2. **Stop generation at `Observation:`** so the model cannot invent tool output.
-3. **Parse the reply** into either an action to run or a finished answer.
-4. **Append the real tool result** and call the model again with the longer transcript.
+- Render the tool names and descriptions into the prompt as plain text.
+- Stop generation at `Observation:`, so the model cannot invent the tool's result.
+- Parse each reply into an action to run or a final answer.
+- Send the real tool result back and call the model again.
 
-### 6.2 The prompt is the whole mechanism
+### 6.2 The prompt carries the tools
 
 ```
 You answer questions about a fund compliance rule book.
@@ -499,11 +498,10 @@ TOOLS = {
 }
 ```
 
-The knowledge base is four rules (`R-001` to `R-004`) in two categories, `eligibility` and
-`supervision`. Two categories are enough to force a real choice: one tool searches text, another
-lists a whole category, a third reads one rule by id, and the model has to decide which fits.
+The rule book is four rules (`R-001` to `R-004`) in two categories, `eligibility` and
+`supervision`. One tool searches text, one lists a category, and one reads a rule by id.
 
-### 6.3 The stop sequence is what makes it a loop
+### 6.3 The stop sequence makes it a loop
 
 ```python
 response = client.chat.completions.create(
@@ -514,93 +512,81 @@ response = client.chat.completions.create(
 )
 ```
 
-Without it the model happily continues past its own `Action` and writes an `Observation` too,
-hallucinating the tool result, and no real code ever runs. The stop sequence turns one long
-piece of generated text into a loop the program controls.
+Two calls without the stop both went past the first `Action` and wrote the `Observation`
+themselves: `No rules found matching those keywords.` The real search finds R-002, so the
+invented result was also wrong. With the stop, the program runs the tool and supplies the
+result.
 
-### 6.4 The transcript is turns, not one growing block
+### 6.4 The transcript as turns
 
-The model's `Thought`/`Action` goes back as an assistant message and the tool result follows as
-a user message. This is not cosmetic. Handed a half-finished block of text, the model treats it
-as a document to continue, restarts it, re-types the original question and its own first
-`Thought`, and that stale `Thought` then sits after the newest `Observation` where the model
-reads it as the latest line and reissues the action it already ran. Splitting the same content
-into turns removes the ambiguity about which line is newest.
+Each reply goes back as an assistant message and each tool result as the following user
+message. Four test runs that instead appended everything to one growing user message also
+worked, so the turns are a choice here, not a fix for an observed failure.
 
-### 6.5 Three fallbacks sit in front of the regex
-
-Each one exists because a model really does reply that way:
+### 6.5 Parsing the reply
 
 | Reply shape | Handling |
 | :--- | :--- |
-| Contains `Final Answer:` | Normal completion |
-| Says the rule book does not cover it, with no `Action:` | Treated as final; the model dropped the format mid-way |
-| Long prose with neither `Action:` nor `Final Answer:` | Treated as final; prose is not a malformed step |
-| Matches `Action:` / `Action Input:` | Run the tool, take **only the first line** of the input |
-| None of the above | The only genuine parse failure |
+| Contains `Final Answer:` | The loop ends with that text |
+| Matches `Action:` / `Action Input:` | Run the tool, taking only the first line of the input |
+| Anything else | Returned as `[unparsable reply]` |
 
-The "first line only" detail matters because the input regex is greedy across newlines: if the
-model keeps writing after the input line and before the stop sequence cuts it off, that trailing
-text would otherwise ride along as part of the tool input.
+An earlier version also treated replies containing phrases such as "the rule book does not"
+and any prose over 80 characters as final answers. Neither case came up in 11 test loops,
+and both would have hidden a format break, so they were removed.
 
-**The format is requested by a prompt, not guaranteed by a protocol.** The parser has to be
-ready to catch replies that went off-format but are still useful.
+### 6.6 What the loop does
 
-### 6.6 What the loop does, measured
-
-**A question that needs one lookup:**
+A question that needs one lookup:
 
 ```
 question: What is the minimum a securities fund must raise before it closes?
-  step 1: search_rules('minimum raise securities fund') -> [R-001] Who qualifies as an eligible investor?...
+  step 1: search_rules('minimum raise closing') -> [R-002] What is the minimum size a fund must raise? ...
   transcript: 3 messages
   passes: 2, tool calls: 1
-answer: A securities fund may not close below 10,000,000 in committed capital. Venture and
-        growth funds are not subject to this fixed floor and are instead governed by the
-        fund agreement.
+answer: A securities fund may not close below 10,000,000 in committed capital.
 ```
 
 Two model passes for one tool call: one to choose the action, one to turn the observation into
-an answer. That ratio is the loop's fixed overhead.
+an answer. When a result holds several rules, the step line lists their ids instead of the
+first line, for example `3 rules: R-001, R-002, R-003` for `minimum raise securities fund`.
+Showing only the first line had made one run look as if it found R-001 while the answer came
+from R-002.
 
-**A question the rule book does not cover:**
+A question the rule book does not cover:
 
 ```
 question: What tax rate applies to carried interest for this fund?
   step 1: search_rules('carried interest tax') -> No rule matches 'carried interest tax'.
-  step 2: search_rules('tax rate')             -> No rule matches 'tax rate'.
-  step 3: list_category('eligibility')         -> [R-001] Who qualifies as an eligible investor?
-  step 4: list_category('supervision')         -> [R-003] What risk reserve must a manager hold?
-  step 5: search_rules('carried interest')     -> No rule matches 'carried interest'.
+  step 2: search_rules('carried interest')     -> No rule matches 'carried interest'.
+  step 3: search_rules('tax rate')             -> No rule matches 'tax rate'.
+  step 4: list_category('eligibility')         -> 2 rules: R-001, R-002
+  step 5: list_category('supervision')         -> 2 rules: R-003, R-004
   passes: 6, tool calls: 5
-answer: The rule book does not cover tax rates on carried interest. It only contains rules
-        about investor eligibility (R-001, R-002) and supervision (R-003, R-004), with no
-        tax-related provisions.
+answer: The rule book does not cover this question. ...
 ```
 
-Five tool calls to establish an absence, versus one to establish a fact. Note what made the
-correct refusal possible: the tools return **plain-language misses** (`No rule matches ...`)
-rather than empty strings or exceptions, so the model can read the miss, try a different tool,
-and eventually enumerate what the rule book *does* contain before answering.
+Every run took these five calls and ended with a normal `Final Answer`. The tools return
+plain-language misses (`No rule matches ...`), so the model can read a miss, try another tool,
+and list what the rule book does contain before it answers.
 
-### 6.7 Delete the tool list and watch it degrade
+### 6.7 Remove the tool list
 
-Step 5 swaps in the same prompt with the tool block removed and `Action: one of [...]` replaced
-by `Action: the tool to use`. The functions are still registered. Nothing else changes:
+Part 3 swaps in the same prompt with the tool block removed and `Action: one of [...]` replaced
+by `Action: the tool to use`. The functions are still registered:
 
 ```
-  step 1: Search rule book for "minimum raise" or "securities fund closing"(...) -> No tool named ...
-  step 2: Search rule book('minimum raise securities fund closing')              -> No tool named 'Search rule book'.
-  passes: 3, tool calls: 2
-answer: The rule book does not cover this question, or I do not have access to the rule book
-        content to provide an answer. I cannot invent a minimum raise requirement.
+  step 1: search_rule_book('minimum raise before closing securities fund') -> No tool named 'search_rule_book'.
+  step 2: search('minimum raise before closing securities fund')           -> No tool named 'search'.
+  step 3: lookup('minimum raise before closing securities fund')           -> No tool named 'lookup'.
+  passes: 4, tool calls: 3
+answer: I cannot answer this question because I do not have access to the fund compliance
+        rule book (no working search or lookup tool is available). ...
 ```
 
-**The model invented tool names in English prose and called them.** The registry was complete
-and the code looked finished; the only missing piece was the text. A model knows a tool exists
-if and only if its name and description appear in what it was given.
-
----
+The model guessed names such as `search_rule_book`, `lookup_rule` and `search`, and after two
+or three misses answered that it had no working tool. It never ran out of steps. A model only
+knows a tool exists if its name appears in what it was given.
 
 ## 7. Handing the same loop to a framework
 
@@ -1583,8 +1569,8 @@ Two details make the cap usable rather than merely present:
 
 ### 15.4 Failure mode three: structured output that is not
 
-Every step that parses model output is a place a run can end. `03` handles this at the prompt
-level with three fallbacks in front of its regex; anything asking for JSON needs the equivalent:
+Every step that parses model output is a place a run can end. `03` returns anything its regex
+cannot read as `[unparsable reply]`; anything asking for JSON needs the equivalent:
 validate at the boundary, keep the raw text for diagnosis, and decide in advance whether a
 parse failure means retry, default, or stop.
 
@@ -1758,7 +1744,7 @@ Every row below came out of an actual run of the script named in it.
 | 02 | Retry by hand vs. `.with_retry()` | 3 attempts either way; `.with_retry()` also waits between them, 3.6 to 4.4s |
 | 03 | One-lookup question | 2 model passes, 1 tool call |
 | 03 | Question outside the rule book | 6 passes, 5 tool calls, then a correct refusal |
-| 03 | **Same tools, tool list removed from the prompt** | model invented `Search rule book` and called it; 0 real tools reached |
+| 03 | Same tools, tool list removed from the prompt | model guessed `search_rule_book`, `lookup_rule`, `search`; 0 real tools reached, then said it had no working tool |
 | 04 | Live incident, clear tool descriptions | **6 tool calls, correct root cause** (`billing.internal` unreachable) |
 | 04 | **Same tools, vague descriptions** | **14 tool calls, wrong root cause** (`eth1 is down`) |
 | 04 | Unanswerable question, `recursion_limit=4` | 6 calls, no answer, stopped by the cap |
