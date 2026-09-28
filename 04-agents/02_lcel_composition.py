@@ -17,9 +17,10 @@ The run prints six parts:
     4. Parallel branches. Five prompts about the review, run at once with
        RunnableParallel and then one after another, timed.
     5. Conditional routing. RunnableBranch sends three inputs to different
-       steps by their shape, and its output is piped into a model that
-       explains the verdict. Then which uses of | accept a plain function and
-       which raise TypeError.
+       steps by their shape: CSV is converted to JSON, a multi-line note has
+       its lines counted, and short text is left as is. No model is called.
+       Then which uses of | accept a plain function and which raise
+       TypeError.
     6. Streaming the composed chain. Time to the first streamed chunk against
        a blocking call on the same prompt.
 """
@@ -206,33 +207,30 @@ def run_parallel_branches(model: ChatOpenAI) -> None:
 def route_by_shape(payload: dict) -> str:
     """The router's logic as a plain function. It is never called; it only shows when | accepts one."""
     content = payload["content"]
-    if content.count("\n") >= 2:
-        return LOCAL_STEPS["process"].invoke({"content": content})
     if "," in content:
-        return "looks like tabular data, use the converter"
+        return convert_data({"data": content})
+    if content.count("\n") >= 2:
+        return process_text({"content": content})
     return f"short text, {len(content)} characters, left as is"
 
 
-def run_branching(model: ChatOpenAI) -> None:
-    """Step 5. Route by the input's shape with RunnableBranch, and pipe its output into a model. A plain
+def run_branching() -> None:
+    """Step 5. Route each input by its shape with RunnableBranch, and run the matching step. A plain
     function also pipes when the other side is a runnable; two plain functions raise TypeError."""
     print("\n--- 5. Conditional routing ---")
     router = RunnableBranch(
+        (lambda payload: "," in payload["content"], RunnableLambda(lambda payload: convert_data({"data": payload["content"]}))),
         (lambda payload: payload["content"].count("\n") >= 2, LOCAL_STEPS["process"]),
-        (lambda payload: "," in payload["content"], RunnableLambda(lambda payload: "looks like tabular data, use the converter")),
         RunnableLambda(lambda payload: f"short text, {len(payload['content'])} characters, left as is"),
     )
-    for content in [MULTILINE_TEXT, "name,age", "hello"]:
-        verdict = router.invoke({"content": content})
-        print(f"  {content.splitlines()[0][:28]:30} -> {verdict}")
+    for content in [CSV_SAMPLE, MULTILINE_TEXT, "hello"]:
+        result = " ".join(router.invoke({"content": content}).split())
+        if len(result) > 70:
+            result = result[:70] + "..."
+        print(f"  {content.splitlines()[0][:28]:30} -> {result}")
 
-    print("\n  piping the router into a further step:")
-    explain = ChatPromptTemplate.from_template("In one short sentence, explain why this routing verdict makes sense for the input {content!r}:\n{verdict}") | model | StrOutputParser()
-    full_chain = router | RunnableLambda(lambda verdict: {"content": MULTILINE_TEXT, "verdict": verdict}) | explain
-    print(f"    {full_chain.invoke({'content': MULTILINE_TEXT})}")
-
-    print("  a plain function piped into that same Runnable still works (LangChain coerces it):")
-    coerced = route_by_shape | explain
+    print("\n  a plain function piped into the router still works (LangChain coerces it):")
+    coerced = route_by_shape | router
     print(f"    {type(coerced).__name__}, no TypeError")
 
     print("  but two plain functions piped together have no Runnable to coerce through:")
@@ -267,9 +265,10 @@ def run_streaming(model: ChatOpenAI) -> None:
 
 def main() -> None:
     if not API_KEY:
-        print("No DEEPSEEK_API_KEY or OPENAI_API_KEY in .env. Only steps 2 and 3 run.")
+        print("No DEEPSEEK_API_KEY or OPENAI_API_KEY in .env. Only steps 2, 3 and 5 run.")
         run_retry()
         run_local_steps()
+        run_branching()
         return
 
     model = build_model()
@@ -277,7 +276,7 @@ def main() -> None:
     run_retry()
     run_local_steps()
     run_parallel_branches(model)
-    run_branching(model)
+    run_branching()
     run_streaming(build_model(streaming=True))
 
 

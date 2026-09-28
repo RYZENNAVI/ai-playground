@@ -309,26 +309,27 @@ own thread, and the branches do not depend on each other.
 
 ```python
 router = RunnableBranch(
-    (lambda payload: payload["content"].count("
-") >= 2, LOCAL_STEPS["process"]),
-    (lambda payload: "," in payload["content"], RunnableLambda(...)),
+    (lambda payload: "," in payload["content"], RunnableLambda(...)),   # convert CSV to JSON
+    (lambda payload: payload["content"].count("\n") >= 2, LOCAL_STEPS["process"]),
     RunnableLambda(...),   # default
 )
 ```
 
-`RunnableBranch` takes the first branch whose condition holds:
+`RunnableBranch` takes the first branch whose condition holds, and that branch does the work.
+The CSV is converted, the note has its lines counted, and short text is left alone. No model
+is called:
 
 ```
+name,age,comment               -> [ { "name": "Alice", "age": "25", "comment": "Works exactly as describ...
 First line of the note         -> 3 lines
-name,age                       -> looks like tabular data, use the converter
 hello                          -> short text, 5 characters, left as is
 ```
 
-The router is a runnable, so its output pipes into a model that explains the verdict. The
+The CSV check comes first because the CSV sample also has more than two line breaks. The
 script then shows when `|` accepts a plain function:
 
 ```
-a plain function piped into that same Runnable still works (LangChain coerces it):
+a plain function piped into the router still works (LangChain coerces it):
   RunnableSequence, no TypeError
 but two plain functions piped together have no Runnable to coerce through:
   TypeError: unsupported operand type(s) for |: 'function' and 'function'
@@ -1831,7 +1832,7 @@ it checks first and prints what it is skipping instead of failing with a stack t
 | Script | Without a key |
 | :--- | :--- |
 | `01` | Steps 1 and 2 still run (template rendering is local) |
-| `02` | Steps 2 and 3 still run (retry and the local functions need no model) |
+| `02` | Steps 2, 3 and 5 still run (retry, the local functions and routing need no model) |
 | `03` | Prints the rendered tool listing, then stops |
 | `04` | Prints the tool schemas, then stops |
 | `05` | Prints the published tools, then stops |
