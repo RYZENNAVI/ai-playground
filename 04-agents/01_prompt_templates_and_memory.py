@@ -1,14 +1,27 @@
-"""Render prompts from templates and carry a conversation across turns.
+"""Build prompts with LangChain prompt templates, and give a chat model memory
+with a LangGraph checkpointer.
 
-Demonstrates the two pieces every chat application assembles by hand:
-    1. Fill a single-variable template and read the exact string it produced.
-    2. Split the same instruction into a system role and a human role.
-    3. Pipe a template into a model and a parser to get plain text back.
-    4. Replay stored messages so the model can resolve "it" and "that one".
-    5. Print the stored history to see what the later turns actually sent.
-    6. Drop the history and ask the same follow-up, to show what memory buys.
+A prompt template is text with named slots that LangChain fills in. A chat
+template also splits the text into a system message and a human message. The
+model remembers nothing between requests. The checkpointer stores each
+thread's messages, and the graph sends all of them again with the next
+question.
 
-Module 04: Agents - Prompt Templates and Conversation Memory.
+The run prints six parts:
+    1. Single-variable template. One template filled with two products, and
+       the variable names it read from its text.
+    2. System and human roles. A translation instruction as the system
+       message and the text to translate as the human message. Nothing is
+       sent to the model yet.
+    3. Template to model to parser. The same translation template piped into
+       the model and StrOutputParser. Run again without the parser, the chain
+       returns an AIMessage instead of a string.
+    4. Multi-turn conversation. A second question, "What should I call it?",
+       that only makes sense after the first.
+    5. What the checkpointer holds. The four messages stored for the thread
+       in part 4. The system message is not stored; the graph adds it on
+       every call.
+    6. The same follow-up without history. The second question sent alone.
 """
 
 import os
@@ -27,54 +40,44 @@ from langgraph.graph import START, MessagesState, StateGraph
 sys.stdout.reconfigure(encoding="utf-8")
 load_dotenv(Path(__file__).parents[1] / ".env")
 
-MODEL = "deepseek-chat"
-BASE_URL = "https://api.deepseek.com"
+# DeepSeek when its key is set, otherwise OpenAI. OPENAI_BASE_URL and
+# OPENAI_MODEL point the OpenAI key at another compatible vendor.
+if os.getenv("DEEPSEEK_API_KEY"):
+    API_KEY = os.getenv("DEEPSEEK_API_KEY")
+    BASE_URL = "https://api.deepseek.com"
+    MODEL = "deepseek-chat"
+else:
+    API_KEY = os.getenv("OPENAI_API_KEY")
+    BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 
 def build_model() -> ChatOpenAI:
-    """Return a chat model that speaks the OpenAI wire format.
-
-    Every provider in this repository is reached the same way: the OpenAI
-    request shape plus a base_url. Swapping providers is a two-line change and
-    never touches the prompts or the chain built on top.
-    """
+    """Return the chosen chat model through LangChain's OpenAI client."""
     return ChatOpenAI(
         model=MODEL,
         base_url=BASE_URL,
-        api_key=os.environ["DEEPSEEK_API_KEY"],
+        api_key=API_KEY,
         temperature=0,
     )
 
 
 def render_single_variable_template() -> None:
-    """Step 1. Fill one slot in a template and show the resulting string.
-
-    A template is string formatting with a declared list of inputs. The value of
-    declaring them is that a missing variable fails here, while the prompt is
-    still a local object, instead of arriving at the model as the literal text
-    "{product}" and coming back as a confidently wrong answer.
-    """
+    """Step 1. Fill one template with two products and print the variables it read from its text."""
     print("--- 1. Single-variable template ---")
-    template = PromptTemplate(
-        input_variables=["product"],
-        template="What is a good name for a company that makes {product}?",
+    template = PromptTemplate.from_template(
+        "What is a good name for a company that makes {product}?"
     )
     for product in ["colorful socks", "noise-cancelling headphones"]:
         print(f"  input:  {product}")
         print(f"  render: {template.format(product=product)}")
 
-    missing = template.input_variables
-    print(f"  declared variables: {missing}")
+    variables = template.input_variables
+    print(f"  variables read from the text: {variables}")
 
 
 def render_role_split_template() -> None:
-    """Step 2. Put the standing instruction and the payload in separate roles.
-
-    The single-variable template above mixes the instruction and the user's text
-    into one blob. Splitting them means the instruction stays fixed while only
-    the human message changes, and the model treats the two differently: the
-    system message describes the job, the human message is the thing to act on.
-    """
+    """Step 2. Render the instruction as a system message and the text as a human message."""
     print("\n--- 2. System and human roles ---")
     chat_template = ChatPromptTemplate.from_messages(
         [
@@ -92,14 +95,8 @@ def render_role_split_template() -> None:
 
 
 def run_template_model_parser_chain(model: ChatOpenAI) -> None:
-    """Step 3. Compose template, model, and parser into one callable.
-
-    The pipe operator wires three objects into a single runnable: the template
-    turns a dict into messages, the model turns messages into a response object,
-    and the parser pulls the text out of that object. Without the parser the
-    result is a message wrapper, not a string, which is the usual surprise when
-    the output is passed straight into the next step.
-    """
+    """Step 3. Pipe template, model and parser into one chain, then run it again
+    without the parser, which returns an AIMessage."""
     print("\n--- 3. Template to model to parser ---")
     chain = (
         ChatPromptTemplate.from_messages(
@@ -124,14 +121,8 @@ def run_template_model_parser_chain(model: ChatOpenAI) -> None:
 
 
 def build_conversation(model: ChatOpenAI):
-    """Wrap a chain in a graph that stores its own messages between calls.
-
-    The model is stateless: each request is judged only on the messages it
-    carries. Memory is therefore not a model feature but a caller habit - keep
-    the transcript, and prepend it next time. Here a checkpointer does the
-    keeping, MessagesPlaceholder marks the slot the transcript is poured into,
-    and a thread id decides which transcript this call belongs to.
-    """
+    """Wrap the chain in a graph whose checkpointer stores each thread's messages.
+    The model keeps nothing between requests, so the graph resends them every turn."""
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", "You are a concise assistant. Answer in one short sentence."),
@@ -150,12 +141,7 @@ def build_conversation(model: ChatOpenAI):
 
 
 def run_conversation(model: ChatOpenAI) -> None:
-    """Steps 4 and 5. Ask a follow-up that only works if the past is replayed.
-
-    The second question says "it" and never names the subject. A sensible answer
-    proves the first exchange was resent, because nothing else in the request
-    identifies what "it" refers to.
-    """
+    """Steps 4 and 5. Ask a follow-up that names nothing, then print what the checkpointer stored."""
     print("\n--- 4. Multi-turn conversation ---")
     conversation = build_conversation(model)
     config = {"configurable": {"thread_id": "demo"}}
@@ -180,12 +166,7 @@ def run_conversation(model: ChatOpenAI) -> None:
 
 
 def run_without_memory(model: ChatOpenAI) -> None:
-    """Step 6. Send the follow-up alone, with no transcript in front of it.
-
-    Same model, same question, one difference: the first turn is gone. The
-    answer stops being about a photo-renaming tool, which is the clearest
-    evidence that memory lives in the request payload and nowhere else.
-    """
+    """Step 6. Send the follow-up alone, with no stored messages in front of it."""
     print("\n--- 6. The same follow-up without history ---")
     chain = (
         ChatPromptTemplate.from_messages(
@@ -206,8 +187,8 @@ def main() -> None:
     render_single_variable_template()
     render_role_split_template()
 
-    if not os.environ.get("DEEPSEEK_API_KEY"):
-        print("\nDEEPSEEK_API_KEY is not set; steps 3 to 6 need it. Stopping here.")
+    if not API_KEY:
+        print("\nNo DEEPSEEK_API_KEY or OPENAI_API_KEY in .env. Steps 3 to 6 need one, so the run stops here.")
         return
 
     model = build_model()

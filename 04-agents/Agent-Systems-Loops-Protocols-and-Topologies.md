@@ -141,20 +141,21 @@ bill.
 
 `01_prompt_templates_and_memory.py`
 
-### 3.1 A template is string formatting with a declared input list
+### 3.1 A template is text with named slots
 
 ```python
-template = PromptTemplate(
-    input_variables=["product"],
-    template="What is a good name for a company that makes {product}?",
+template = PromptTemplate.from_template(
+    "What is a good name for a company that makes {product}?"
 )
 template.format(product="colorful socks")
 # What is a good name for a company that makes colorful socks?
+template.input_variables
+# ['product']
 ```
 
-The value of declaring `input_variables` is not the formatting. It is that a missing variable
-fails while the prompt is still a local object, rather than arriving at the model as the literal
-text `{product}` and coming back as a confidently wrong answer.
+LangChain reads the variable names from the text. Passing `input_variables` by hand changes
+nothing: declared as `[]`, the template still reports `['product']`. A missing value raises
+`KeyError: 'product'`, the same as Python's own `str.format`.
 
 ### 3.2 Splitting the instruction from the payload
 
@@ -172,9 +173,8 @@ renders to two messages, not one string:
 [human] I love programming.
 ```
 
-Chat models take a list of messages. Flattening an instruction and a payload into one block
-makes the model work out which half is the instruction; keeping them in separate roles means
-the standing instruction stays fixed while only the human message changes.
+Chat models take a list of messages. With the instruction in the system message, it stays
+fixed while only the human message changes. This step renders the messages and sends nothing.
 
 ### 3.3 The parser is not optional decoration
 
@@ -182,16 +182,14 @@ the standing instruction stays fixed while only the human message changes.
 chain = ChatPromptTemplate.from_messages([...]) | model | StrOutputParser()
 ```
 
-Measured, on the same input:
+The script runs the chain, then runs template and model again without the parser:
 
 ```
 with parser:    "J'adore la programmation."
 without parser: AIMessage carrying "J'adore la programmation."
 ```
 
-Drop the parser and the next step in the chain receives a message wrapper where it expected a
-string. This is the most common surprise when composing chains, and it is invisible until
-something downstream tries to use the value.
+Without the parser the result is an `AIMessage`, not a string.
 
 ### 3.4 Memory is a caller habit, not a model feature
 
@@ -215,18 +213,20 @@ The test is a follow-up that names nothing:
 
 ```
 user: I am building a small tool that renames photo files by date.
-bot:  Use EXIF metadata to extract the capture date and format it into the
-      filename (e.g., YYYY-MM-DD_HHMMSS.jpg).
+bot:  Use a script that reads each file's EXIF or filesystem date and renames it
+      to a format like `YYYY-MM-DD_HHMMSS.jpg`.
 user: What should I call it?
-bot:  Call it "PhotoDateRename" or "DateRenamer".
+bot:  Call it **PhotoDater**.
 ```
 
-The checkpointer then holds four messages, in order: human, ai, human, ai. Send the same
-follow-up with no transcript in front of it and the same model answers:
+In six runs on 2026-09-28 the second answer always named the photo tool, most often
+PhotoDater. The checkpointer then holds four messages, in order: human, ai, human, ai. The
+system message is not stored; the graph adds it on every call. Send the same follow-up with no
+transcript in front of it and the same model asks what "it" is:
 
 ```
 user: What should I call it?
-bot:  Call it whatever feels right to you.
+bot:  Could you clarify what "it" refers to?
 ```
 
 **Same model, same question, one difference: the first turn is gone.** Memory lives in the
@@ -1752,7 +1752,7 @@ Every row below came out of an actual run of the script named in it.
 
 | # | What was measured | Result |
 | :--- | :--- | :--- |
-| 01 | Follow-up question with the transcript replayed vs. without | `"Call it PhotoDateRename or DateRenamer"` vs. `"Call it whatever feels right to you"` |
+| 01 | Follow-up question with the transcript replayed vs. without | `Call it PhotoDater.` vs. `Could you clarify what "it" refers to?` |
 | 01 | What the checkpointer holds after two turns | 4 messages: human, ai, human, ai |
 | 02 | Five independent branches, parallel vs. serial | **1.39s vs 4.29s** (3.1x) |
 | 02 | Streaming vs. blocking, same chain | first chunk at **0.29s**, 103 chunks / nothing until **2.04s** |
