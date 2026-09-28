@@ -1,15 +1,27 @@
-"""Compose runnables with the pipe operator instead of writing glue code.
+"""Compose LangChain runnables with LCEL, the LangChain Expression Language.
 
-Demonstrates what the pipe operator actually buys you:
-    1. Chain three model calls so each one consumes the previous answer, then
-       retry a flaky step by hand and again with `.with_retry()`.
-    2. Wrap plain Python functions as chain steps and dispatch to them by name.
-    3. Run five independent branches over one input and time them against serial.
-    4. Route an input to a different chain depending on a condition, then pipe
-       the router's own output into a further step.
-    5. Stream the final chain and compare it against a blocking call.
+In LCEL every step is a runnable: a template, a model, a parser, or a plain
+function wrapped in RunnableLambda. The pipe operator | joins runnables into
+one, and the result has the same invoke, stream and batch methods as each
+step. RunnableParallel runs steps side by side, RunnableBranch picks one by a
+condition, and .with_retry() repeats a step that fails.
 
-Module 04: Agents - LCEL Composition.
+The run prints six parts:
+    1. Sequential chain. The review is translated into French, its main
+       complaint stated in French, and that translated back: three model
+       calls joined by |.
+    2. Retry. A step that fails twice, retried by a hand-written loop and by
+       .with_retry(), which also waits between attempts. No model is called.
+    3. Local functions as runnables. Three plain functions wrapped in
+       RunnableLambda and invoked like a model. No model is called.
+    4. Parallel branches. Five prompts about the review, run at once with
+       RunnableParallel and then one after another, timed.
+    5. Conditional routing. RunnableBranch sends three inputs to different
+       steps by their shape, and its output is piped into a model that
+       explains the verdict. Then which uses of | accept a plain function and
+       which raise TypeError.
+    6. Streaming the composed chain. Time to the first streamed chunk against
+       a blocking call on the same prompt.
 """
 
 import json
@@ -28,8 +40,16 @@ from langchain_openai import ChatOpenAI
 sys.stdout.reconfigure(encoding="utf-8")
 load_dotenv(Path(__file__).parents[1] / ".env")
 
-MODEL = "deepseek-chat"
-BASE_URL = "https://api.deepseek.com"
+# DeepSeek when its key is set, otherwise OpenAI. OPENAI_BASE_URL and
+# OPENAI_MODEL point the OpenAI key at another compatible vendor.
+if os.getenv("DEEPSEEK_API_KEY"):
+    API_KEY = os.getenv("DEEPSEEK_API_KEY")
+    BASE_URL = "https://api.deepseek.com"
+    MODEL = "deepseek-chat"
+else:
+    API_KEY = os.getenv("OPENAI_API_KEY")
+    BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 REVIEW = (
     "The battery lasts a full weekend and the case feels solid, but the app "
@@ -42,29 +62,25 @@ MULTILINE_TEXT = "First line of the note\nSecond line of the note\nThird line of
 
 
 def build_model(streaming: bool = False) -> ChatOpenAI:
-    """Return a chat model reached through the OpenAI request format."""
+    """Return the chosen chat model through LangChain's OpenAI client."""
     return ChatOpenAI(
         model=MODEL,
         base_url=BASE_URL,
-        api_key=os.environ["DEEPSEEK_API_KEY"],
+        api_key=API_KEY,
         temperature=0,
         streaming=streaming,
     )
 
 
-# 2. Plain Python functions, later lifted into the chain by RunnableLambda.
+# Plain functions used in parts 3 and 5. RunnableLambda turns each into a runnable.
 
 POSITIVE_WORDS = ("good", "great", "solid", "love", "excellent", "works")
 NEGATIVE_WORDS = ("bad", "slow", "drops", "never", "broken", "poor")
 
 
 def analyse_text(payload: dict) -> str:
-    """Count words and characters and take a crude sentiment reading.
-
-    The word lists are deliberately naive. Their job is to be a step in a chain
-    that costs nothing and always returns, so the composition being demonstrated
-    stays visible instead of hiding behind another model call.
-    """
+    """Count words and characters and take a crude sentiment reading from two word lists.
+    The lists are naive on purpose: the step costs nothing and never calls a model."""
     text = payload["text"].lower()
     positive = sum(word in text for word in POSITIVE_WORDS)
     negative = sum(word in text for word in NEGATIVE_WORDS)
@@ -82,32 +98,16 @@ def analyse_text(payload: dict) -> str:
 
 
 def convert_data(payload: dict) -> str:
-    """Convert between CSV and JSON in whichever direction is asked for."""
-    source, target = payload["source_format"], payload["target_format"]
-    if source == "csv" and target == "json":
-        lines = payload["data"].strip().split("\n")
-        headers = lines[0].split(",")
-        rows = [dict(zip(headers, line.split(","))) for line in lines[1:] if line.count(",") == len(headers) - 1]
-        return json.dumps(rows, indent=2)
-    if source == "json" and target == "csv":
-        rows = json.loads(payload["data"])
-        headers = sorted({key for row in rows for key in row})
-        body = "\n".join(",".join(str(row.get(header, "")) for header in headers) for row in rows)
-        return ",".join(headers) + "\n" + body
-    return f"unsupported conversion: {source} -> {target}"
+    """Convert CSV text into a JSON list with one object per row."""
+    lines = payload["data"].strip().split("\n")
+    headers = lines[0].split(",")
+    rows = [dict(zip(headers, line.split(","))) for line in lines[1:] if line.count(",") == len(headers) - 1]
+    return json.dumps(rows, indent=2)
 
 
 def process_text(payload: dict) -> str:
-    """Count lines, find a substring, or replace one, depending on `operation`."""
-    operation, content = payload["operation"], payload["content"]
-    if operation == "count_lines":
-        return f"{len(content.splitlines())} lines"
-    if operation == "find":
-        hits = [f"line {i}: {line}" for i, line in enumerate(content.splitlines(), 1) if payload["needle"] in line]
-        return "\n".join(hits) if hits else f"no line contains {payload['needle']!r}"
-    if operation == "replace":
-        return content.replace(payload["needle"], payload["replacement"])
-    return f"unsupported operation: {operation}"
+    """Count the lines in `content`."""
+    return f"{len(payload['content'].splitlines())} lines"
 
 
 LOCAL_STEPS = {
@@ -119,12 +119,7 @@ LOCAL_STEPS = {
 
 def make_flaky_step() -> RunnableLambda:
     """Return a step that fails on its first two calls, then succeeds.
-
-    The failure count lives in a closure instead of coming from a real network
-    call, so the retry demo below is deterministic and free. What it stands in
-    for is any step that can fail transiently - a rate limit, a dropped
-    connection - where the fix is "try again", not "handle the error".
-    """
+    It stands in for a rate limit or a dropped connection, without a network call."""
     calls = {"count": 0}
 
     def flaky(payload: dict) -> str:
@@ -137,20 +132,8 @@ def make_flaky_step() -> RunnableLambda:
 
 
 def run_sequential_chain(model: ChatOpenAI) -> None:
-    """Step 1. Feed each model call the previous call's output.
-
-    Three separate chains are joined by the pipe operator, so the composed
-    object takes one dict in and returns one string out. What makes it a chain
-    rather than three calls is the key handoff: stage one is wrapped in
-    {"french": ...} because stage two declares {french} as its variable, and the
-    same trick carries stage two into stage three. Mismatch those key names and
-    the chain fails at the boundary, not inside the model.
-
-    The retry comparison at the end is not about this translation chain - it
-    reuses the flaky step above to show what surviving a transient failure
-    costs in each style: a hand-written loop with its own attempt counter and
-    except clause, against one method call that does the same thing.
-    """
+    """Step 1. Join three model calls with |. Each dict such as {"french": ...}
+    renames the output to the next template's variable."""
     print("--- 1. Sequential chain ---")
     to_french = ChatPromptTemplate.from_template("Translate to French, output the translation only:\n{input}") | model | StrOutputParser()
     review_it = ChatPromptTemplate.from_template("In French, in two sentences, state the main complaint in this review:\n{french}") | model | StrOutputParser()
@@ -161,7 +144,11 @@ def run_sequential_chain(model: ChatOpenAI) -> None:
     print(f"  source:  {REVIEW}")
     print(f"  result:  {result}")
 
-    print("\n  retrying a flaky step by hand:")
+
+def run_retry() -> None:
+    """Step 2. Retry a step that fails twice, by hand and with .with_retry()."""
+    print("\n--- 2. Retry ---")
+    print("  retrying a flaky step by hand:")
     flaky = make_flaky_step()
     attempts, outcome = 0, None
     while attempts < 3 and outcome is None:
@@ -174,39 +161,30 @@ def run_sequential_chain(model: ChatOpenAI) -> None:
 
     print("  retrying the same step with .with_retry():")
     retrying_flaky = make_flaky_step().with_retry(stop_after_attempt=3)
+    started = time.perf_counter()
     outcome = retrying_flaky.invoke({"input": "step succeeded"})
-    print(f"    .with_retry(): {outcome!r}, no loop or except clause written")
+    waited = time.perf_counter() - started
+    print(f"    .with_retry(): {outcome!r} after {waited:.2f}s, no loop or except clause written")
 
 
 def run_local_steps() -> None:
-    """Step 2. Dispatch to a plain function through the same runnable interface.
-
-    Nothing here calls a model. The point is that RunnableLambda gives an
-    ordinary function the same invoke/stream/batch surface a model has, so local
-    work and model work can sit in one chain without adapters between them.
-    """
-    print("\n--- 2. Local functions as chain steps ---")
+    """Step 3. Invoke three plain functions through RunnableLambda, the same interface a model has."""
+    print("\n--- 3. Local functions as runnables ---")
     print(f"  analyse: {LOCAL_STEPS['analyse'].invoke({'text': REVIEW})}")
-    converted = LOCAL_STEPS["convert"].invoke({"data": CSV_SAMPLE, "source_format": "csv", "target_format": "json"})
-    print(f"  convert: {converted.splitlines()[0]} ... ({len(json.loads(converted))} rows)")
-    print(f"  process: {LOCAL_STEPS['process'].invoke({'operation': 'count_lines', 'content': MULTILINE_TEXT})}")
+    rows = json.loads(LOCAL_STEPS["convert"].invoke({"data": CSV_SAMPLE}))
+    print(f"  convert: {rows[0]} ({len(rows)} rows)")
+    print(f"  process: {LOCAL_STEPS['process'].invoke({'content': MULTILINE_TEXT})}")
 
 
 def run_parallel_branches(model: ChatOpenAI) -> None:
-    """Step 3. Send one input down five branches at once and time the difference.
-
-    RunnableParallel starts every branch on its own thread and returns a dict
-    keyed by branch name. All five branches call the same model with the same
-    input, so the only variable is whether they wait for each other. Five
-    branches instead of two makes the gap between the two timings scale with
-    branch count rather than sit inside normal network jitter.
-    """
-    print("\n--- 3. Parallel branches ---")
+    """Step 4. Run five prompts on the review at once, then one after another, and time both.
+    RunnableParallel gives each branch its own thread."""
+    print("\n--- 4. Parallel branches ---")
     branches = {
         "summary": ChatPromptTemplate.from_template("Summarise in one sentence:\n{input}") | model | StrOutputParser(),
         "area": ChatPromptTemplate.from_template("Reply with exactly one word, the product area this is about:\n{input}") | model | StrOutputParser(),
-        "sentiment": ChatPromptTemplate.from_template("Reply with exactly one word - positive, negative, or mixed:\n{input}") | model | StrOutputParser(),
-        "urgency": ChatPromptTemplate.from_template("Reply with exactly one word - low, medium, or high - for how urgently this needs a reply:\n{input}") | model | StrOutputParser(),
+        "sentiment": ChatPromptTemplate.from_template("Reply with exactly one word (positive, negative or mixed):\n{input}") | model | StrOutputParser(),
+        "urgency": ChatPromptTemplate.from_template("Reply with exactly one word (low, medium or high) for how urgently this needs a reply:\n{input}") | model | StrOutputParser(),
         "language": ChatPromptTemplate.from_template("Reply with exactly one word, the language this text is written in:\n{input}") | model | StrOutputParser(),
     }
 
@@ -226,47 +204,32 @@ def run_parallel_branches(model: ChatOpenAI) -> None:
 
 
 def route_by_shape(payload: dict) -> str:
-    """The same routing logic as `router` below, written as a plain function.
-
-    It exists only to show where the pipe operator stops working. LangChain
-    coerces a bare function into a Runnable when the *other* side of `|` is
-    already one - that is why `route_by_shape | explain` below succeeds. What
-    a bare function cannot do is start a pipe with another bare function:
-    neither side defines `__or__`, so there is nothing to trigger coercion,
-    and `route_by_shape | route_by_shape` raises TypeError. The branch below
-    is built from RunnableLambda specifically so it never hits that case.
-    """
+    """The router's logic as a plain function. It is never called; it only shows when | accepts one."""
     content = payload["content"]
     if content.count("\n") >= 2:
-        return LOCAL_STEPS["process"].invoke({"operation": "count_lines", "content": content})
+        return LOCAL_STEPS["process"].invoke({"content": content})
     if "," in content:
         return "looks like tabular data, use the converter"
     return f"short text, {len(content)} characters, left as is"
 
 
 def run_branching(model: ChatOpenAI) -> None:
-    """Step 4. Pick a different chain depending on what the input looks like.
-
-    RunnableBranch is an if/elif written as data instead of control flow. That
-    matters because the branch stays a runnable: it can be piped into, streamed
-    from, and inspected, which a bare Python if statement in the middle of a
-    chain cannot - demonstrated below by piping the router into a further step,
-    then trying the same thing with `route_by_shape` and watching it fail.
-    """
-    print("\n--- 4. Conditional routing ---")
+    """Step 5. Route by the input's shape with RunnableBranch, and pipe its output into a model. A plain
+    function also pipes when the other side is a runnable; two plain functions raise TypeError."""
+    print("\n--- 5. Conditional routing ---")
     router = RunnableBranch(
         (lambda payload: payload["content"].count("\n") >= 2, LOCAL_STEPS["process"]),
         (lambda payload: "," in payload["content"], RunnableLambda(lambda payload: "looks like tabular data, use the converter")),
         RunnableLambda(lambda payload: f"short text, {len(payload['content'])} characters, left as is"),
     )
     for content in [MULTILINE_TEXT, "name,age", "hello"]:
-        verdict = router.invoke({"operation": "count_lines", "content": content})
+        verdict = router.invoke({"content": content})
         print(f"  {content.splitlines()[0][:28]:30} -> {verdict}")
 
     print("\n  piping the router into a further step:")
     explain = ChatPromptTemplate.from_template("In one short sentence, explain why this routing verdict makes sense for the input {content!r}:\n{verdict}") | model | StrOutputParser()
     full_chain = router | RunnableLambda(lambda verdict: {"content": MULTILINE_TEXT, "verdict": verdict}) | explain
-    print(f"    {full_chain.invoke({'operation': 'count_lines', 'content': MULTILINE_TEXT})}")
+    print(f"    {full_chain.invoke({'content': MULTILINE_TEXT})}")
 
     print("  a plain function piped into that same Runnable still works (LangChain coerces it):")
     coerced = route_by_shape | explain
@@ -280,16 +243,9 @@ def run_branching(model: ChatOpenAI) -> None:
 
 
 def run_streaming(model: ChatOpenAI) -> None:
-    """Step 5. Print the answer while the model is still writing it.
-
-    Streaming is a property of the composed chain, not only of the model: every
-    step in this chain can pass chunks along, so calling stream on the outermost
-    object yields text as soon as the first tokens exist. A step that must see
-    the whole input, such as a JSON parser, would silently turn this back into a
-    single block at the end. The blocking call below times how long that first
-    visible output takes without streaming, for the same prompt.
-    """
-    print("\n--- 5. Streaming the composed chain ---")
+    """Step 6. Stream the chain, and time its first chunk against a blocking call. A plain
+    function in RunnableLambda would wait for the whole input and undo the streaming."""
+    print("\n--- 6. Streaming the composed chain ---")
     chain = ChatPromptTemplate.from_template("List three short bullet points about {topic}.") | model | StrOutputParser()
     topic = "keeping a laptop battery healthy"
 
@@ -310,21 +266,19 @@ def run_streaming(model: ChatOpenAI) -> None:
 
 
 def main() -> None:
-    has_key = bool(os.environ.get("DEEPSEEK_API_KEY"))
-    if not has_key:
-        print("DEEPSEEK_API_KEY is not set; steps 1, 3, 4 and 5 are skipped.\n")
+    if not API_KEY:
+        print("No DEEPSEEK_API_KEY or OPENAI_API_KEY in .env. Only steps 2 and 3 run.")
+        run_retry()
+        run_local_steps()
+        return
 
-    model = build_model() if has_key else None
-
-    if model is not None:
-        run_sequential_chain(model)
+    model = build_model()
+    run_sequential_chain(model)
+    run_retry()
     run_local_steps()
-    if model is not None:
-        run_parallel_branches(model)
-    if model is not None:
-        run_branching(model)
-    if model is not None:
-        run_streaming(build_model(streaming=True))
+    run_parallel_branches(model)
+    run_branching(model)
+    run_streaming(build_model(streaming=True))
 
 
 if __name__ == "__main__":

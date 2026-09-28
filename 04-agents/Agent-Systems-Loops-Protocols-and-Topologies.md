@@ -240,17 +240,30 @@ change what gets replayed.
 
 ---
 
-## 4. Composition: what the pipe operator actually buys
+## 4. Composition with LCEL
 
 `02_lcel_composition.py`
 
-The pipe operator joins objects whose outputs and inputs line up, so a composed chain takes one
-dict in and returns one string out. Five things it gives you that hand-written glue does not:
+LCEL, the LangChain Expression Language, treats every step as a runnable: a template, a model,
+a parser, or a plain function wrapped in `RunnableLambda`. The pipe operator `|` joins
+runnables into one, and the result has the same `invoke`, `stream` and `batch` methods as each
+step. The numbers below come from six DeepSeek runs on 2026-09-28.
 
-### 4.1 Sequential composition and retries
+### 4.1 Sequential chain
 
-Three model calls chained so each consumes the previous answer. Then the same flaky step
-retried twice, once by hand and once by the framework:
+Three model calls: translate the review into French, state its main complaint in French, and
+translate that back. Each call expects a named variable, so a dict renames the previous output:
+
+```python
+chain = to_french | {"french": lambda text: text} | review_it | {"summary": lambda text: text} | back_to_english
+```
+
+If a name does not match, the next template raises `KeyError: Input to ChatPromptTemplate is
+missing variables {'french'}` before any request is sent.
+
+### 4.2 Retry
+
+A step that fails on its first two calls, retried by a hand-written loop and by `.with_retry()`:
 
 ```
   retrying a flaky step by hand:
@@ -258,13 +271,15 @@ retried twice, once by hand and once by the framework:
     attempt 2 failed: transient failure on attempt 2
     manual loop: 'step succeeded' after 3 attempts
   retrying the same step with .with_retry():
-    .with_retry(): 'step succeeded', no loop or except clause written
+    .with_retry(): 'step succeeded' after 3.64s, no loop or except clause written
 ```
 
-Same outcome, and the second one is a method call rather than a loop plus an `except` clause
-that has to be written again at every step that can fail transiently.
+The two are not identical. `.with_retry()` retries on any exception by default and waits
+between attempts with exponential backoff and jitter, which is where the 3.6 to 4.4 seconds
+go. The hand-written loop catches only `RuntimeError` and does not wait. No model is called, so
+this part also runs without a key.
 
-### 4.2 Plain functions become chain steps
+### 4.3 Local functions as runnables
 
 ```python
 LOCAL_STEPS = {
@@ -274,38 +289,34 @@ LOCAL_STEPS = {
 }
 ```
 
-`RunnableLambda` lifts an ordinary Python function into something composable. The three
-functions here cost nothing and always return, so the composition stays visible instead of
-hiding behind another model call:
+`RunnableLambda` gives a plain function the same interface as a model. The three functions
+count words and guess sentiment from two word lists, turn CSV into JSON, and count lines:
 
 ```
 analyse: words=26 characters=140 sentiment=negative (hits 1+/2-)
-convert: [ ... (3 rows)
+convert: {'name': 'Alice', 'age': '25', 'comment': 'Works exactly as described'} (3 rows)
 process: 3 lines
 ```
 
-### 4.3 Parallel branches, measured
+### 4.4 Parallel branches
 
-Five independent analyses of one review, run as a `RunnableParallel` and then serially:
+Five prompts about one review (summary, product area, sentiment, urgency, language), run as a
+`RunnableParallel` and then one after another. Over six runs the parallel call took 0.85 to
+1.10 seconds and the serial loop 3.34 to 4.34 seconds. `RunnableParallel` gives each branch its
+own thread, and the branches do not depend on each other.
 
-```
-parallel 1.39s vs serial 4.29s (5 branches)
-```
-
-A 3.1x speedup for a one-line structural change. The branches do not depend on each other, so
-running them in sequence was only ever an artefact of how the code was written.
-
-### 4.4 Routing that stays composable
+### 4.5 Conditional routing
 
 ```python
 router = RunnableBranch(
-    (lambda payload: payload["content"].count("\n") >= 2, LOCAL_STEPS["process"]),
+    (lambda payload: payload["content"].count("
+") >= 2, LOCAL_STEPS["process"]),
     (lambda payload: "," in payload["content"], RunnableLambda(...)),
     RunnableLambda(...),   # default
 )
 ```
 
-Measured on three inputs:
+`RunnableBranch` takes the first branch whose condition holds:
 
 ```
 First line of the note         -> 3 lines
@@ -313,16 +324,8 @@ name,age                       -> looks like tabular data, use the converter
 hello                          -> short text, 5 characters, left as is
 ```
 
-`RunnableBranch` is an if/elif written as data. The reason that matters is that the branch is
-still a runnable, so it can be piped into something further:
-
-```
-piping the router into a further step:
-  The routing verdict makes sense because the input contains exactly three
-  distinct lines, matching the specified "3 lines" criterion.
-```
-
-The script then walks up to the edge of the coercion rule and shows both sides of it:
+The router is a runnable, so its output pipes into a model that explains the verdict. The
+script then shows when `|` accepts a plain function:
 
 ```
 a plain function piped into that same Runnable still works (LangChain coerces it):
@@ -331,21 +334,16 @@ but two plain functions piped together have no Runnable to coerce through:
   TypeError: unsupported operand type(s) for |: 'function' and 'function'
 ```
 
-A bare function works on one side of `|` because the other side is already a runnable and
-triggers coercion. Two bare functions have nothing to coerce through. This is why the branch
-above is built from `RunnableLambda` objects rather than plain callables.
+A plain function works on one side of `|` when the other side is a runnable, because LangChain
+wraps it. Two plain functions fail, because Python's `|` knows nothing about functions.
 
-### 4.5 Streaming versus blocking, measured
+### 4.6 Streaming against blocking
 
-```
-streamed: first chunk after 0.29s, 103 chunks total
-blocking: nothing visible until 2.04s, when the full answer arrives at once
-```
-
-Identical total work, 7x difference in time to first visible output. For anything a person
-watches, that difference is the entire perceived latency.
-
----
+The same chain, once with `stream` and once with `invoke`. Over six runs the first streamed
+chunk arrived after 0.28 to 0.57 seconds, and the blocking call returned after 0.84 to 1.33
+seconds. Every step in this chain passes chunks along. A plain function in `RunnableLambda`
+would wait for the whole input and turn the stream back into one block; `JsonOutputParser`
+does not, it streams partial objects.
 
 ## 5. ReAct: reasoning and acting in one loop
 
@@ -1754,9 +1752,9 @@ Every row below came out of an actual run of the script named in it.
 | :--- | :--- | :--- |
 | 01 | Follow-up question with the transcript replayed vs. without | `Call it PhotoDater.` vs. `Could you clarify what "it" refers to?` |
 | 01 | What the checkpointer holds after two turns | 4 messages: human, ai, human, ai |
-| 02 | Five independent branches, parallel vs. serial | **1.39s vs 4.29s** (3.1x) |
-| 02 | Streaming vs. blocking, same chain | first chunk at **0.29s**, 103 chunks / nothing until **2.04s** |
-| 02 | Retry by hand vs. `.with_retry()` | 3 attempts either way; one is a loop plus `except`, one is a method call |
+| 02 | Five independent branches, parallel vs. serial | 0.85 to 1.10s vs 3.34 to 4.34s over six runs |
+| 02 | Streaming vs. blocking, same chain | first chunk at 0.28 to 0.57s / full answer at 0.84 to 1.33s |
+| 02 | Retry by hand vs. `.with_retry()` | 3 attempts either way; `.with_retry()` also waits between them, 3.6 to 4.4s |
 | 03 | One-lookup question | 2 model passes, 1 tool call |
 | 03 | Question outside the rule book | 6 passes, 5 tool calls, then a correct refusal |
 | 03 | **Same tools, tool list removed from the prompt** | model invented `Search rule book` and called it; 0 real tools reached |
@@ -1833,7 +1831,7 @@ it checks first and prints what it is skipping instead of failing with a stack t
 | Script | Without a key |
 | :--- | :--- |
 | `01` | Steps 1 and 2 still run (template rendering is local) |
-| `02` | Step 2 still runs (the local functions need no model) |
+| `02` | Steps 2 and 3 still run (retry and the local functions need no model) |
 | `03` | Prints the rendered tool listing, then stops |
 | `04` | Prints the tool schemas, then stops |
 | `05` | Prints the published tools, then stops |
