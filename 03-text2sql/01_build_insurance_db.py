@@ -54,7 +54,7 @@ CREATE TABLE customers (
     customer_id     INTEGER PRIMARY KEY,        -- unique customer number
     name            TEXT    NOT NULL,           -- full name
     gender          TEXT    NOT NULL,           -- one of: Male, Female
-    date_of_birth   DATE    NOT NULL,           -- used for age filters
+    date_of_birth   DATE    NOT NULL,           -- date of birth
     marital_status  TEXT    NOT NULL,           -- one of: Married, Single, Divorced
     occupation      TEXT    NOT NULL,
     phone_number    TEXT    NOT NULL,
