@@ -1,15 +1,27 @@
-"""Factor a sparse preference matrix into two thin matrices with alternating least squares.
+"""Alternating least squares (ALS): factor a sparse preference matrix into two thin matrices.
 
-Demonstrates that the same low-rank idea works when most of the matrix is missing:
-    1. Build a 12x9 interaction matrix with three groups baked into it.
-    2. Separate the rank of the complete matrix from the rank of the observed one.
-    3. Solve for user and item factors by alternating between two least squares fits.
-    4. Watch the penalised objective fall while the plain error drifts upward.
-    5. Score recommendations by group agreement, a check that cannot be argued with.
-    6. Compare an early-stopped fit against a converged one, across ten seeds.
-    7. Measure how many observed cells per row a rank-3 recovery actually needs.
+ALS models every cell as the dot product of a user vector and an item vector, both
+of length 3. With the item vectors held fixed, each user vector is a small ridge
+regression on the cells that user observed, and the other way round. The two fits
+alternate. A missing cell still gets a prediction, because each vector is shared
+by its whole row or column.
 
-Module 05: Fine-Tuning - Alternating Least Squares.
+The data is 12 users and 9 items in three groups. Each user touched two of the
+three items in their group, so a good fit recommends the third.
+
+The run prints six parts:
+    1. The observed matrix. 24 of 108 cells, each a 1.
+    2. Two spectra. The complete matrix, with every group filled in, has rank 3.
+       The observed one is full rank, with a gap after the third value. Nothing
+       later uses this part.
+    3. The ALS fit. Over 20 iterations the penalised objective falls every time,
+       while the plain RMSE ends higher than it started.
+    4. Group agreement after 20 iterations: how often each user's top unseen
+       item is in their own group.
+    5. The fit stopped after 2 iterations, where the RMSE was lowest, scored the
+       same way. Then the same comparison over ten seeds.
+    6. A known rank-3 matrix of 300x120 with most cells hidden. The error on the
+       hidden cells as the density and the penalty change.
 """
 
 import sys
@@ -53,24 +65,8 @@ INTERACTIONS = (
 
 
 def build_matrix():
-    """Step 1. Lay the interactions out as a dense matrix plus an observed mask.
-
-    Two arrays are needed, not one. The rating array holds the values and the
-    mask records which cells were actually observed. Without the mask a missing
-    cell and a genuine zero look identical, and the fit would spend its capacity
-    explaining zeros that nobody ever recorded.
-
-    There is no ground truth here, and steps 1 to 6 are shaped by that. The
-    data is authored as a list of interactions, not carved out of a complete
-    matrix, so the 24 observed cells carry a real value while the other 84 hold
-    a placeholder zero that nobody ever measured. Nothing in this file states
-    what u1 should score on i3. That is why step 5 has to grade with a yes/no
-    question - did the top recommendation land in the right group - instead of
-    asking how close a prediction is to a correct number. Step 7 turns this
-    around: build_synthetic generates the complete matrix first and hides part
-    of it, so every hidden cell has an answer waiting and the accuracy question
-    becomes askable. Compare the two before reading the step 7 numbers.
-    """
+    """Part 1. Lay the interactions out as a rating array plus a mask of observed cells.
+    Without the mask a missing cell and a real zero look the same to the fit."""
     users = sorted({user for user, _ in INTERACTIONS})
     items = sorted({item for _, item in INTERACTIONS})
     ratings = np.zeros((len(users), len(items)))
@@ -93,10 +89,7 @@ def build_matrix():
 
 def build_ideal(users, items):
     """The matrix that would exist if every user had touched all of their group.
-
-    Only used for the comparison in step 2. Rows inside a group become identical
-    here, which is what makes each group contribute exactly one to the rank.
-    """
+    Rows inside a group are identical, so each group adds exactly one to the rank."""
     ideal = np.zeros((len(users), len(items)))
     for group in GROUPS.values():
         for user in group["users"]:
@@ -106,28 +99,8 @@ def build_ideal(users, items):
 
 
 def inspect_rank(ratings, users, items):
-    """Step 2. Compare the spectrum of the observed matrix against the complete one.
-
-    The phrase "the structure is rank 3" is about the complete matrix, not the
-    one being factorised. Filling every group in makes the rows of a group
-    identical, so each group contributes exactly one to the rank and three
-    groups give rank 3 with six singular values at zero. Removing one cell per
-    row breaks that equality: the observed matrix printed in step 1 is full
-    rank, and the six values that should be zero come back as the noise floor
-    below. What survives is not a rank of 3 but an energy concentration in the
-    first three directions, which is the weaker property a factorisation can
-    still exploit.
-
-    Two cautions about the numbers. The cumulative share is computed with the
-    unobserved cells set to zero, so those placeholder zeros inflate the
-    denominator and the percentage understates the concentration; the gap
-    between the third and fourth value is the reading to trust. And none of
-    this validates the choice of RANK. The interactions were authored from
-    GROUPS, so a step in third place is the construction showing through rather
-    than a discovery, a self-check that the data came out as intended. Real
-    data rarely offers a clean step, and the rank has to be chosen by trying
-    values and comparing what they produce.
-    """
+    """Part 2. Compare the spectrum of the observed matrix with the complete one.
+    SVD reads the unobserved cells as zeros, so the observed matrix is full rank."""
     ideal = build_ideal(users, items)
     values = svd(ratings, compute_uv=False)
     ideal_values = svd(ideal, compute_uv=False)
@@ -137,20 +110,14 @@ def inspect_rank(ratings, users, items):
           f"{np.linalg.matrix_rank(ideal)} complete, of {min(ratings.shape)} possible")
     energy = values**2
     cumulative = np.cumsum(energy) / energy.sum()
-    print(f"First three terms hold {cumulative[RANK - 1]:.2%} of the energy, "
-          f"understated by the placeholder zeros in the denominator.")
+    print(f"First three terms hold {cumulative[RANK - 1]:.2%} of the energy.")
     print(f"Gap between value {RANK} and value {RANK + 1}: "
           f"{values[RANK - 1]:.3f} vs {values[RANK]:.3f}")
 
 
 def solve_side(fixed, ratings, mask, regularisation):
-    """Solve one half of the problem while the other half is held constant.
-
-    For each row this is an ordinary ridge regression: take only the columns the
-    row actually observed, and find the factor vector that best reproduces those
-    observations. Holding one side fixed is what turns a hard joint problem into
-    two easy ones, and it is the entire trick behind the method's name.
-    """
+    """Solve one side while the other is held fixed: a ridge regression per row,
+    on the columns that row observed."""
     rank = fixed.shape[1]
     result = np.zeros((ratings.shape[0], rank))
     eye = np.eye(rank)
@@ -173,14 +140,8 @@ def masked_rmse(user_factors, item_factors, ratings, mask):
 
 
 def objective(user_factors, item_factors, ratings, mask, regularisation):
-    """The quantity the two least squares fits actually minimise.
-
-    Each half-step solves a ridge regression, so what falls every iteration is
-    the squared error over observed cells plus the penalty on the factor sizes.
-    The plain RMSE leaves the penalty term out, which is why it can drift upward
-    while the fit is still improving: the solver is trading a little training
-    error for much smaller factors, and that trade is the point of the penalty.
-    """
+    """The quantity the two ridge fits minimise: squared error on observed cells
+    plus the penalty on the factor sizes, which the plain RMSE leaves out."""
     predicted = user_factors @ item_factors.T
     squared = float(((predicted - ratings)[mask] ** 2).sum())
     penalty = regularisation * float((user_factors**2).sum() + (item_factors**2).sum())
@@ -188,28 +149,10 @@ def objective(user_factors, item_factors, ratings, mask, regularisation):
 
 
 def fit(ratings, mask, rank, iterations, regularisation, seed, verbose=True):
-    """Step 3-4. Alternate the two least squares fits and record the error curve.
-
-    The returned snapshots make the early-stopping comparison in step 6 possible:
-    the factors are kept at every iteration, so a fit stopped after two rounds
-    can be scored against the same data as the converged one.
-    """
-    # The model is defined here, and nowhere else. Every cell of the matrix,
-    # observed or not, is declared to be the dot product of one row of each
-    # factor table:
-    #
-    #     prediction[u, i] = user_factors[u] . item_factors[i]
-    #     whole matrix     = user_factors @ item_factors.T
-    #                        (users, rank) @ (rank, items) -> (users, items)
-    #
-    # Fixing both tables at `rank` columns is the same as declaring that the
-    # prediction matrix has rank at most `rank`, since a matrix factors into
-    # two such tables exactly when its rank fits inside them. That declaration
-    # is what makes the unobserved cells computable at all: a user's row of
-    # numbers is reused for every item, so fitting the observed cells drags the
-    # missing ones along with them. The expression below is written out again
-    # in masked_rmse, objective, recommend and held_out_error rather than
-    # shared, because each of those reads it for a different purpose.
+    """Part 3. Alternate the two ridge fits and record the error curve.
+    The factors are kept at every iteration, so part 5 can score an earlier one."""
+    # Every cell is predicted as user_factors[u] . item_factors[i], so fixing both
+    # tables at `rank` columns caps the prediction matrix at that rank.
     rng = np.random.default_rng(seed)
     item_factors = rng.normal(0.0, 0.1, (ratings.shape[1], rank))
     user_factors = np.zeros((ratings.shape[0], rank))
@@ -253,13 +196,8 @@ def recommend(user_factors, item_factors, users, items, mask, top_n):
 
 
 def score_recommendations(recommendations, label):
-    """Step 5. Count how often the top recommendation stays inside the user's group.
-
-    Group agreement is deterministic: every user has exactly one correct group,
-    and the item they have not touched yet is known in advance. A fit that only
-    drives the training error down but recommends across groups has not learned
-    the structure, and this counter says so without any interpretation.
-    """
+    """Parts 4 and 5. Print each user's top unseen items and count how often the
+    first one is in the user's own group."""
     hits = 0
     print(f"\n{label}")
     for user, ranked in recommendations.items():
@@ -277,11 +215,7 @@ def score_recommendations(recommendations, label):
 
 
 def group_agreement(user_factors, item_factors, users, items, mask):
-    """Share of users whose top unseen item belongs to their own group.
-
-    The same quantity score_recommendations prints, computed without the
-    per-user listing so it can be called once per seed.
-    """
+    """The share score_recommendations prints, without the listing, for the seed sweep."""
     scores = user_factors @ item_factors.T
     hits = 0
     for row, user in enumerate(users):
@@ -293,17 +227,12 @@ def group_agreement(user_factors, item_factors, users, items, mask):
 
 
 def early_stopping_across_seeds(ratings, mask, users, items, seeds):
-    """Step 6. Repeat the early-stopping comparison over a range of seeds.
-
-    One run shows that the round with the lowest error scored worse than the
-    last round. That is a single observation, and the round it lands on depends
-    on the random start. Repeating over seeds turns it into a rate: the column
-    below records where the error bottomed out, and whether stopping there cost
-    anything measurable on the group check.
-    """
+    """Part 5. For each seed, score the round with the lowest RMSE against the last
+    round, since where the RMSE bottoms out depends on the random start."""
     print(f"\n{'seed':>8} {'lowest-RMSE round':>19} {'agreement there':>17} "
           f"{'agreement at end':>18} {'verdict':>9}")
     worse = 0
+    full = 0
     for seed in seeds:
         snapshots, history, _ = fit(ratings, mask, RANK, MAX_ITERATIONS,
                                     REGULARISATION, seed, verbose=False)
@@ -311,31 +240,18 @@ def early_stopping_across_seeds(ratings, mask, users, items, seeds):
         early = group_agreement(*snapshots[best], users, items, mask)
         final = group_agreement(*snapshots[MAX_ITERATIONS], users, items, mask)
         worse += int(early < final)
+        full += int(final == 1.0)
         verdict = "worse" if early < final else "no cost"
         print(f"{seed:>8} {best:>19d} {early:>16.1%} {final:>17.1%} {verdict:>9}")
     print(f"\nStopping at the lowest training error cost accuracy in {worse} of "
           f"{len(seeds)} seeds.")
+    print(f"The converged fit reached 100% in {full} of {len(seeds)} seeds.")
     return worse
 
 
 def build_synthetic(rank, users, items, density, seed):
-    """Generate a matrix of known rank, hide most of it, and keep a held-out part.
-
-    Because the ground truth is generated here, the question stops being "did the
-    training error go down" and becomes "did the factors reproduce cells that
-    were never shown". Those two questions have different answers.
-
-    This is the first complete matrix in the file, and the difference from
-    build_matrix is worth stating plainly. There the interactions came first
-    and the matrix was assembled around them, so the unobserved cells never had
-    a value to be right or wrong about. Here `truth` is computed for all
-    users x items before anything is hidden, so a cell removed by `mask` still
-    has a known answer sitting in `truth`, and `holdout` names the subset that
-    will be graded. The larger shape is part of the same purpose: 108 cells
-    cannot support a density sweep, since sampling 3% of them leaves noise
-    rather than a trend, and the min-observations-per-row column needs enough
-    rows to range from 1 to 22.
-    """
+    """Generate a matrix of known rank, hide most of it, and mark half the hidden
+    cells as held out, so each graded cell has a known answer."""
     rng = np.random.default_rng(seed)
     true_users = rng.normal(0.0, 1.0, (users, rank))
     true_items = rng.normal(0.0, 1.0, (items, rank))
@@ -346,30 +262,34 @@ def build_synthetic(rank, users, items, density, seed):
 
 
 def held_out_error(user_factors, item_factors, truth, holdout):
-    """RMSE on cells the fit never saw, plus that error as a share of magnitude.
-
-    The share matters more than the raw number. If the error reaches the average
-    absolute value of a held-out cell, the factorisation has become worse than
-    answering zero for every unseen cell, and a raw RMSE alone never says so.
-    """
+    """RMSE on cells the fit never saw, and that error as a share of the error of
+    answering zero everywhere, so a share above 100% is worse than no model."""
     predicted = user_factors @ item_factors.T
     error = float(np.sqrt(np.mean((predicted - truth)[holdout] ** 2)))
-    magnitude = float(np.abs(truth[holdout]).mean())
-    return error, error / magnitude
+    zero_answer = float(np.sqrt(np.mean(truth[holdout] ** 2)))
+    return error, error / zero_answer
+
+
+def error_by_row_count(user_factors, item_factors, truth, mask, holdout):
+    """Held-out RMSE for rows grouped by how many cells they observed."""
+    predicted = user_factors @ item_factors.T
+    per_row = mask.sum(axis=1)
+    groups = []
+    for label, low, high in (("0-3", 0, 3), ("4-6", 4, 6), ("7-10", 7, 10), ("11+", 11, None)):
+        rows = (per_row >= low) if high is None else (per_row >= low) & (per_row <= high)
+        cells = holdout & rows[:, None]
+        if cells.any():
+            error = float(np.sqrt(np.mean((predicted - truth)[cells] ** 2)))
+            groups.append((label, int(rows.sum()), error))
+    return groups
 
 
 def synthetic_recovery(rank, users, items, densities, penalty, seed):
-    """Step 7. Find out how much data a rank-r factorisation actually needs.
-
-    A row with exactly r observed cells can be fitted perfectly by r free
-    parameters, so its training error goes to zero while its predictions carry no
-    information at all. Sparsity, not the number of iterations, is what decides
-    whether recovery is possible: the sweep below keeps the penalty and the
-    iteration count fixed and moves only the density, and the held-out error
-    falls by two orders of magnitude across the range.
-    """
+    """Part 6. Hide most of a known rank-r matrix and measure the error on hidden cells.
+    Penalty and iterations stay fixed while the density moves."""
     print(f"Ground truth: {users}x{items} matrices built from rank {rank}")
-    print(f"Penalty held at {penalty}, iterations held at {MAX_ITERATIONS}.\n")
+    print(f"Penalty held at {penalty}, iterations held at {MAX_ITERATIONS}.")
+    print("share = held-out error / error of answering zero, so above 100% is worse than no model.\n")
     print(f"{'density':>8} {'min obs/row':>12} {'mean obs/row':>13} "
           f"{'train RMSE':>11} {'held-out':>9} {'share':>8}")
     for density in densities:
@@ -382,9 +302,18 @@ def synthetic_recovery(rank, users, items, densities, penalty, seed):
         print(f"{density:>8.2f} {per_row.min():>12d} {per_row.mean():>13.1f} "
               f"{history[-1]:>11.4f} {error:>9.4f} {share:>7.0%}")
 
-    print(f"\nThe rows that break recovery are the ones holding at most {rank} cells,")
-    print(f"which is the number of free parameters a rank-{rank} row already has.")
-    print("A stronger penalty softens the failure but cannot replace the missing data:")
+    print("\nHeld-out error, rows grouped by how many cells they observed:")
+    for density in (0.05, 0.08):
+        truth, mask, holdout = build_synthetic(rank, users, items, density, seed)
+        snapshots, _, _ = fit(truth * mask, mask, rank, MAX_ITERATIONS, penalty,
+                              seed, verbose=False)
+        groups = error_by_row_count(*snapshots[MAX_ITERATIONS], truth, mask, holdout)
+        cells = " | ".join(f"{label}: {count} rows {error:.2f}"
+                          for label, count, error in groups)
+        print(f"  density {density:.2f}  {cells}")
+    print("At 0.05 the rows with 11 or more cells fail as badly as the thinnest ones,")
+    print("so the whole matrix lacks data, not a few rows. A stronger penalty softens")
+    print("the failure but cannot replace the missing data:")
 
     truth, mask, holdout = build_synthetic(rank, users, items, 0.05, seed)
     observed = truth * mask
@@ -400,31 +329,35 @@ def synthetic_recovery(rank, users, items, densities, penalty, seed):
 
 
 def main():
-    print("--- 1. Build a sparse interaction matrix ---")
+    print("--- 1. The observed matrix ---")
     users, items, ratings, mask = build_matrix()
 
-    print("\n--- 2. Compare the observed spectrum against the complete one ---")
+    print("\n--- 2. Two spectra ---")
     inspect_rank(ratings, users, items)
 
-    print("\n--- 3-4. Alternate the two least squares fits ---")
+    print("\n--- 3. The ALS fit ---")
     snapshots, history, objectives = fit(ratings, mask, RANK, MAX_ITERATIONS,
                                         REGULARISATION, SEED)
     falling = all(later <= earlier + 1e-9
                   for earlier, later in zip(objectives, objectives[1:]))
+    squared = [error**2 * mask.sum() for error in history]
+    penalties = [cost - part for cost, part in zip(objectives, squared)]
     print(f"\nObjective: {objectives[0]:.6f} -> {objectives[-1]:.6f}, "
           f"decreasing every iteration: {falling}")
     print(f"RMSE:      {history[0]:.6f} -> {history[-1]:.6f}")
-    print("The RMSE ends higher than it started while the objective falls the whole")
-    print("way. Only one of these two numbers is being minimised, and step 5 shows")
-    print("which one tracks the quality of the recommendations.")
+    print(f"Squared error {squared[0]:.4f} -> {squared[-1]:.4f}, "
+          f"penalty {penalties[0]:.2f} -> {penalties[-1]:.2f}")
+    print("Almost all of the fall is the penalty: the factors shrink while the fit")
+    print("stays close. Only the objective is minimised, and parts 4 and 5 show")
+    print("which of the two numbers tracks the recommendations.")
 
-    print("\n--- 5. Score the converged fit by group agreement ---")
+    print("\n--- 4. Group agreement after 20 iterations ---")
     converged_users, converged_items = snapshots[MAX_ITERATIONS]
     converged = recommend(converged_users, converged_items, users, items, mask, top_n=3)
     converged_rate = score_recommendations(
         converged, f"Recommendations after {MAX_ITERATIONS} iterations:")
 
-    print("\n--- 6. Score a fit that was stopped early on the same check ---")
+    print("\n--- 5. The fit stopped after 2 iterations ---")
     early_users, early_items = snapshots[EARLY_STOP]
     early = recommend(early_users, early_items, users, items, mask, top_n=3)
     early_rate = score_recommendations(
@@ -433,12 +366,11 @@ def main():
           f"RMSE {history[EARLY_STOP - 1]:.6f}, group agreement {early_rate:.1%}")
     print(f"After {MAX_ITERATIONS:>2d} iterations: objective {objectives[-1]:.6f}, "
           f"RMSE {history[-1]:.6f}, group agreement {converged_rate:.1%}")
-    print("The early-stopped fit has the lower RMSE of the two and the worse")
-    print("recommendations. Stopping the alternation early still prints a number,")
-    print("so the group check decides the outcome and the training error does not.")
+    print("The early-stopped fit has the lower RMSE and the worse recommendations,")
+    print("so the training error cannot choose when to stop.")
     early_stopping_across_seeds(ratings, mask, users, items, SEED_SWEEP)
 
-    print("\n--- 7. Recover a known rank-3 signal from a larger matrix ---")
+    print("\n--- 6. A known rank-3 matrix with most cells hidden ---")
     synthetic_recovery(RANK, users=300, items=120,
                        densities=(0.03, 0.05, 0.08, 0.15, 0.30),
                        penalty=0.3, seed=SEED)

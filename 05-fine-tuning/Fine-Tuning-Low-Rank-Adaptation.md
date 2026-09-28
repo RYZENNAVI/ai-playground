@@ -260,13 +260,9 @@ individual number in it is correct.
 
 ### 2.8 Truncation Made Visible
 
-The same script renders a 512 × 512 grayscale test image locally — no photograph is shipped —
-and rebuilds it from the top k terms. The drawing deliberately mixes three kinds of structure,
-because each behaves differently under truncation:
-
-- **Smooth gradients** are captured by the first few terms
-- **Hard edges** need mid-range terms
-- **Fine text and noise** live in the tail that truncation discards first
+The same script draws a 512 × 512 grayscale test image, so no photograph is needed, and rebuilds
+it from the top k terms. The drawing has a diagonal gradient, a ring, a rectangle, horizontal
+stripes, a triangle, the word RANK and noise.
 
 ```
     k  rel. error     stored      dense     ratio
@@ -277,16 +273,17 @@ because each behaves differently under truncation:
   100      2.51%     102500     262144   39.10%
 ```
 
-Visually: at k=1 only blurred bands survive; at k=5 the circle and rectangle emerge; **at k=20 the
-word rendered on the image becomes readable**; by k=100 it is hard to tell from the original.
+Visually, what decides the order is the direction of an edge, not how fine the detail is. SVD
+splits a matrix into rows and columns, so the stripes and the rectangle are already sharp at k=2.
+The ring needs about 10 terms and the word RANK about 20. The diagonal triangle is still blurred at
+k=50.
 
 **Counting the cost**: a rank-k factorisation stores k columns of `U`, k singular values and k rows
 of `Vᵀ`, so it costs `k × (rows + columns + 1)` numbers against `rows × columns`. The script prints
-both sides of the division rather than only the percentage, because **this ratio is easy to misplace
-by a factor of ten**:
+both sides of the division rather than only the percentage:
 
 ```
-Same accounting on a 1000x1000 matrix, where the ratio is easy to misstate:
+Same accounting on a 1000x1000 matrix:
   k=3       6003 / 1000000  = 0.60%
   k=10     20010 / 1000000  = 2.00%
   k=50    100050 / 1000000  = 10.01%
@@ -310,7 +307,28 @@ Energy share against relative error (error = sqrt(1 - energy)):
 
 ⇒ **A rank chosen at a 90% energy threshold still rebuilds the matrix with about a third of its
 magnitude wrong.** Choose k by reconstruction error against the task, never by the energy
-percentage alone.
+percentage alone. At k=2 the stripes are sharp but the ring is still a block.
+
+### 2.10 A Floor, a Ceiling and a Stand-In Update
+
+A fast drop means little without references, so the script reads two more matrices the same way:
+Gaussian noise, which is full rank, and the gradient background alone, which is exactly rank 2.
+
+```
+matrix                     rank   sv1/sv200   k=8 energy   k=8 error
+gaussian noise (floor)      512         2.0       5.83%     97.04%
+rendered test image         512       596.6      99.06%      9.70%
+gradient background           2   exhausted     100.00%      0.00%
+
+The gradient background alone holds 58% of the image's energy,
+so the image sits close to the ceiling.
+```
+
+The last part builds a 512 × 512 stand-in update as a rank-12 product plus noise. Its singular
+values drop from 118.09 at term 12 to 1.73 at term 13, and rank 12 stores 12300 of 262144 numbers
+(4.69%). That drop is the shape LoRA assumes. The matrix was built with it, so it shows the
+assumption and does not test it; `03_lora_low_rank_hypothesis.py` measures a real update.
+
 ---
 
 ## 3. The Same Idea Where Most of the Matrix Is Missing
@@ -344,14 +362,20 @@ Observed cells: 24 of 108 (22.2% dense)
   u12    .   .   .   .   .   .   1   .   1
 ```
 
-**Three blocks are visible by eye** — that is what low rank looks like in data: twelve rows,
-three underlying patterns. The singular values confirm it before any fitting happens:
+**Three blocks are visible by eye.** That is what low rank looks like in data: twelve rows,
+three underlying patterns. With every group filled in, the complete matrix has rank 3. The
+observed matrix is full rank, because SVD reads the unobserved cells as zeros, but its values
+still drop after the third:
 
 ```
-Singular values: [2.715 2.358 2.    1.276 1.199 1.    1.    1.    1.   ]
+Observed matrix, singular values: [2.715 2.358 2.    1.276 1.199 1.    1.    1.    1.   ]
+Complete matrix, singular values: [3.873 3.464 3.    0.    0.    0.    0.    0.    0.   ]
 First three terms hold 70.56% of the energy.
 Gap between value 3 and value 4: 2.000 vs 1.276
 ```
+
+The squares of the observed values add up to 24, one per observed 1, so the zeros add nothing
+to the energy. This part is a check on the data, and nothing later uses it.
 
 **Two arrays are needed, not one**: the ratings and a **mask** of which cells were actually
 observed. Without the mask a missing cell and a genuine zero are indistinguishable, and the fit
@@ -402,8 +426,10 @@ RMSE:      0.008536 -> 0.016945
 
 **The objective falls monotonically for twenty iterations while the plain RMSE rises.** Each
 half-step solves a *penalised* regression, so what descends is squared error **plus** the penalty.
-RMSE omits the penalty term — the solver is trading a little training error for much smaller
-factors, which is precisely what the penalty is for.
+RMSE omits the penalty term: the solver is trading a little training error for much smaller
+factors, which is precisely what the penalty is for. Split apart, the squared error goes from
+0.0017 to 0.0069 while the penalty goes from 4.66 to 1.06: almost all of the fall is the factors
+shrinking.
 
 ⇒ **Before reporting that the loss went down, confirm that the number reported is the one being
 minimised.**
@@ -431,8 +457,9 @@ Recommendations after 2 iterations:
 | After 2 iterations | 3.105801 | **0.007293** (lower) | **58.3%** |
 | After 20 iterations | 1.065799 | 0.016945 | **100.0%** |
 
-**The early-stopped fit has the better RMSE and the worse recommendations.** Stopping the
-alternation early still prints a number; the group check is what decides the outcome.
+**The early-stopped fit has the better RMSE and the worse recommendations**, so the training
+error cannot choose when to stop. Over ten seeds, stopping at the lowest-RMSE round cost
+accuracy in 5, and the converged fit itself reached 100% in 8 (seeds 404 and 8080 end at 75%).
 
 ### 3.5 What Actually Decides Whether Recovery Is Possible
 
@@ -441,26 +468,36 @@ count fixed and moving only the sparsity:
 
 ```
  density  min obs/row  mean obs/row  train RMSE  held-out    share
-    0.03            0           3.6      0.2053    2.0076     167%
-    0.05            1           6.1      0.3987    2.0704     172%
-    0.08            3           9.6      0.2951    1.0219      85%
-    0.15            7          18.0      0.0244    0.0481       4%
+    0.03            0           3.6      0.2053    2.0076     123%
+    0.05            1           6.1      0.3987    2.0704     126%
+    0.08            3           9.6      0.2951    1.0219      62%
+    0.15            7          18.0      0.0244    0.0481       3%
     0.30           22          36.1      0.0099    0.0148       1%
 ```
 
-**A held-out error above 100% of typical magnitude is worse than answering zero everywhere.**
-The dividing line falls exactly where **a row holds no more observations than the rank**: three
-observed cells against three free parameters fits those cells perfectly and predicts nothing.
+**The share is the held-out error over the error of answering zero everywhere**, so above 100% is
+worse than no model. An earlier version divided by the mean absolute value instead, where
+answering zero already scores 136%.
+
+The failure is not confined to thin rows. Grouped by how many cells a row observed:
+
+| Density | 0 to 3 cells | 4 to 6 | 7 to 10 | 11 or more |
+| ---: | ---: | ---: | ---: | ---: |
+| 0.05 | 1.92 (44 rows) | 2.14 (135) | 2.06 (111) | 1.87 (10) |
+| 0.08 | 1.74 (5 rows) | 1.28 (41) | 1.00 (148) | 0.87 (106) |
+
+At 0.05 the rows with 11 or more cells fail as badly as the thinnest ones: the whole matrix lacks
+data, not a few rows.
 
 A stronger penalty softens the failure without replacing the missing data:
 
 ```
   at density 0.05, where the thinnest row holds 1 observed cell
     penalty  train RMSE  held-out    share
-       0.05      0.4202    2.6824     223%
-       0.30      0.3987    2.0704     172%
-       1.00      0.4074    1.4330     119%
-       3.00      0.5360    1.0472      87%
+       0.05      0.4202    2.6824     164%
+       0.30      0.3987    2.0704     126%
+       1.00      0.4074    1.4330      87%
+       3.00      0.5360    1.0472      64%
 ```
 
 ⇒ **Rank is a claim about how much data each row needs.** The same arithmetic applies when the
@@ -1589,7 +1626,7 @@ thousand clean examples plus a measurement (5.4).
 
 | Script | What it demonstrates | Hardware |
 | :--- | :--- | :--- |
-| `01_svd_image_compression.py` | Decomposition by hand, singular values against eigenvalues, **paired sign flips**, rank-k reconstruction with storage accounting, **why energy share flatters** | CPU |
+| `01_svd_image_compression.py` | Truncated SVD: a 3 × 2 decomposition, singular values against eigenvalues, **paired sign flips**, rank-k reconstruction with storage accounting, **why energy share flatters** | CPU |
 | `02_als_low_rank_factorization.py` | Sparse factorisation with a mask, the penalised objective **against** the printed RMSE, early stopping scored by group agreement, **observations per row versus rank** | CPU |
 | `03_lora_low_rank_hypothesis.py` | A hand-written adapter that starts as a no-op, parameter accounting per rank, **the ΔW spectrum against two controls**, how much of an update each rank keeps, where adapters can attach, **how the direction count moves as the task widens** | GPU |
 | `04_lora_sft_instruction_tuning.py` | Rule-generated labels, instruction template with stop token and prompt masking, adapter attachment and trainable share, **the adapter against a prompted-rule baseline on unseen inputs**, save → reload → merge | GPU |
