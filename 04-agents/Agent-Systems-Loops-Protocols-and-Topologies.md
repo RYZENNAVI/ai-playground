@@ -836,8 +836,8 @@ The choice is not about sophistication. The usable rule:
 > **Are you exposing this to callers you did not write?** If not, a local function is faster to
 > write and cheaper to run. If yes, the protocol is what stops you writing an adapter per caller.
 
-`04` and `05` are the same loop under both answers — local `@tool` functions in one, advertised
-tools in the other — which is why the client code in `05` is so short. The model does not know
+`04` and `05` are the same loop under both answers: local `@tool` functions in one, advertised
+tools in the other. That is why the client code in `05` is so short. The model does not know
 the difference; only the transport does.
 
 ### 9.5 Two transports
@@ -906,9 +906,10 @@ is the point of the boundary: the caller gets an interface, not a library.
 
 Two details in this half are easy to get wrong:
 
-**Nothing prints to stdout.** A stdio server speaks the protocol on stdout, so one stray `print`
-corrupts the stream and the client fails at the handshake with a parse error that says nothing
-about the print. Servers log to stderr or to a file.
+**Nothing prints to stdout.** A stdio server sends its protocol messages on stdout, so logging
+belongs on stderr or in a file. With mcp 2.0.0 a stray line is not fatal: adding
+`print("server starting")` to `serve()` made the client log `Failed to parse JSONRPC message from
+server` with `input_value='server starting'`, skip the line, and finish the run normally.
 
 **The filename is model-supplied input, so it is checked, not trusted:**
 
@@ -922,6 +923,11 @@ if not path.is_relative_to(NOTES_DIR.resolve()) or path.suffix != ".txt":
 and an absolute path replaces `NOTES_DIR` entirely rather than being appended to it. That is how
 the `/` operator is defined, not a bug. Resolving the path and checking it is still inside the
 directory is what actually limits reads.
+
+A rejected filename raises `ValueError`. The SDK turns that into a result with `isError: true`
+and the text `Error executing tool count_words: No note named '../../.env'.`, which is how MCP
+marks a failed tool call. An earlier version returned `-1` from `count_words`, and the protocol
+reported that as a success.
 
 ### 10.2 Handshake and discovery, measured
 
@@ -971,31 +977,35 @@ Printed for `read_note`, this is what reaches the chat API:
 
 Both sides already speak JSON Schema. The protocol calls the field `input_schema`, the chat API
 calls it `parameters`, and that is the whole adapter. **Seeing how little happens here is the
-useful part**: a server written for one client works with any model that accepts tools.
+useful part**: the same schemas worked unchanged with DeepSeek and with Gemini's
+OpenAI-compatible endpoint.
 
 ### 10.4 A tool-calling loop where every call crosses a process boundary
 
 ```
 question: Which note explains why the checkout outage took so long to diagnose,
-          and what was the fix?
+          and what follow-up did it recommend?
   list_notes({}) -> incident-2024-03-12.txt
+    first call as it crossed the boundary:
+    request  : tools/call {"name": "list_notes", "arguments": {}}
+    response : {"content": [{"type": "text", "text": "incident-2024-03-12.txt\nonboarding.txt\nrelease-checklist.txt"}],
+                "structuredContent": {"result": "incident-2024-03-12.txt\nonboarding.txt\nrelease-checklist.txt"},
+                "isError": false, "resultType": "complete"}
   read_note({'filename': 'incident-2024-03-12.txt'}) -> Incident summary: checkout failures
-  read_note({'filename': 'onboarding.txt'})          -> Onboarding notes for new engineers
-  read_note({'filename': 'release-checklist.txt'})   -> Release checklist for the billing service
 rounds: 3
 ```
 
-The three `read_note` calls arrived in **one** model turn, as three `tool_calls` in a single
-reply. They are dispatched with `asyncio.gather`, so the process boundary is paid for once
-concurrently instead of three times in sequence.
+Twelve runs on 2026-09-28 (ten DeepSeek, two Gemini) all took this path: one call per round, and only
+the incident note read. The trace line shows the first line of each result. The full result of
+the first call shows that the text holds all three filenames, and that the SDK also wraps a
+plain return value as `structuredContent: {"result": ...}`.
 
-One call, printed exactly as it crossed:
+The client sends the calls of one round with `asyncio.gather`, so several `tool_calls` in one
+reply would cross the boundary together. None of these runs returned more than one.
 
-```
-request  : {"name": "list_notes", "arguments": {}}
-response : content='incident-2024-03-12.txt'
-           structured={'result': 'incident-2024-03-12.txt\nonboarding.txt\nrelease-checklist.txt'}
-```
+The question asks for the follow-up the note recommends. An earlier version asked for "the fix",
+which the note does not contain: DeepSeek added a caveat, and Gemini labelled the root cause as
+the fix.
 
 That is the entire mechanism. The model emitted a name and an arguments object; the client sent
 them across; the server returned content. **A tool call is a JSON message, and MCP is the
@@ -1720,7 +1730,7 @@ Every row below came out of an actual run of the script named in it.
 | 04 | Same incident, `recursion_limit=4` | 6 to 7 calls, stopped by the cap before the answer |
 | 05 | Handshake with the subprocess server | `notes`, protocol `2025-11-25` |
 | 05 | Tools learned at runtime | 3, with JSON Schema per argument |
-| 05 | Loop over the process boundary | 3 rounds; three `read_note` calls dispatched concurrently in one turn |
+| 05 | Loop over the process boundary | 3 rounds, one call per round (`list_notes`, then `read_note` on the incident note) |
 | 06 | Runtime discovery | endpoint and auth scheme both read from the card |
 | 06 | Schema violation (`attendees: 500`, card max 60) | **400**, `attendees must be an integer between 1 and 60` |
 | 06 | Missing bearer token | **401**, `missing or invalid bearer token` |
@@ -1789,7 +1799,7 @@ it checks first and prints what it is skipping instead of failing with a stack t
 | `02` | Steps 2, 3 and 5 still run (retry, the local functions and routing need no model) |
 | `03` | Prints the rendered tool listing, then stops |
 | `04` | Prints the tool schemas, then stops |
-| `05` | Prints the published tools, then stops |
+| `05` | Runs parts 1 to 4 (handshake, tool listing and schema translation need no model), then stops |
 | `06` | **Runs completely.** There is no model in it |
 | `07` | Stops; every node is a model call |
 

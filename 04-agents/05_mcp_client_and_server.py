@@ -1,16 +1,27 @@
-"""Serve tools over the Model Context Protocol and drive them from a model.
+"""Serve tools over the Model Context Protocol (MCP) and call them from a model.
 
-Demonstrates both halves of a protocol that is usually only shown from one side:
-    1. Publish three local functions as tools on a server that speaks stdio.
-    2. Start that server as a subprocess and complete the protocol handshake.
-    3. Ask the server what it offers and print the schema it advertises.
-    4. Translate those schemas into the tool array the chat API expects.
-    5. Run a tool-calling loop where every call crosses the process boundary.
-    6. Print the arguments and the raw result of one call as they cross it.
+MCP is a standard way to publish tools that any client can discover and call.
+This file holds both halves. Run normally, it starts a second copy of itself
+with --serve as a subprocess. That copy is the server, and it speaks JSON-RPC
+over stdin and stdout. The parent is the client. It asks the server for its
+tools, hands their schemas to the chat model, and sends each tool call the
+model makes across to the server. The three tools work on a folder of notes:
+list them, read one, and count its words.
+
+The run prints five parts:
+    1. Tools this file publishes. The three functions registered on the
+       server, and the notes directory they read.
+    2. Handshake. The server's name and the protocol version both sides
+       agreed on.
+    3. What the server advertises. Each tool's name, required arguments and
+       description, as the client received them.
+    4. The same schemas in chat-API form. read_note's schema, with
+       input_schema renamed to parameters.
+    5. Tool-calling loop. The model answers a question about the notes, and
+       every call it makes goes to the server. The first call is also shown
+       as it crossed: the arguments sent and the full result that came back.
 
 Run `python 05_mcp_client_and_server.py --serve` to start only the server.
-
-Module 04: Agents - MCP Client and Server.
 """
 
 import asyncio
@@ -21,28 +32,31 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-NOTES_DIR = Path(__file__).parent / "data" / "notes"
+load_dotenv(Path(__file__).parents[1] / ".env")
 
-MODEL = "deepseek-chat"
-BASE_URL = "https://api.deepseek.com"
+# DeepSeek when its key is set, otherwise OpenAI. OPENAI_BASE_URL and
+# OPENAI_MODEL point the OpenAI key at another compatible vendor.
+if os.getenv("DEEPSEEK_API_KEY"):
+    API_KEY = os.getenv("DEEPSEEK_API_KEY")
+    BASE_URL = "https://api.deepseek.com"
+    MODEL = "deepseek-chat"
+else:
+    API_KEY = os.getenv("OPENAI_API_KEY")
+    BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+NOTES_DIR = Path(__file__).parent / "data" / "notes"
 
 MAX_ROUNDS = 6
 
 
-# 1. The server. Only these three functions are exposed; anything else in this
-# file stays invisible to the client, which is the point of the boundary.
+# The server half. Only the three functions registered in build_server are
+# exposed to the client.
 
 
 def resolve_note_path(filename: str) -> Path | None:
-    """Resolve a model-supplied filename to a path, or None if it escapes NOTES_DIR.
-
-    `NOTES_DIR / filename` alone does not confine anything: `..` segments walk
-    back out of the directory, and an absolute path (`C:/Windows/...`) replaces
-    NOTES_DIR entirely rather than being appended to it - that is how `Path`'s
-    `/` operator is defined, not a bug in this code. filename comes straight
-    from the model's tool call, so resolving the path and checking it is still
-    inside NOTES_DIR is what actually limits reads to this directory.
-    """
+    """Return the path for a model-supplied filename, or None if it leaves
+    NOTES_DIR or is not a .txt file."""
     path = (NOTES_DIR / filename).resolve()
     if not path.is_relative_to(NOTES_DIR.resolve()) or path.suffix != ".txt":
         return None
@@ -50,13 +64,8 @@ def resolve_note_path(filename: str) -> Path | None:
 
 
 def build_server():
-    """Register the three note tools on a server object and return it.
-
-    Every print statement is deliberately absent from this half of the file. A
-    stdio server speaks the protocol on stdout, so one stray print corrupts the
-    stream and the client fails at the handshake with a parse error that says
-    nothing about the print. Servers log to stderr or to a file, never stdout.
-    """
+    """Register the three note tools on a server and return it. Nothing in this
+    half prints, because stdout carries the protocol."""
     from mcp.server.mcpserver import MCPServer
 
     server = MCPServer("notes")
@@ -72,7 +81,7 @@ def build_server():
         """Read one note file in full. Input: a filename from list_notes."""
         path = resolve_note_path(filename)
         if path is None or not path.is_file():
-            return f"No note named {filename!r}."
+            raise ValueError(f"No note named {filename!r}.")
         return path.read_text(encoding="utf-8")
 
     @server.tool()
@@ -80,7 +89,7 @@ def build_server():
         """Count the words in one note file. Input: a filename from list_notes."""
         path = resolve_note_path(filename)
         if path is None or not path.is_file():
-            return -1
+            raise ValueError(f"No note named {filename!r}.")
         return len(path.read_text(encoding="utf-8").split())
 
     return server
@@ -91,17 +100,12 @@ def serve() -> None:
     build_server().run("stdio")
 
 
-# 2-6. The client.
+# The client half.
 
 
 def to_chat_tools(mcp_tools: list) -> list[dict]:
-    """Rewrite advertised tool schemas into the shape the chat API accepts.
-
-    Both sides already speak JSON Schema, so this is a rename rather than a
-    translation: the protocol calls the field input_schema and the chat API
-    calls it parameters. Seeing how little happens here is the useful part -
-    a server written for one client works with any model that takes tools.
-    """
+    """Rewrite advertised tool schemas into the chat API's shape. Both use JSON
+    Schema, so only the field name changes, from input_schema to parameters."""
     return [
         {
             "type": "function",
@@ -139,9 +143,13 @@ async def run_client(question: str) -> None:
             print("\n--- 4. The same schemas in chat-API form ---")
             print(f"  {json.dumps(chat_tools[1], indent=2)}")
 
+            if not API_KEY:
+                print("\nNo DEEPSEEK_API_KEY or OPENAI_API_KEY in .env. Part 5 needs one, so the run stops here.")
+                return
+
             print("\n--- 5. Tool-calling loop across the process boundary ---")
             print(f"  question: {question}")
-            client = OpenAI(api_key=os.environ["DEEPSEEK_API_KEY"], base_url=BASE_URL)
+            client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
             messages = [{"role": "user", "content": question}]
             shown_wire_format = False
 
@@ -161,10 +169,8 @@ async def run_client(question: str) -> None:
                 messages.append(choice.model_dump(exclude_none=True))
                 calls = choice.tool_calls
                 arguments_by_call = [json.loads(call.function.arguments or "{}") for call in calls]
-                # The model can issue several tool_calls in one round (step 5's
-                # demo does), and each one crosses the process boundary on its
-                # own round trip - gather runs them concurrently instead of
-                # paying for that boundary once per call in sequence.
+                # The model can return several tool_calls in one round. gather sends
+                # them to the server together instead of one after another.
                 results = await asyncio.gather(
                     *(session.call_tool(call.function.name, arguments) for call, arguments in zip(calls, arguments_by_call))
                 )
@@ -174,10 +180,10 @@ async def run_client(question: str) -> None:
 
                     print(f"    {call.function.name}({arguments}) -> {first_line[:60]}")
                     if not shown_wire_format:
-                        print("\n    --- 6. One call, as it crossed the boundary ---")
-                        print(f"    request  : {json.dumps({'name': call.function.name, 'arguments': arguments})}")
-                        print(f"    response : content={first_line[:48]!r}")
-                        print(f"               structured={result.structured_content}\n")
+                        wire_result = result.model_dump(mode="json", by_alias=True, exclude_none=True)
+                        print("      first call as it crossed the boundary:")
+                        print(f"      request  : tools/call {json.dumps({'name': call.function.name, 'arguments': arguments})}")
+                        print(f"      response : {json.dumps(wire_result)}")
                         shown_wire_format = True
 
                     messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
@@ -192,19 +198,17 @@ def main() -> None:
 
     # Print UTF-8 even when the output is piped or redirected on Windows.
     sys.stdout.reconfigure(encoding="utf-8")
-    load_dotenv(Path(__file__).parents[1] / ".env")
 
     print("--- 1. Tools this file publishes ---")
     for name in ["list_notes", "read_note", "count_words"]:
         print(f"  {name}")
     print(f"  notes directory: {NOTES_DIR.relative_to(Path(__file__).parent)}\n")
 
-    if not os.environ.get("DEEPSEEK_API_KEY"):
-        print("DEEPSEEK_API_KEY is not set; the client loop needs it. Stopping here.")
-        return
-
     asyncio.run(
-        run_client("Which note explains why the checkout outage took so long to diagnose, and what was the fix?")
+        run_client(
+            "Which note explains why the checkout outage took so long to diagnose, "
+            "and what follow-up did it recommend?"
+        )
     )
 
 
