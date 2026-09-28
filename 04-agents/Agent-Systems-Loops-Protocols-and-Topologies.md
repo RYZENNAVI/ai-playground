@@ -1272,7 +1272,7 @@ coherence at the cost of latency.
 | `choose` | Evaluate and commit, including the condition that would flip it |
 | `report` | Act, i.e. produce the deliverable |
 
-The measured cost is 760 tokens and five model calls for one question, and the measured
+The measured cost is 601 to 663 tokens and five model calls for one question, and the measured
 liability is §14.3: run a question that needs none of this and the machinery still executes,
 inventing a trade-off for a question whose answer is a port number.
 
@@ -1314,8 +1314,9 @@ a hybrid agent from a caller who passes `fast=True`.
 back to `deep`, and the raw reply is retained. Falling back to the cheap path would make an
 unclear classification silently degrade the answer, and would hide the degradation.
 
-The measured result is §14.5: 79 tokens where the pipeline spent 570, at a cost of 75 extra
-tokens when the deep path is taken anyway, breaking even at 13% shallow traffic.
+The measured result is §14.5: 78 tokens where the pipeline spent 567 to 617, at a cost of 55
+extra tokens (the triage call) when the deep path is taken anyway, breaking even at 9% to 10%
+shallow traffic.
 
 ### 13.4 Choosing between them
 
@@ -1344,6 +1345,8 @@ This is the script that makes §2 concrete. Five nodes are defined once and wire
 class ReviewState(TypedDict):
     question: str
     depth: Optional[Literal["shallow", "deep"]]
+    verdict_raw: Optional[str]
+    triage_tokens: Optional[int]
     facts: Optional[str]
     framing: Optional[str]
     options: Optional[str]
@@ -1368,14 +1371,18 @@ The five analysis nodes each add exactly one field:
 | `choose` | Pick one and state the condition under which it stops being right | `choice` |
 | `report` | Write a three-sentence answer using this reasoning | `answer` |
 
+`frame`, `propose` and `choose` also receive the question. An earlier version gave each of them
+only the previous field, and one of three runs drifted from "self-host or managed" to an answer
+about single-region monoliths. With the question added, three runs stayed on it.
+
 Reading a predecessor's field goes through a helper that names what is missing:
 
 ```python
-raise ValueError(f"node {node!r} needs '{field}', but no earlier node produced it - check the edges")
+raise ValueError(f"node {node!r} needs '{field}', but no earlier node produced it. Check the edges.")
 ```
 
-A bare `state[field]` would fail with a `KeyError` that says nothing about why, and the whole
-point of this script is inviting the reader to rewire the edges.
+A bare `state[field]` would fail with a `KeyError` that says nothing about why. This matters
+when the edges are rewired so that a node runs before the one that fills its input.
 
 ### 14.2 Topology one: a straight pipeline
 
@@ -1397,8 +1404,10 @@ question: Should a small team run its own database server instead of paying for 
   after propose  state holds: facts, framing, options
   after choose   state holds: facts, framing, options, choice
   after report   state holds: facts, framing, options, choice, answer
-  nodes run: 5, tokens: 760
+  nodes run: 5, tokens: 663
 ```
+
+Three runs on 2026-09-28 spent 601 to 663 tokens.
 
 Every node earned its place: the answer weighs self-hosting against managed hosting and names
 the condition that flips the decision.
@@ -1407,15 +1416,17 @@ the condition that flips the decision.
 
 ```
 question: What port does PostgreSQL listen on by default?
-  nodes run: 5, tokens: 570
+  nodes run: 5, tokens: 606
   the pipeline's 'framing' step invented a trade-off anyway:
-    "The central trade-off is between compile-time configurability and runtime
-     flexibility for the PostgreSQL server port..."
+    "PostgreSQL listens on port 5432 by default, and the central trade-off is between
+     convention (a predictable, universally assumed default ...) and flexibility (the
+     ability to override it via config, flags, or environment variables ...)."
 ```
 
-The correct answer is `5432`. The pipeline produced it wrapped in three sentences about
-`PGPORT` overrides and deployment environments, because a node whose instruction is *name the
-central trade-off* will name one whether or not a trade-off exists.
+The correct answer is `5432`. The pipeline produced it followed by two sentences about changing
+the port in `postgresql.conf` or with `-p`, because a node whose instruction is *name the
+central trade-off* will name one whether or not a trade-off exists. All three runs framed the
+same convention-against-flexibility trade-off.
 
 **This is the real cost of a fixed pipeline, and it is not only tokens.** Forced analysis
 produces analysis-shaped output regardless of the input.
@@ -1437,47 +1448,58 @@ A conditional edge is a function from state to the name of the next node, so the
 The triage node asks for exactly one word, `shallow` or `deep`, and keeps the raw reply:
 
 ```python
-if "deep" in verdict:      depth = "deep"
-elif "shallow" in verdict: depth = "shallow"
-else:                      depth = FALLBACK_DEPTH      # "deep"
+if "deep" in verdict.lower():      depth = "deep"
+elif "shallow" in verdict.lower(): depth = "shallow"
+else:                              depth = FALLBACK_DEPTH      # "deep"
 ```
 
 A verdict naming neither word means the model did not follow the format, not that it chose
 `shallow`. Falling back to the expensive path keeps quality the default when the classifier
 itself is unclear, rather than quietly saving money; keeping `verdict_raw` means a wrong call
-can be diagnosed against what the model actually said.
+can be diagnosed against what the model actually said. In the runs so far every reply was a
+single clean word, so the fallback never fired.
 
 ### 14.5 Three questions through the router, measured
 
 ```
 What port does PostgreSQL listen on by default?
-  triage said shallow, nodes run: 2, tokens: 79
+  triage said shallow, nodes run: 2, tokens: 78
   -> triage -> answer_directly
   answer: PostgreSQL listens on port 5432 by default.
 
 Should a small team run its own database server instead of paying for a managed one?
-  triage said deep, nodes run: 6, tokens: 835
+  triage said deep, nodes run: 6, tokens: 654
   -> triage -> gather -> frame -> propose -> choose -> report
 
 Is PostgreSQL better than MySQL?
-  triage said deep, nodes run: 6, tokens: 864
+  triage said deep, nodes run: 6, tokens: 639
   -> triage -> gather -> frame -> propose -> choose -> report
+
+what routing saves or adds, in measured tokens:
+  shallow question: pipeline 606, router 78 (saves 528)
+  deep question:    the triage call adds 55
+  break-even share of shallow traffic: 9%
 ```
 
-Side by side with the pipeline:
+Three runs on 2026-09-28:
 
-| Question | Fixed pipeline | Router | Difference |
-| :--- | ---: | ---: | :--- |
-| Shallow (`default port`) | 570 tokens, 5 nodes | **79 tokens, 2 nodes** | saves 491 |
-| Deep (`self-host or managed`) | 760 tokens, 5 nodes | 835 tokens, 6 nodes | costs 75 extra for triage |
+| | Run 1 | Run 2 | Run 3 |
+| :--- | ---: | ---: | ---: |
+| Shallow question, pipeline | 606 | 567 | 617 |
+| Shallow question, router | 78 | 78 | 78 |
+| Triage call on the deep question | 55 | 55 | 55 |
+| Break-even share of shallow traffic | 9% | 10% | 9% |
 
-```
-break-even share of shallow traffic: 13%
-```
+The deep path's extra cost is read from the triage node itself, which returns its own token
+count. An earlier version subtracted a pipeline run of the deep question from a router run of
+it. Those are two separate generations of five nodes each, and their length difference swamped
+the 55 tokens of triage: three runs gave 9, 236 and 83 tokens of "overhead" and break-even
+points of 2%, 37% and 15%.
 
-Routing pays for itself once more than **13%** of questions are shallow. That number is the
-honest way to argue for a topology change: the triage call is not free, and the saving only
-exists if the traffic actually contains easy questions.
+Routing pays for itself once more than about **10%** of questions are shallow. That number is
+the honest way to argue for a topology change: the triage call is not free, and the saving only
+exists if the traffic actually contains easy questions. The ambiguous question went deep in
+every run.
 
 ### 14.6 Print the topologies instead of describing them
 
@@ -1495,7 +1517,7 @@ fixed pipeline                    conditional router
 ```
 
 Same node functions, same prompts, same model. One conditional edge is the entire difference
-between the two columns, and between 570 tokens and 79 on the same question.
+between the two columns, and between about 600 tokens and 78 on the same question.
 
 ---
 
@@ -1739,9 +1761,9 @@ Every row below came out of an actual run of the script named in it.
 | 06 | Runtime discovery | endpoint and auth scheme both read from the card |
 | 06 | Schema violation (`attendees: 500`, card max 60) | **400**, `attendees must be an integer between 1 and 60` |
 | 06 | Missing bearer token | **401**, `missing or invalid bearer token` |
-| 07 | Deep question: pipeline vs. router | 760 vs **835** tokens (triage overhead: 75) |
-| 07 | Shallow question: pipeline vs. router | 570 vs **79** tokens (saves 491) |
-| 07 | Break-even share of shallow traffic | **13%** |
+| 07 | Deep question: extra cost of routing | the triage call, 55 tokens in every run |
+| 07 | Shallow question: pipeline vs. router | 567 to 617 vs 78 tokens (saves 489 to 539) |
+| 07 | Break-even share of shallow traffic | 9% to 10% over three runs |
 
 ### Three findings worth keeping
 
@@ -1754,8 +1776,9 @@ the text changed.
 **2. A miss has to be readable.** In `03` the tools answer `No rule matches 'tax rate'.` and the
 model recovers: it switches tool, enumerates the categories, and refuses honestly. **Error strings are part of the control flow when the caller is a model.**
 
-**3. Topology is a measurable decision, not a style preference.** The router costs 75 extra
-tokens on a deep question and saves 491 on a shallow one, so it wins above 13% shallow traffic.
+**3. Topology is a measurable decision, not a style preference.** The router costs 55 extra
+tokens on a deep question and saves about 500 on a shallow one, so it wins above about 10%
+shallow traffic.
 That is arguable with numbers. "Graphs are more flexible" is not.
 
 ---
@@ -1806,7 +1829,7 @@ it checks first and prints what it is skipping instead of failing with a stack t
 | `04` | Prints the tool schemas, then stops |
 | `05` | Runs parts 1 to 4 (handshake, tool listing and schema translation need no model), then stops |
 | `06` | **Runs completely.** There is no model in it |
-| `07` | Stops; every node is a model call |
+| `07` | Prints part 4 (the two topologies), then stops; parts 1 to 3 are model calls |
 
 **Ports and processes.** `05` starts itself as a subprocess (`--serve`) and talks to it over
 stdio, so nothing listens on a port. `06` starts a local provider on `127.0.0.1:8931` in a

@@ -1,17 +1,22 @@
-"""Run the same five nodes as a fixed pipeline and as a graph that can skip it.
+"""Run the same nodes as a fixed pipeline and as a routed graph with LangGraph.
 
-Demonstrates that an agent's behaviour is its topology, not its prompts:
-    1. Declare one state object that every node reads from and writes back to.
-    2. Wire five nodes into a straight pipeline and run a question through it.
-    3. Print the state after each node to see which field each one contributed.
-    4. Force a shallow question through that same pipeline, to see what running
-       every node costs when none of them were needed.
-    5. Add a triage node whose verdict decides which path the next edge takes.
-    6. Send shallow, deep and ambiguous questions through that graph and compare,
-       tracking the token cost of each path.
-    7. Print both topologies so the structural difference is visible, not implied.
+LangGraph builds an agent as a StateGraph. Each node is a function that reads
+one shared state and returns the fields it adds, and edges decide which node
+runs next. A conditional edge picks the next node from the state, which is how
+the graph routes. Here five model calls (gather, frame, propose, choose,
+report) form an analysis pipeline. The router puts a triage call in front: a
+shallow question gets one direct answer, and a deep one goes through all five.
 
-Module 04: Agents - LangGraph Topologies.
+The run prints four parts:
+    1. Fixed pipeline. A deep question through the five nodes, with the
+       fields the state holds after each one.
+    2. The shallow question through the same pipeline. All five nodes run,
+       and frame names a trade-off the question does not have.
+    3. Triage decides the path. A shallow, a deep and an ambiguous question
+       through the router. Then what routing saves on the shallow question,
+       what the triage call adds on the deep one, and the share of shallow
+       questions above which routing pays.
+    4. The two topologies. The edges of both compiled graphs.
 """
 
 import operator
@@ -29,28 +34,30 @@ from langgraph.graph import END, START, StateGraph
 sys.stdout.reconfigure(encoding="utf-8")
 load_dotenv(Path(__file__).parents[1] / ".env")
 
-MODEL = "deepseek-chat"
-BASE_URL = "https://api.deepseek.com"
+# DeepSeek when its key is set, otherwise OpenAI. OPENAI_BASE_URL and
+# OPENAI_MODEL point the OpenAI key at another compatible vendor.
+if os.getenv("DEEPSEEK_API_KEY"):
+    API_KEY = os.getenv("DEEPSEEK_API_KEY")
+    BASE_URL = "https://api.deepseek.com"
+    MODEL = "deepseek-chat"
+else:
+    API_KEY = os.getenv("OPENAI_API_KEY")
+    BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-# What triage falls back to when the model's verdict names neither "shallow"
-# nor "deep" - leaning toward the expensive path keeps quality the default
-# when the classifier itself is unclear, rather than quietly saving money.
+# Triage's path when the verdict names neither word. Deep keeps quality the
+# default when the classifier is unclear.
 FALLBACK_DEPTH = "deep"
 
 
 class ReviewState(TypedDict):
-    """The one object every node reads from and writes back into.
-
-    Nodes never call each other and never pass arguments. Each returns a partial
-    dict that is merged into this state, so adding a node means adding a field
-    rather than rewiring a call chain. The visited list is annotated with a
-    reducer because it is the only field several nodes append to; without that
-    annotation the last writer would overwrite the earlier entries.
-    """
+    """The state every node reads and returns fields into. visited and tokens
+    have a reducer, so each node's value is added instead of replacing the last."""
 
     question: str
     depth: Optional[Literal["shallow", "deep"]]
     verdict_raw: Optional[str]
+    triage_tokens: Optional[int]
     facts: Optional[str]
     framing: Optional[str]
     options: Optional[str]
@@ -61,11 +68,11 @@ class ReviewState(TypedDict):
 
 
 def build_model() -> ChatOpenAI:
-    """Return a chat model reached through the OpenAI request format."""
+    """Return the chosen chat model through LangChain's OpenAI client."""
     return ChatOpenAI(
         model=MODEL,
         base_url=BASE_URL,
-        api_key=os.environ["DEEPSEEK_API_KEY"],
+        api_key=API_KEY,
         temperature=0,
     )
 
@@ -79,26 +86,19 @@ def ask(model: ChatOpenAI, instruction: str, **values: str) -> tuple[str, int]:
 
 
 def require(state: ReviewState, field: str, node: str) -> str:
-    """Read a field an earlier node in the graph is supposed to have set.
-
-    A bare state[field] fails with a KeyError that says nothing about why - and
-    the whole point of this script is inviting readers to rewire the edges, so
-    a node running before the one that fills its input is a real mistake to
-    make, not a hypothetical one. This names the missing field and the node
-    that needed it instead.
-    """
+    """Read a field an earlier node should have set, and name it if the edges skipped that node."""
     value = state.get(field)
     if not value:
-        raise ValueError(f"node {node!r} needs '{field}', but no earlier node produced it - check the edges")
+        raise ValueError(f"node {node!r} needs '{field}', but no earlier node produced it. Check the edges.")
     return value
 
 
-# 1-2. The five nodes. Each one adds exactly one field, which is what lets the
-# same functions be reused under two different topologies further down.
+# The nodes. Each adds one field, so the same functions serve both topologies.
 
 
-def make_nodes(model: ChatOpenAI) -> dict:
-    """Build the node functions, closing over the model they call."""
+def make_nodes(model: ChatOpenAI | None) -> dict:
+    """Build the node functions, closing over the model they call. With no model
+    the graphs still build, but the nodes cannot run."""
 
     def gather(state: ReviewState) -> dict:
         """Collect the raw considerations before any judgement is applied."""
@@ -113,7 +113,8 @@ def make_nodes(model: ChatOpenAI) -> dict:
         """Turn loose factors into a single sentence stating the real trade-off."""
         framing, tokens = ask(
             model,
-            "In one sentence, name the central trade-off these factors describe:\n{facts}",
+            "Question: {question}\nIn one sentence, name the central trade-off these factors describe:\n{facts}",
+            question=state["question"],
             facts=require(state, "facts", "frame"),
         )
         return {"framing": framing, "visited": ["frame"], "tokens": tokens}
@@ -122,7 +123,9 @@ def make_nodes(model: ChatOpenAI) -> dict:
         """Generate candidate courses of action against that trade-off."""
         options, tokens = ask(
             model,
-            "Given this trade-off, propose two opposing courses of action, one per line, no preamble:\n{framing}",
+            "Question: {question}\nGiven this trade-off, propose two opposing courses of action, "
+            "one per line, no preamble:\n{framing}",
+            question=state["question"],
             framing=require(state, "framing", "propose"),
         )
         return {"options": options, "visited": ["propose"], "tokens": tokens}
@@ -131,7 +134,9 @@ def make_nodes(model: ChatOpenAI) -> dict:
         """Pick one candidate and say what would have to be true for it to hold."""
         choice, tokens = ask(
             model,
-            "Pick one of these and state the condition under which it stops being right. Two sentences:\n{options}",
+            "Question: {question}\nPick one of these and state the condition under which it stops "
+            "being right. Two sentences:\n{options}",
+            question=state["question"],
             options=require(state, "options", "choose"),
         )
         return {"choice": choice, "visited": ["choose"], "tokens": tokens}
@@ -147,13 +152,8 @@ def make_nodes(model: ChatOpenAI) -> dict:
         return {"answer": answer, "visited": ["report"], "tokens": tokens}
 
     def triage(state: ReviewState) -> dict:
-        """Decide whether the question needs the pipeline or a direct answer.
-
-        A verdict that names neither word means the model did not follow the
-        format, not that it picked "shallow" - falling back to deep is the
-        quality-over-cost default for that case, and the raw reply is kept so a
-        wrong call can be diagnosed against what the model actually said.
-        """
+        """Classify the question as shallow or deep. The raw reply and the call's own
+        token cost are kept, the cost because it is exactly what routing adds."""
         verdict, tokens = ask(
             model,
             "Reply with exactly one word, shallow or deep. A question is shallow if a "
@@ -161,14 +161,19 @@ def make_nodes(model: ChatOpenAI) -> dict:
             "trade-offs.\nQuestion: {question}",
             question=state["question"],
         )
-        verdict = verdict.lower()
-        if "deep" in verdict:
+        if "deep" in verdict.lower():
             depth = "deep"
-        elif "shallow" in verdict:
+        elif "shallow" in verdict.lower():
             depth = "shallow"
         else:
             depth = FALLBACK_DEPTH
-        return {"depth": depth, "verdict_raw": verdict, "visited": ["triage"], "tokens": tokens}
+        return {
+            "depth": depth,
+            "verdict_raw": verdict,
+            "triage_tokens": tokens,
+            "visited": ["triage"],
+            "tokens": tokens,
+        }
 
     def answer_directly(state: ReviewState) -> dict:
         """Answer in one pass, skipping every analysis node."""
@@ -187,12 +192,8 @@ def make_nodes(model: ChatOpenAI) -> dict:
 
 
 def build_pipeline(nodes: dict):
-    """Step 2. Wire the five analysis nodes in a fixed order, with no branches.
-
-    Every question pays for all five calls, whether or not it needed them. That
-    is the honest trade of a linear pipeline: predictable and easy to reason
-    about, and wasteful the moment the inputs vary in difficulty.
-    """
+    """Wire the five analysis nodes in a fixed order, with no branches. Every
+    question pays for all five calls."""
     builder = StateGraph(ReviewState)
     for name in ["gather", "frame", "propose", "choose", "report"]:
         builder.add_node(name, nodes[name])
@@ -206,13 +207,8 @@ def build_pipeline(nodes: dict):
 
 
 def build_router(nodes: dict):
-    """Step 5. Put a triage node in front and let its verdict pick the path.
-
-    The five analysis nodes are the same objects the pipeline uses; only the
-    edges differ. A conditional edge is a function from state to the name of the
-    next node, so the decision is data the graph produced rather than a flag the
-    caller had to set in advance.
-    """
+    """Put a triage node in front of the same five nodes. A conditional edge reads
+    the depth triage wrote and sends the question to gather or answer_directly."""
     builder = StateGraph(ReviewState)
     for name in ["triage", "gather", "frame", "propose", "choose", "report", "answer_directly"]:
         builder.add_node(name, nodes[name])
@@ -236,7 +232,7 @@ FIELDS = ["depth", "facts", "framing", "options", "choice", "answer"]
 
 
 def run_and_trace(graph, question: str, show_fields: bool = False) -> dict:
-    """Step 3. Stream the run and print what each node added to the state."""
+    """Stream the run and, if asked, print which fields the state holds after each node."""
     final: dict = {}
     for state in graph.stream({"question": question, "visited": [], "tokens": 0}, stream_mode="values"):
         final = state
@@ -247,34 +243,42 @@ def run_and_trace(graph, question: str, show_fields: bool = False) -> dict:
 
 
 def describe(graph, label: str) -> None:
-    """Step 7. Print the compiled edges so the two shapes can be compared."""
+    """Print one compiled graph's edges, sorted so the two shapes can be compared."""
     print(f"  {label}")
     for edge in sorted(graph.get_graph().edges, key=lambda item: (item.source, item.target)):
         marker = " (conditional)" if edge.conditional else ""
         print(f"    {edge.source} -> {edge.target}{marker}")
 
 
-def main() -> None:
-    if not os.environ.get("DEEPSEEK_API_KEY"):
-        print("DEEPSEEK_API_KEY is not set; every step needs it. Stopping here.")
-        return
+def print_topologies(pipeline, router) -> None:
+    """Part 4. Print the edges of both graphs. No model is called."""
+    print("\n--- 4. The two topologies ---")
+    describe(pipeline, "fixed pipeline")
+    describe(router, "conditional router")
 
-    nodes = make_nodes(build_model())
+
+def main() -> None:
+    nodes = make_nodes(build_model() if API_KEY else None)
     pipeline = build_pipeline(nodes)
     router = build_router(nodes)
+
+    if not API_KEY:
+        print_topologies(pipeline, router)
+        print("\nNo DEEPSEEK_API_KEY or OPENAI_API_KEY in .env. Parts 1 to 3 need one, so only part 4 ran.")
+        return
 
     deep_question = "Should a small team run its own database server instead of paying for a managed one?"
     shallow_question = "What port does PostgreSQL listen on by default?"
     ambiguous_question = "Is PostgreSQL better than MySQL?"
 
-    print("--- 1-3. Fixed pipeline, every node runs ---")
+    print("--- 1. Fixed pipeline ---")
     print(f"  question: {deep_question}")
     deep_pipeline = run_and_trace(pipeline, deep_question, show_fields=True)
     print(f"    nodes run: {len(deep_pipeline['visited'])}, tokens: {deep_pipeline['tokens']}"
           f" -> {' -> '.join(deep_pipeline['visited'])}")
     print(f"  answer: {deep_pipeline['answer']}")
 
-    print("\n--- 4. The shallow question, forced through the same fixed pipeline ---")
+    print("\n--- 2. The shallow question through the same pipeline ---")
     print(f"  question: {shallow_question}")
     shallow_pipeline = run_and_trace(pipeline, shallow_question)
     print(f"    nodes run: {len(shallow_pipeline['visited'])}, tokens: {shallow_pipeline['tokens']}"
@@ -282,7 +286,7 @@ def main() -> None:
     print(f"    the pipeline's 'framing' step invented a trade-off anyway: {shallow_pipeline['framing']}")
     print(f"  answer: {shallow_pipeline['answer']}")
 
-    print("\n--- 5-6. Same nodes, triage decides the path ---")
+    print("\n--- 3. Triage decides the path ---")
     router_runs = {}
     for question in [shallow_question, deep_question, ambiguous_question]:
         result = run_and_trace(router, question)
@@ -293,28 +297,19 @@ def main() -> None:
               f" -> {' -> '.join(result['visited'])}")
         print(f"    answer: {result['answer']}")
 
-    print("\n  what routing actually costs or saves, in measured tokens:")
+    print("\n  what routing saves or adds, in measured tokens:")
     shallow_saving = shallow_pipeline["tokens"] - router_runs[shallow_question]["tokens"]
-    deep_overhead = router_runs[deep_question]["tokens"] - deep_pipeline["tokens"]
+    # The triage call is the only node the router adds on the deep path. Two whole
+    # runs of the deep question also differ by generation length, so they are not compared.
+    triage_cost = router_runs[deep_question]["triage_tokens"]
     print(f"    shallow question: pipeline {shallow_pipeline['tokens']}, router {router_runs[shallow_question]['tokens']}"
           f" (saves {shallow_saving})")
-    print(f"    deep question:    pipeline {deep_pipeline['tokens']}, router {router_runs[deep_question]['tokens']}"
-          f" (costs {deep_overhead} extra for triage)")
-    # Each call is an independent generation, so ordinary length variance in
-    # gather/choose/etc. can be bigger than the one extra triage call - when
-    # that happens deep_overhead comes out negative and a break-even percentage
-    # would be noise dressed up as a number, not a real threshold.
-    if deep_overhead <= 0:
-        print("    triage's overhead was smaller than this run's normal generation variance"
-              " - routing measured no real cost on the deep path here")
-    elif shallow_saving + deep_overhead > 0:
-        breakeven = deep_overhead / (shallow_saving + deep_overhead)
-        print(f"    break-even share of shallow traffic: {breakeven:.0%}"
-              f" (routing wins once more than that share of questions is shallow)")
+    print(f"    deep question:    the triage call adds {triage_cost}")
+    breakeven = triage_cost / (shallow_saving + triage_cost)
+    print(f"    break-even share of shallow traffic: {breakeven:.0%}"
+          f" (routing wins once more than that share of questions is shallow)")
 
-    print("\n--- 7. The two topologies ---")
-    describe(pipeline, "fixed pipeline")
-    describe(router, "conditional router")
+    print_topologies(pipeline, router)
 
 
 if __name__ == "__main__":
