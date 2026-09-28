@@ -1,17 +1,26 @@
-"""Hand the same loop to a framework and see what it takes over.
+"""Run a tool-calling agent with LangChain's create_agent on a simulated incident.
 
-Demonstrates the agent a diagnosis workflow ends up needing:
-    1. Declare four probes as typed tools the model can read the signature of.
-    2. Let the framework run reason, act and observe over a real incident.
-    3. Read the step trace to see which probe ran, in what order, and why.
-    4. Cap the step budget and watch a deliberately unsolvable case hit the cap.
-    5. Blur the tool descriptions and re-run, to show selection is text-driven.
+create_agent runs the ReAct loop from script 03 over the model's native
+function calling: each tool's name, docstring and argument types become a
+schema, the model returns tool calls instead of text to parse, and the
+framework runs them and sends the results back. The four tools probe a small
+simulated network: resolve a hostname, ping a host, check a local interface
+and search the service log.
 
-Module 04: Agents - Tool-Using Diagnosis Agent.
+The run prints four parts:
+    1. Tool schemas handed to the model. The name, arguments and description
+       the framework read from each function.
+    2. Diagnosing an incident. The question names a symptom, not a host, so
+       the agent finds billing.internal in the log before it resolves and
+       pings it. The trace lists every call and the first line it returned.
+    3. The same incident with a step limit of 4. The agent is stopped after
+       its tool calls, before it writes an answer.
+    4. The same tools with vague descriptions. Only the docstrings change, to
+       "Do a lookup." and similar, and the agent needs more calls to reach the
+       same answer.
 """
 
 import os
-import random
 import sys
 from pathlib import Path
 
@@ -25,20 +34,23 @@ from langchain_openai import ChatOpenAI
 sys.stdout.reconfigure(encoding="utf-8")
 load_dotenv(Path(__file__).parents[1] / ".env")
 
-MODEL = "deepseek-chat"
-BASE_URL = "https://api.deepseek.com"
+# DeepSeek when its key is set, otherwise OpenAI. OPENAI_BASE_URL and
+# OPENAI_MODEL point the OpenAI key at another compatible vendor.
+if os.getenv("DEEPSEEK_API_KEY"):
+    API_KEY = os.getenv("DEEPSEEK_API_KEY")
+    BASE_URL = "https://api.deepseek.com"
+    MODEL = "deepseek-chat"
+else:
+    API_KEY = os.getenv("OPENAI_API_KEY")
+    BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-# Fixed seed so the simulated latencies are the same on every run. A diagnosis
-# demo whose numbers move between runs cannot be discussed after the fact.
-random.seed(7)
-
-# The simulated network. Each host is either reachable or not, and the resolver
-# knows a different set of names than the ping table does - that mismatch is
-# what makes multi-step diagnosis necessary instead of one lookup.
+# The simulated network. billing.internal resolves but does not answer, which
+# the agent can only find by reading the log first.
 HOSTS = {
-    "shop.internal": {"address": "10.0.4.21", "reachable": True},
-    "billing.internal": {"address": "10.0.4.37", "reachable": False},
-    "cache.internal": {"address": "10.0.4.55", "reachable": True},
+    "shop.internal": {"address": "10.0.4.21", "reachable": True, "latency_ms": 12},
+    "billing.internal": {"address": "10.0.4.37", "reachable": False, "latency_ms": None},
+    "cache.internal": {"address": "10.0.4.55", "reachable": True, "latency_ms": 8},
 }
 
 INTERFACES = {
@@ -53,6 +65,8 @@ LOG_LINES = [
     "14:05:02 INFO  cache: 1840 keys evicted",
     "14:06:19 WARN  resolver: slow response from 10.0.4.1 (812 ms)",
 ]
+
+INCIDENT_QUESTION = "Checkout keeps failing with connection errors since 14:00. What is broken?"
 
 
 @tool
@@ -72,7 +86,7 @@ def ping_host(hostname: str) -> str:
         return f"Cannot ping {hostname}: the name does not resolve."
     if not record["reachable"]:
         return f"{hostname} ({record['address']}) does not answer: request timed out."
-    return f"{hostname} ({record['address']}) answers in {random.randint(2, 40)} ms."
+    return f"{hostname} ({record['address']}) answers in {record['latency_ms']} ms."
 
 
 @tool
@@ -96,6 +110,7 @@ def search_logs(keyword: str) -> str:
 
 
 TOOLS = [resolve_host, ping_host, check_interface, search_logs]
+CLEAR_TOOLS = {item.name: item for item in TOOLS}
 
 SYSTEM_PROMPT = (
     "You diagnose network incidents. Investigate with the tools before concluding. "
@@ -104,23 +119,17 @@ SYSTEM_PROMPT = (
 
 
 def build_model() -> ChatOpenAI:
-    """Return a chat model reached through the OpenAI request format."""
+    """Return the chosen chat model through LangChain's OpenAI client."""
     return ChatOpenAI(
         model=MODEL,
         base_url=BASE_URL,
-        api_key=os.environ["DEEPSEEK_API_KEY"],
+        api_key=API_KEY,
         temperature=0,
     )
 
 
 def describe_tools() -> None:
-    """Step 1. Show the schema the framework derived from each function.
-
-    The decorator reads the signature and the docstring and turns them into a
-    tool schema. That schema, not the Python function, is what the model sees,
-    so an argument with no type hint or a docstring that omits what the input
-    should look like degrades tool selection while the code still runs fine.
-    """
+    """Step 1. Print the schema the @tool decorator built from each function's signature and docstring."""
     print("--- 1. Tool schemas handed to the model ---")
     for item in TOOLS:
         argument_names = ", ".join(item.args_schema.model_json_schema()["properties"])
@@ -128,13 +137,8 @@ def describe_tools() -> None:
 
 
 def run_agent(question: str, tools: list, recursion_limit: int = 12) -> dict:
-    """Run the agent and return both its answer and the trace of what it called.
-
-    create_agent compiles to a graph, so the return value is the whole message
-    list rather than one string. Reading that list back is the only way to tell
-    a correct answer that was investigated from a correct answer that was
-    guessed, which is why every demo below prints the trace instead of the text.
-    """
+    """Run the agent and return its messages, and whether it hit the recursion limit.
+    Streaming keeps the messages made before the limit."""
     agent = create_agent(build_model(), tools, system_prompt=SYSTEM_PROMPT)
     messages: list = []
     try:
@@ -147,8 +151,6 @@ def run_agent(question: str, tools: list, recursion_limit: int = 12) -> dict:
         return {"messages": messages, "stopped": False}
     except Exception as error:
         if "recursion" in str(error).lower():
-            # Streaming keeps the messages produced before the cap was reached,
-            # so a stopped run can still be inspected instead of vanishing.
             return {"messages": messages, "stopped": True}
         raise
 
@@ -171,79 +173,52 @@ def print_trace(result: dict) -> None:
 
 
 def demo_incident() -> None:
-    """Steps 2 and 3. A real incident that needs more than one probe.
-
-    The question names a symptom, not a host, so the agent has to find the host
-    in the log before it can test it. That ordering is not scripted anywhere -
-    it falls out of the tool descriptions and the observations coming back.
-    """
-    print("\n--- 2-3. Diagnosing a live incident ---")
-    question = "Checkout keeps failing with connection errors since 14:00. What is broken?"
-    print(f"  question: {question}")
-    print_trace(run_agent(question, TOOLS))
+    """Step 2. The question names a symptom, not a host, so the agent has to find the host in the log first."""
+    print("\n--- 2. Diagnosing an incident ---")
+    print(f"  question: {INCIDENT_QUESTION}")
+    print_trace(run_agent(INCIDENT_QUESTION, TOOLS))
 
 
 def demo_step_limit() -> None:
-    """Step 4. Ask something no tool can settle, with a tight step budget.
-
-    The simulated network has no traffic-volume data at all, so no sequence of
-    calls can answer this. A capped budget turns that into a bounded failure
-    instead of a loop that bills forever, which is the practical reason the cap
-    exists rather than a theoretical one.
-    """
-    print("\n--- 4. An unanswerable question against a tight budget ---")
-    question = "Which host consumed the most bandwidth this week, and by how many gigabytes?"
-    print(f"  question: {question}")
-    print_trace(run_agent(question, TOOLS, recursion_limit=4))
+    """Step 3. Run the same incident with a recursion limit of 4. The limit stops
+    the agent after its tool calls, before it writes an answer."""
+    print("\n--- 3. The same incident with a step limit of 4 ---")
+    print_trace(run_agent(INCIDENT_QUESTION, TOOLS, recursion_limit=4))
 
 
 def demo_description_matters() -> None:
-    """Step 5. Change only the wording of a description and re-run.
-
-    Nothing about the four functions changes here. The vague copies keep the
-    same names and the same behaviour, and only their descriptions lose the
-    detail about what each probe is for. Both runs reach the same conclusion,
-    but the vague one spends roughly twice the tool calls getting there, most of
-    them wasted guessing hostnames such as "checkout", "api" and "db" that the
-    clear run never tried. The description is the variable, and it is billed
-    per wrong guess.
-    """
-    print("\n--- 5. The same tools with vague descriptions ---")
+    """Step 4. Give the same functions vague docstrings and re-run. Each vague tool
+    calls the clear one, so only the description the model reads changes."""
+    print("\n--- 4. The same tools with vague descriptions ---")
 
     @tool
     def resolve_host(hostname: str) -> str:
         """Do a lookup."""
-        return HOSTS.get(hostname, {}).get("address") or f"{hostname} does not resolve."
+        return CLEAR_TOOLS["resolve_host"].func(hostname)
 
     @tool
     def ping_host(hostname: str) -> str:
         """Do a check."""
-        record = HOSTS.get(hostname)
-        if record is None:
-            return f"Cannot ping {hostname}."
-        return "answers" if record["reachable"] else "request timed out"
+        return CLEAR_TOOLS["ping_host"].func(hostname)
 
     @tool
     def check_interface(name: str) -> str:
         """Do a check."""
-        record = INTERFACES.get(name)
-        return f"{name} is {record['state']}" if record else f"no interface {name}"
+        return CLEAR_TOOLS["check_interface"].func(name)
 
     @tool
     def search_logs(keyword: str) -> str:
         """Do a search."""
-        hits = [line for line in LOG_LINES if keyword.lower() in line.lower()]
-        return "\n".join(hits) if hits else "nothing found"
+        return CLEAR_TOOLS["search_logs"].func(keyword)
 
-    question = "Checkout keeps failing with connection errors since 14:00. What is broken?"
-    print_trace(run_agent(question, [resolve_host, ping_host, check_interface, search_logs]))
+    print_trace(run_agent(INCIDENT_QUESTION, [resolve_host, ping_host, check_interface, search_logs]))
 
 
 def main() -> None:
     describe_tools()
 
-    if not os.environ.get("DEEPSEEK_API_KEY"):
-        print("\nDEEPSEEK_API_KEY is not set; steps 2 to 5 need it. Stopping here.")
+    if not API_KEY:
+        print("\nNo DEEPSEEK_API_KEY or OPENAI_API_KEY in .env. Parts 2 to 4 need one, so the run stops here.")
         return
 
     demo_incident()

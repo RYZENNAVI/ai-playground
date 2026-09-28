@@ -77,8 +77,7 @@ to compile and pass tests, a query that either returns rows or errors, a diagnos
 checked against a known outcome. Verifiability is what lets you run the loop unattended. Without
 it, every run needs a person to read it, and the agent has not saved anything.
 
-`04`'s step-limit demo is that principle as code: the question has no answer in the available
-data, and what stops the run is not insight but a cap.
+`04`'s step-limit part is that principle as code: what stops the run is not insight but a cap.
 
 ### 1.4 Three design rules the scripts follow
 
@@ -131,8 +130,8 @@ measured cost differs by an order of magnitude (see §14).
 
 The cost of choosing "agent" is that behaviour stops being reproducible. `03` shows the same
 loop taking one tool call for a question it can answer and five for a question it cannot, and
-`04` shows the same four tools reaching a correct answer in six calls and a wrong answer in
-fourteen once their descriptions get vague. That variance is the feature, and it is also the
+`04` shows the same four tools taking 6 to 7 calls with clear descriptions and 12 to 18 once
+the descriptions get vague. That variance is the feature, and it is also the
 bill.
 
 ---
@@ -430,7 +429,7 @@ refusal after five attempts.
 **Does not fit, or needs care:**
 
 - **It has no natural stop.** A step cap is mandatory, not defensive; `04` demonstrates a run
-  that ends only because the cap exists.
+  that ends because the cap exists, one step before its answer.
 - **It multiplies model calls.** Every step is a full request carrying the whole transcript, so
   cost grows with the square of the conversation, not linearly.
 - **It is only as good as its tools.** A tool that returns nothing useful gives the loop nothing
@@ -590,7 +589,9 @@ knows a tool exists if its name appears in what it was given.
 
 ## 7. Handing the same loop to a framework
 
-`04_tool_agent_diagnosis.py`
+`04_tool_agent_diagnosis.py` runs the loop with LangChain's `create_agent`, which uses the
+model's native function calling: the model returns tool calls, not text to parse. The numbers
+below come from DeepSeek runs on 2026-09-28.
 
 ### 7.1 The declaration replaces the prompt block
 
@@ -600,10 +601,8 @@ def ping_host(hostname: str) -> str:
     """Check whether a host answers on the network, and report the round trip time."""
 ```
 
-The decorator reads the signature and the docstring and turns them into a tool schema. **That
-schema, not the Python function, is what the model sees**, which is why an argument with no type
-hint or a docstring that omits what the input should look like degrades tool selection while the
-code still runs fine. Printed back out:
+The decorator builds a tool schema from the name, the argument types and the docstring, and the
+model sees that schema. Part 1 prints it:
 
 ```
 resolve_host(hostname):  Resolve a hostname to an address. Use this before assuming a host exists.
@@ -612,105 +611,79 @@ check_interface(name):   Report the state of one local network interface, such a
 search_logs(keyword):    Search the recent service log for a keyword and return the matching lines.
 ```
 
-The simulated environment is built so that no single lookup solves anything: the resolver knows
-names the ping table cannot reach (`billing.internal` resolves to `10.0.4.37` but never answers),
-one interface is up and one is down, and the log holds five lines of which three are noise. A
-fixed seed keeps the latencies identical between runs, because a diagnosis demo whose numbers
-move cannot be discussed after the fact.
+The simulated network has three hosts. `billing.internal` resolves to `10.0.4.37` but does not
+answer. One interface is up and one is down, and the log holds five lines. The question names a
+symptom, not a host, so the agent has to read the log before it knows what to test.
 
-### 7.2 What the framework gives back
+### 7.2 Diagnosing the incident
 
-`create_agent` compiles to a graph, so the return value is the whole message list rather than a
-string. Reading the `ToolMessage` entries out of it is how the trace below is printed, and it is
-also the only way to see **which probe ran, in what order** rather than just the conclusion.
+`create_agent` returns the whole message list. The trace is read from its tool calls and
+`ToolMessage` entries:
 
 ```
 question: Checkout keeps failing with connection errors since 14:00. What is broken?
-  call 1: search_logs(['checkout'])        -> No log line contains 'checkout'.
-  call 2: search_logs(['connection'])      -> 14:02:11 ERROR pool: connection to billing.internal:5432 refused
-  call 3: resolve_host(['billing.internal'])-> billing.internal resolves to 10.0.4.37.
-  call 4: ping_host(['billing.internal'])  -> billing.internal (10.0.4.37) does not answer: request timed out.
-  call 5: search_logs(['billing'])
-  call 6: check_interface(['eth0'])        -> eth0 is up, address 10.0.4.9, gateway 10.0.4.1.
+  call 1: search_logs(['checkout'])
+  call 2: search_logs(['connection'])
+  call 3: check_interface(['eth0'])
+  call 4: check_interface(['eth1'])
+    -> No log line contains 'checkout'.
+    -> 14:02:11 ERROR pool: connection to billing.internal:5432 refused
+    -> eth0 is up, address 10.0.4.9, gateway 10.0.4.1.
+    -> eth1 is administratively down and has no address.
+  call 5: resolve_host(['billing.internal'])
+  call 6: ping_host(['billing.internal'])
+    -> billing.internal resolves to 10.0.4.37.
+    -> billing.internal (10.0.4.37) does not answer: request timed out.
   tool calls: 6
-answer: Failing component: the billing database server at billing.internal (10.0.4.37) is
-        down or unreachable. Evidence: logs show connection refused from 14:02; the name
-        resolves correctly, so DNS is fine; eth0 is up with a valid gateway, so the local
-        network is fine; ping to 10.0.4.37 times out.
+answer: Failing component: the billing service host billing.internal (10.0.4.37), specifically
+        its PostgreSQL listener on port 5432. ...
 ```
 
-Six calls, and the sequence is a real investigation: search first, follow the hostname the log
-named, separate "does not resolve" from "does not answer", then rule out the local interface.
-Nothing in the code specifies that order.
+Six runs took 6 or 7 calls and all named `billing.internal`. The first four calls go out
+together; the model then follows the host the log named and separates "does not resolve" from
+"does not answer". Nothing in the code specifies that order.
 
-### 7.3 A budget, and what hitting it looks like
+### 7.3 A step limit
 
-```python
-run_agent(question, TOOLS, recursion_limit=4)
-```
-
-Given a question the tools cannot answer (`Which host consumed the most bandwidth this week,
-and by how many gigabytes?`), the agent spends its whole budget searching for words that are
-not in the log:
+Part 3 asks the same question with `recursion_limit=4`. Six runs were all stopped after 6 or 7
+tool calls, with the evidence already in hand but no answer written:
 
 ```
-  call 1: check_interface(['eth0'])
-  call 2: search_logs(['bandwidth'])  -> No log line contains 'bandwidth'.
-  call 3: search_logs(['traffic'])    -> No log line contains 'traffic'.
-  call 4: search_logs(['bytes'])      -> No log line contains 'bytes'.
-  call 5: search_logs(['usage'])      -> No log line contains 'usage'.
-  call 6: search_logs(['GB'])         -> No log line contains 'GB'.
+  call 5: resolve_host(['billing.internal'])
+  call 6: ping_host(['billing.internal'])
+    -> billing.internal resolves to 10.0.4.37.
+    -> billing.internal (10.0.4.37) does not answer: request timed out.
   tool calls: 6
 answer: none, the agent hit its step limit first
 ```
 
-An agent without a step cap does not stop on its own when the answer does not exist. The cap is
-not a safety net for bugs; it is the ordinary termination condition for a loop whose exit is
-decided by a model.
+The limit counts graph steps, and each model turn and each tool round is one. It stops the run
+whether or not the agent was one step from an answer. An earlier version asked a question the
+tools cannot answer (`Which host consumed the most bandwidth this week?`); the model now refuses
+it without calling any tool, so the limit was never reached.
 
 ### 7.4 Change only the descriptions
 
-Step 5 redefines the same four functions with the same names and the same behaviour, and
-replaces their docstrings with `"""Do a lookup."""`, `"""Do a check."""`, `"""Do a check."""`
-and `"""Do a search."""`. The question is identical to §7.2:
+Part 4 gives the same four functions the docstrings `"""Do a lookup."""`, `"""Do a check."""`,
+`"""Do a check."""` and `"""Do a search."""`. Each vague tool calls the clear one, so the names,
+arguments and return strings stay the same and only the description the model reads changes.
 
-```
-  call 1: search_logs(['checkout'])       -> nothing found
-  call 2: search_logs(['connection error'])-> nothing found
-  call 3: ping_host(['checkout'])          -> Cannot ping checkout.
-  call 4: resolve_host(['checkout'])       -> checkout does not resolve.
-  call 5: check_interface(['checkout'])    -> no interface checkout
-  call 6: search_logs(['14:00'])           -> nothing found
-  call 7: resolve_host(['gateway'])        -> gateway does not resolve.
-  call 8: resolve_host(['db'])             -> db does not resolve.
-  call 9: resolve_host(['api'])            -> api does not resolve.
-  call 10: check_interface(['eth0'])       -> eth0 is up
-  call 11: check_interface(['eth1'])       -> eth1 is down
-  call 12: search_logs(['eth1'])           -> nothing found
-  call 13: search_logs(['down'])           -> nothing found
-  call 14: ping_host(['eth1'])             -> Cannot ping eth1.
-  tool calls: 14
-answer: Failing component: the eth1 network interface is down.
-```
+| | Tool calls |
+| :--- | :--- |
+| Clear descriptions (part 2) | 6 to 7 over six runs |
+| Vague descriptions (part 4) | 12 to 18 over eight runs |
 
-**14 calls instead of 6, and the conclusion is wrong.** `eth1` being down has nothing to do with
-the incident; the run reached it by guessing hostnames (`checkout`, `gateway`, `db`, `api`) that
-do not exist, and then latched onto the first thing that looked abnormal.
+The vague runs start by guessing hostnames (`checkout`, `checkout-service`, `checkout.internal`,
+`checkout.svc`) and pinging the gateway address, and reach the log line later. Every answer read
+still named `billing.internal`. The description changed the cost of the run, not its conclusion.
 
-Two things changed together, and both come from the same edit:
+An earlier version also shortened the return strings in the vague copies, so the gap mixed two
+changes. That version once took 14 calls and blamed `eth1`; with only the descriptions changed,
+no run reached a wrong answer.
 
-- **the descriptions**, which are the model's only basis for choosing a tool, and
-- **the return strings**, which lost the detail that let the clear run separate "does not
-  resolve" from "resolves but does not answer".
-
-That second one matters more. `"answers"` / `"request timed out"` is a shorter string
-than `billing.internal (10.0.4.37) does not answer: request timed out.`, and the shortening
-removed exactly the evidence the diagnosis depended on.
-
-⇒ **Tool text is not documentation. It is the runtime input to every decision the agent makes,
-and it is billed per wrong guess.**
-
----
+The OpenAI fallback was checked by sending the DeepSeek key through `OPENAI_API_KEY`. Gemini's
+OpenAI-compatible endpoint rejects the second turn: Gemini 3 requires a thought signature on
+each function call, and LangChain's `ChatOpenAI` does not send it back.
 
 ## 8. Designing tools
 
@@ -750,8 +723,8 @@ behaviour, and nothing in a type checker or a test suite will notice.
 There is no matching algorithm, no embedding of tool names, no registry lookup by capability.
 The model reads a list of names and sentences, and writes one of the names. So:
 
-- A description that does not say **what the tool is for** produces guessing. `04`'s vague run
-  spends five of fourteen calls inventing hostnames.
+- A description that does not say **what the tool is for** produces guessing. `04`'s vague runs
+  start by guessing hostnames such as `checkout.svc` and take 12 to 18 calls instead of 6 to 7.
 - A description that does not say **what the input looks like** produces malformed arguments.
   `03` spells out `Input: a rule id such as R-001` for exactly this reason.
 - A description that overlaps another tool's produces coin-flips between them, and the choice is
@@ -769,8 +742,7 @@ The two variants in this module are a clean controlled comparison:
 | | Return on a miss | What the run did next |
 | :--- | :--- | :--- |
 | `03` | `No rule matches 'tax rate'.` | Switched tools, listed both categories, refused honestly |
-| `04` clear | `billing.internal (10.0.4.37) does not answer: request timed out.` | Separated "unresolvable" from "unreachable", found the real cause in 6 calls |
-| `04` vague | `nothing found` / `request timed out` | Guessed four hostnames, latched onto an unrelated interface, 14 calls, wrong answer |
+| `04` | `billing.internal (10.0.4.37) does not answer: request timed out.` | Separated "unresolvable" from "unreachable", found the real cause in 6 to 7 calls |
 
 Three rules follow:
 
@@ -1522,8 +1494,8 @@ runs showed about containing that.
 Not a bug, a definition. If the sequence were fixed it would be a workflow. Observed in this
 module:
 
-- `04` answers the same question in **6 calls** with clear tool text and **14** with vague text,
-  ending on a different component.
+- `04` answers the same question in **6 to 7 calls** with clear tool descriptions and **12 to 18**
+  with vague ones.
 - `03` needs **1** tool call for an in-scope question and **5** for an out-of-scope one, and the
   particular five it picks depend on wording.
 - `07`'s triage classifies each question independently, so a rephrasing can move a question
@@ -1551,9 +1523,9 @@ Two habits follow:
 
 ### 15.3 Failure mode two: no natural stop
 
-An agent's exit condition is a model's opinion that it is finished. When the answer does not
-exist, that opinion never arrives — `04`'s bandwidth question searches for `bandwidth`,
-`traffic`, `bytes`, `usage`, `GB` and would keep going. The cap is what ends it:
+An agent's exit condition is a model's opinion that it is finished. When that opinion is
+late, the cap ends the run anyway: `04`'s step-limit part stops after the tool calls, before
+the answer:
 
 ```python
 config={"recursion_limit": recursion_limit}
@@ -1587,7 +1559,6 @@ it is worth making deliberately rather than by accident.
 | **Name the tools and the conditions in the prompt** | Selection improves, but stays a decision | `03`'s `{tools}` block |
 | **Cap the steps** | Bounds a failure instead of a bill | `04`'s recursion limit |
 | **Enforce, do not request** | Schema and auth checked by the receiver | `06`'s 400 and 401 |
-| **Seed the randomness** | Makes runs comparable after the fact | `04`'s `random.seed(7)` |
 | **Keep the trace** | Distinguishes an investigated answer from a guessed one | every script |
 
 The first row is the strongest and the most often skipped: **if a step must always happen, it
@@ -1614,9 +1585,8 @@ raise ValueError(f"node {node!r} needs '{field}', but no earlier node produced i
 ### 15.1 Why one successful run proves nothing
 
 §15.1 lists the observed variance. The practical consequence is that "I ran it and it worked" is
-not evidence about an agent in the way it is about a function. Two runs of `04` differ by 8 tool
-calls and reach different conclusions; a reviewer who saw only the good run would have
-concluded the tools were fine.
+not evidence about an agent in the way it is about a function. Eight runs of `04`'s vague part
+ranged from 12 to 18 tool calls for the same question.
 
 So the unit of verification is a **set** of cases, run more than once.
 
@@ -1658,7 +1628,7 @@ The traces these scripts print are what a test harness should keep:
 
 | Signal | Why it matters |
 | :--- | :--- |
-| **Tool calls per case** | The 6-vs-14 gap in `04` appeared here before it appeared in the answer |
+| **Tool calls per case** | `04`'s vague descriptions show up here (12 to 18 against 6 to 7) while the answer stays right |
 | **Which tools ran, in order** | Distinguishes an investigated answer from a lucky one |
 | **Tokens per case** | The only way §14.5's break-even is arguable |
 | **Cap hits** | A rising rate means the tools stopped covering the questions |
@@ -1745,9 +1715,9 @@ Every row below came out of an actual run of the script named in it.
 | 03 | One-lookup question | 2 model passes, 1 tool call |
 | 03 | Question outside the rule book | 6 passes, 5 tool calls, then a correct refusal |
 | 03 | Same tools, tool list removed from the prompt | model guessed `search_rule_book`, `lookup_rule`, `search`; 0 real tools reached, then said it had no working tool |
-| 04 | Live incident, clear tool descriptions | **6 tool calls, correct root cause** (`billing.internal` unreachable) |
-| 04 | **Same tools, vague descriptions** | **14 tool calls, wrong root cause** (`eth1 is down`) |
-| 04 | Unanswerable question, `recursion_limit=4` | 6 calls, no answer, stopped by the cap |
+| 04 | Live incident, clear tool descriptions | 6 to 7 tool calls, correct root cause (`billing.internal` unreachable) |
+| 04 | Same tools, only the descriptions vague | 12 to 18 tool calls, still `billing.internal` |
+| 04 | Same incident, `recursion_limit=4` | 6 to 7 calls, stopped by the cap before the answer |
 | 05 | Handshake with the subprocess server | `notes`, protocol `2025-11-25` |
 | 05 | Tools learned at runtime | 3, with JSON Schema per argument |
 | 05 | Loop over the process boundary | 3 rounds; three `read_note` calls dispatched concurrently in one turn |
@@ -1761,15 +1731,13 @@ Every row below came out of an actual run of the script named in it.
 ### Three findings worth keeping
 
 **1. Tool text is runtime input, not documentation.** Two scripts remove it in different ways and
-both degrade immediately: `03` drops the tool listing from the prompt and the model invents tool
-names in prose; `04` keeps the tools but blurs their descriptions and returns, and the same
-question costs 14 calls instead of 6 and ends on the wrong component. The functions were correct
-in both runs. Only the text changed.
+both degrade immediately: `03` drops the tool listing from the prompt and the model guesses tool
+names that do not exist; `04` keeps the tools but blurs their descriptions, and the same
+question costs 12 to 18 calls instead of 6 to 7. The functions were correct in both runs. Only
+the text changed.
 
 **2. A miss has to be readable.** In `03` the tools answer `No rule matches 'tax rate'.` and the
-model recovers: it switches tool, enumerates the categories, and refuses honestly. In `04`'s
-vague variant the same class of miss comes back as `nothing found`, and the run drifts into
-guessing hostnames. **Error strings are part of the control flow when the caller is a model.**
+model recovers: it switches tool, enumerates the categories, and refuses honestly. **Error strings are part of the control flow when the caller is a model.**
 
 **3. Topology is a measurable decision, not a style preference.** The router costs 75 extra
 tokens on a deep question and saves 491 on a shallow one, so it wins above 13% shallow traffic.
@@ -1831,8 +1799,7 @@ background thread and waits for it to answer before the first request, rather th
 fixed interval.
 
 **Data.** `data/notes/` holds the three notes `05` serves: an incident write-up, an onboarding
-note, and a release checklist. Everything else is inline in the scripts, and the one script with
-randomness (`04`) seeds it so its latencies are identical on every run.
+note, and a release checklist. Everything else is inline in the scripts.
 
 ---
 
