@@ -18,7 +18,7 @@ libraries. One script, 02-08, also calls the Tavily search API over plain HTTP.
 | [01-llm-foundation](01-llm-foundation/) | Chat protocol · prompt engineering · function calling · tool-loop agents · multimodal extraction · local deployment (Ollama, Transformers) |
 | [02-rag](02-rag/) | Embeddings · chunking · vector databases · RAG pipelines · rerank · query rewrite · multimodal RAG · knowledge-base curation & versioning · GraphRAG |
 | [03-text2sql](03-text2sql/) | Natural language to SQL · schema prompting · SQL agents · query safety · result evaluation |
-| [04-agents](04-agents/) (reviewing) | Prompt templates & memory · chain orchestration · ReAct agents · MCP / A2A · LangGraph architectures |
+| [04-agents](04-agents/) | Prompt templates & memory · chain orchestration · ReAct agents · MCP / A2A · LangGraph architectures |
 | [05-fine-tuning](05-fine-tuning/) (reviewing) | Low-rank adaptation · supervised fine-tuning · reward-driven training · decode-time thinking budget · vision adapters |
 | [06-multimodal-vision](06-multimodal-vision/) (reviewing) | Classical vision (colour, edges, Hough, HOG, Haar) · optical flow · training mechanics & loss behaviour · detection, segmentation and pose · attention & self-supervision · vision-language auditing · split and submission audits |
 | [07-ml-dl-foundation](07-ml-dl-foundation/) (reviewing) | Classical ML · EDA pitfalls · gradient boosting · leakage & split discipline · thresholds · ensembling · networks from scratch up to frameworks |
@@ -181,8 +181,8 @@ See [Text2SQL-Natural-Language-to-SQL.md](03-text2sql/Text2SQL-Natural-Language-
 | 03 | `03_react_loop_from_scratch.py` | Reason-and-act by hand: no framework, plus the run where the tool list is withheld |
 | 04 | `04_tool_agent_diagnosis.py` | The same loop inside a framework: typed tools, step budget, and vague descriptions compared |
 | 05 | `05_mcp_client_and_server.py` | Both halves of the Model Context Protocol: stdio server, handshake, schema translation |
-| 06 | `06_a2a_agent_protocol.py` | Agent-to-agent delegation: capability card, task submission, schema and auth rejections |
-| 07 | `07_langgraph_topologies.py` | One state, five nodes, two topologies: fixed pipeline against a conditional router |
+| 06 | `06_a2a_agent_protocol.py` | A2A-style delegation (simplified): capability card, task submission, schema and auth rejections |
+| 07 | `07_langgraph_topologies.py` | LangGraph: one state, five nodes, two topologies, a fixed pipeline against a conditional router |
 
 See [Agent-Systems-Loops-Protocols-and-Topologies.md](04-agents/Agent-Systems-Loops-Protocols-and-Topologies.md) for the concepts behind these scripts.
 
