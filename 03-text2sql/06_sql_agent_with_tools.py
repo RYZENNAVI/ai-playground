@@ -1,6 +1,6 @@
 """Let the model pick tools to answer database questions, via function calling.
 
-This script gives DeepSeek four tools through function calling (also called
+This script gives a chat model four tools through function calling (also called
 tool calling): run a query, draw a bar chart, fit a linear regression, and
 rank factors with a decision tree. The system message holds the schema, what
 each stored code means and three settled questions. A hand-written loop sends
@@ -50,8 +50,16 @@ _db = import_module("01_build_insurance_db")
 sys.stdout.reconfigure(encoding="utf-8")
 load_dotenv(Path(__file__).parents[1] / ".env")
 
-MODEL = "deepseek-chat"
-BASE_URL = "https://api.deepseek.com"
+# DeepSeek when its key is set, otherwise OpenAI. OPENAI_BASE_URL and
+# OPENAI_MODEL point the OpenAI key at another compatible vendor.
+if os.getenv("DEEPSEEK_API_KEY"):
+    API_KEY = os.getenv("DEEPSEEK_API_KEY")
+    BASE_URL = "https://api.deepseek.com"
+    MODEL = "deepseek-chat"
+else:
+    API_KEY = os.getenv("OPENAI_API_KEY")
+    BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 CHART_DIR = Path(__file__).parent / "data" / "charts"
 
@@ -171,10 +179,10 @@ TOOLS = [
 
 
 def make_client():
-    """Return an OpenAI-protocol client pointed at DeepSeek."""
-    key = os.environ.get("DEEPSEEK_API_KEY")
+    """Return an OpenAI-protocol client for the provider chosen above."""
+    key = API_KEY
     if not key:
-        raise SystemExit("DEEPSEEK_API_KEY is not set. Add it to your .env file.")
+        raise SystemExit("Set DEEPSEEK_API_KEY or OPENAI_API_KEY in .env and retry.")
     return OpenAI(api_key=key, base_url=BASE_URL)
 
 
@@ -331,21 +339,9 @@ def converse(client, connection, system, question):
         if not message.tool_calls:
             return message.content
 
-        messages.append({
-            "role": "assistant",
-            "content": message.content or "",
-            "tool_calls": [
-                {
-                    "id": call.id,
-                    "type": "function",
-                    "function": {
-                        "name": call.function.name,
-                        "arguments": call.function.arguments,
-                    },
-                }
-                for call in message.tool_calls
-            ],
-        })
+        # Send the reply back as it came. Rebuilding it would drop fields some
+        # vendors require, such as the thought signature Gemini attaches.
+        messages.append(message)
 
         for call in message.tool_calls:
             arguments = json.loads(call.function.arguments or "{}")

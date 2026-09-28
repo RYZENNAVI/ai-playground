@@ -19,10 +19,12 @@ on.
 
 ## Shared setup (scripts 02 to 06)
 
-*   Every script uses DeepSeek's `deepseek-chat` with the key `DEEPSEEK_API_KEY` from
-    `.env` at the repository root, which `.gitignore` excludes. Scripts 02, 05 and 06
-    call it through the `openai` package with `base_url="https://api.deepseek.com"`,
-    03 through LangChain's `ChatOpenAI`, and 04 through Vanna's `OpenAI_Chat`.
+*   Every script uses DeepSeek's `deepseek-chat` when `DEEPSEEK_API_KEY` is set in
+    `.env` at the repository root, which `.gitignore` excludes, and OpenAI's
+    `gpt-4o-mini` otherwise. `OPENAI_BASE_URL` and `OPENAI_MODEL` point the OpenAI key
+    at another compatible vendor. Scripts 02, 05 and 06 call the model through the
+    `openai` package, 03 through LangChain's `ChatOpenAI`, and 04 through Vanna's
+    `OpenAI_Chat`. The numbers below come from DeepSeek.
 *   Each script calls `ensure_database()` from script 01, which builds the database
     only when the file is missing, so the scripts run in any order. `load_schema()`
     returns the CREATE TABLE text with its column comments, the same text 01 wrote
@@ -231,9 +233,14 @@ class LocalVanna(ChromaDB_VectorStore, OpenAI_Chat):
     the three statements returned were `daily_sales`, `policies` and `claims`, without
     `products`, where premium lives.
 *   The store is deleted and rebuilt on every run.
+*   `LocalVanna` replaces Vanna's `submit_prompt`, which sends `stop=None` on every
+    request. Gemini's OpenAI-compatible endpoint rejects the null, so the override
+    sends the same request without it.
 
 Part 5 asks "How many policies have lapsed, and what do they cost in premium per
-year?". Three runs generated the same query apart from column aliases:
+year?". The query always filters on `'LP'`, from the note on stored codes, and joins
+products, from the note on where premium lives. The premium is per payment period,
+and whether the query converts it to a yearly amount changes from run to run:
 
 ```sql
 SELECT COUNT(*), SUM(pr.premium)
@@ -242,18 +249,18 @@ JOIN products pr ON po.product_id = pr.product_id
 WHERE po.policy_status = 'LP'
 ```
 
-`'LP'` comes from the note on stored codes, and the join from the note on where
-premium lives. The premium is per payment period, and the query never reads
-`payment_frequency`. The script checks the result against a hand-written query that
-converts each premium to a yearly amount:
+The script checks the result against a hand-written query that multiplies each
+premium by the payments per year, taken from `payment_frequency`:
 
 | | Policies | Premium |
 | :--- | :---: | :---: |
-| Generated SQL | 13 | 8912.0, per payment period added up |
-| Hand-written SQL | 13 | 13632.0 per year |
+| Generated SQL without the conversion | 13 | 8912.0, per payment period added up |
+| Generated SQL with the conversion, or hand-written | 13 | 13632.0 per year |
 
-No note says how to annualise a premium, so the result depends on whether the model
-thinks of it. An earlier run did and got 13632.0.
+Three runs on 2026-09-27 all produced the query above and 8912.0. Of four runs on
+2026-09-28, three converted and matched 13632.0. No note says how to annualise a
+premium, so the result depends on whether the model thinks of it, and the check is
+what catches the runs where it does not.
 
 Parts 6 and 7 store a correction. Whether a closed account still counts as a customer
 is a decision, not a fact in the data. After the first answer, the settled SQL is
@@ -404,6 +411,9 @@ return "stopped after the turn limit"
 
 *   `arguments` arrives as a JSON string and needs `json.loads`. Every tool call needs
     its own `tool` message with the matching id.
+*   The model's reply goes back into the history as it came. An earlier version rebuilt
+    it from the tool calls, which dropped the thought signature Gemini attaches, and
+    Gemini's endpoint then refused the next turn.
 *   A tool that fails returns `{"error": ...}` instead of raising, so the model can
     fix its query.
 *   `MAX_TURNS` is 10. The questions here finish in two or three model calls.

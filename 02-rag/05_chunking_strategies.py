@@ -73,7 +73,7 @@ def pick_provider():
                 "gemini-3.1-flash-lite")
     if os.getenv("OPENAI_API_KEY"):
         return (os.getenv("OPENAI_API_KEY"), os.getenv("OPENAI_BASE_URL"),
-                "gpt-4o-mini")
+                os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
     return None
 
 

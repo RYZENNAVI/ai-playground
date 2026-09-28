@@ -30,6 +30,9 @@ relies on.
     ```
 
     Gemini's endpoint is `https://generativelanguage.googleapis.com/v1beta/openai/`.
+*   Each script takes its first-choice key (DeepSeek, or Gemini for 03) and falls back
+    to OpenAI's `gpt-4o-mini`. Script 06 tries Gemini before OpenAI. `OPENAI_BASE_URL`
+    and `OPENAI_MODEL` point the OpenAI key at another compatible vendor.
 *   `choices` holds the candidate replies, and the scripts read the text of the first one.
 
 ## Script 01: Chat roles and sentiment labels

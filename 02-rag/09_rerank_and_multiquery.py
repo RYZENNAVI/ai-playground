@@ -19,9 +19,9 @@ The run prints five parts:
     4. Reading the scores. Question 1 against two hand-written sentences, one
        correct and one about the Eiffel Tower. The cross-encoder returns raw
        logits, so the correct sentence can score below zero.
-    5. Query expansion, and what it is worth. DeepSeek rewrites each question
+    5. Query expansion, and what it is worth. The model rewrites each question
        four ways, BM25 recalls for all of them, and the reranker runs again.
-       Needs DEEPSEEK_API_KEY.
+       Needs DEEPSEEK_API_KEY or OPENAI_API_KEY.
 """
 
 import json
@@ -40,8 +40,16 @@ load_dotenv(Path(__file__).parents[1] / ".env")
 
 DATA_DIR = Path(__file__).parent / "data" / "disney_kb"
 CROSS_ENCODER = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-MODEL = "deepseek-chat"
-BASE_URL = "https://api.deepseek.com"
+# DeepSeek when its key is set, otherwise OpenAI. OPENAI_BASE_URL and
+# OPENAI_MODEL point the OpenAI key at another compatible vendor.
+if os.getenv("DEEPSEEK_API_KEY"):
+    API_KEY = os.getenv("DEEPSEEK_API_KEY")
+    BASE_URL = "https://api.deepseek.com"
+    MODEL = "deepseek-chat"
+else:
+    API_KEY = os.getenv("OPENAI_API_KEY")
+    BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 # Stage one keeps 8 paragraphs, stage two picks 3 sentences from all of their sentences.
 RECALL_K = 8
@@ -243,9 +251,9 @@ def main():
     # 5. Query expansion, and what it is worth
 
     print("\n--- 5. Query expansion, and what it is worth ---")
-    api_key = os.getenv("DEEPSEEK_API_KEY")
+    api_key = API_KEY
     if not api_key:
-        print("  (no DEEPSEEK_API_KEY, query expansion is skipped)")
+        print("  (no DEEPSEEK_API_KEY or OPENAI_API_KEY, query expansion is skipped)")
         return
     api = OpenAI(api_key=api_key, base_url=BASE_URL)
     print("  Question 2 above failed, and it failed in stage one: the asker says")

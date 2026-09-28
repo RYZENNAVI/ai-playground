@@ -1,7 +1,7 @@
 """Screen generated SQL in layers, then measure its execution accuracy.
 
 This script puts model-written SQL through a layered safety gate, an idea
-known as defence in depth. DeepSeek judges each request and writes the SQL in
+known as defence in depth. The model judges each request and writes the SQL in
 the same call. Fixed rules then check the SQL text, and a second model call
 reviews it. Every query runs through a read-only connection, so the database
 itself refuses writes. When one layer refuses a request, the later layers
@@ -46,8 +46,16 @@ _db = import_module("01_build_insurance_db")
 sys.stdout.reconfigure(encoding="utf-8")
 load_dotenv(Path(__file__).parents[1] / ".env")
 
-MODEL = "deepseek-chat"
-BASE_URL = "https://api.deepseek.com"
+# DeepSeek when its key is set, otherwise OpenAI. OPENAI_BASE_URL and
+# OPENAI_MODEL point the OpenAI key at another compatible vendor.
+if os.getenv("DEEPSEEK_API_KEY"):
+    API_KEY = os.getenv("DEEPSEEK_API_KEY")
+    BASE_URL = "https://api.deepseek.com"
+    MODEL = "deepseek-chat"
+else:
+    API_KEY = os.getenv("OPENAI_API_KEY")
+    BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 # Screening and writing happen in one call. Splitting them would double the
 # latency and the bill for a check that costs one extra JSON field here.
@@ -141,10 +149,10 @@ BENCHMARK = [
 
 
 def make_client():
-    """Return an OpenAI-protocol client pointed at DeepSeek."""
-    key = os.environ.get("DEEPSEEK_API_KEY")
+    """Return an OpenAI-protocol client for the provider chosen above."""
+    key = API_KEY
     if not key:
-        raise SystemExit("DEEPSEEK_API_KEY is not set. Add it to your .env file.")
+        raise SystemExit("Set DEEPSEEK_API_KEY or OPENAI_API_KEY in .env and retry.")
     return OpenAI(api_key=key, base_url=BASE_URL)
 
 

@@ -4,13 +4,13 @@ Vanna applies retrieval-augmented generation to Text2SQL. It stores three kinds 
 training material in a vector store (Chroma, embedded locally): the five CREATE
 TABLE statements, five written notes that explain the status codes and where
 premium lives, and three question and SQL pairs. For each question it retrieves
-related items of each kind and pastes them into the prompt for DeepSeek.
+related items of each kind and pastes them into the prompt for the chat model.
 
 Vanna returns up to 10 items of each kind by default, and this store holds 5, 5
 and 3, so every question gets all of them. Retrieval here only orders them.
 
 The run prints seven parts:
-    1. Composing the client. A Chroma store and the DeepSeek chat model.
+    1. Composing the client. A Chroma store and the chat model.
     2. Connecting to the database.
     3. Training. The counts of each kind of material.
     4. What the question retrieves. The lapsed-policy question's top items of
@@ -41,8 +41,16 @@ _db = import_module("01_build_insurance_db")
 sys.stdout.reconfigure(encoding="utf-8")
 load_dotenv(Path(__file__).parents[1] / ".env")
 
-MODEL = "deepseek-chat"
-BASE_URL = "https://api.deepseek.com"
+# DeepSeek when its key is set, otherwise OpenAI. OPENAI_BASE_URL and
+# OPENAI_MODEL point the OpenAI key at another compatible vendor.
+if os.getenv("DEEPSEEK_API_KEY"):
+    API_KEY = os.getenv("DEEPSEEK_API_KEY")
+    BASE_URL = "https://api.deepseek.com"
+    MODEL = "deepseek-chat"
+else:
+    API_KEY = os.getenv("OPENAI_API_KEY")
+    BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 STORE_PATH = Path(__file__).parent / "data" / "vanna_store"
 
@@ -117,9 +125,9 @@ def build_client(fresh=False):
     from vanna.legacy.chromadb import ChromaDB_VectorStore
     from vanna.legacy.openai import OpenAI_Chat
 
-    key = os.environ.get("DEEPSEEK_API_KEY")
+    key = API_KEY
     if not key:
-        raise SystemExit("DEEPSEEK_API_KEY is not set. Add it to your .env file.")
+        raise SystemExit("Set DEEPSEEK_API_KEY or OPENAI_API_KEY in .env and retry.")
 
     if fresh and STORE_PATH.exists():
         shutil.rmtree(STORE_PATH)
@@ -140,6 +148,14 @@ def build_client(fresh=False):
         def log(self, message, title="Info"):
             """Drop Vanna's log calls, which print the whole prompt each time.
             Its plain prints are silenced by quiet() instead."""
+
+        def submit_prompt(self, prompt, **kwargs):
+            """Send the prompt without the stop=None that Vanna's own version adds.
+            Some OpenAI-compatible endpoints, Gemini's among them, reject a null."""
+            response = self.client.chat.completions.create(
+                model=MODEL, messages=prompt, temperature=self.temperature
+            )
+            return response.choices[0].message.content
 
     client = OpenAI(api_key=key, base_url=BASE_URL)
     return LocalVanna({"path": str(STORE_PATH), "client": client, "model": MODEL})

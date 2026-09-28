@@ -8,7 +8,7 @@ to one chunk. Two of them share no content word with any chunk. The third uses
 the chunk's own words, as a control.
 
 The run prints seven parts:
-    1. A basic question set. DeepSeek writes 5 questions for the first chunk,
+    1. A basic question set. The model writes 5 questions for the first chunk,
        each typed and graded by difficulty. This part is for comparison only and
        nothing later uses it: the questions come without answers, so none of
        them can be checked.
@@ -41,8 +41,16 @@ from rank_bm25 import BM25Okapi
 sys.stdout.reconfigure(encoding="utf-8")
 load_dotenv(Path(__file__).parents[1] / ".env")
 
-MODEL = "deepseek-chat"
-BASE_URL = "https://api.deepseek.com"
+# DeepSeek when its key is set, otherwise OpenAI. OPENAI_BASE_URL and
+# OPENAI_MODEL point the OpenAI key at another compatible vendor.
+if os.getenv("DEEPSEEK_API_KEY"):
+    API_KEY = os.getenv("DEEPSEEK_API_KEY")
+    BASE_URL = "https://api.deepseek.com"
+    MODEL = "deepseek-chat"
+else:
+    API_KEY = os.getenv("OPENAI_API_KEY")
+    BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 BASIC_QUESTION_COUNT = 5
 DIVERSE_QUESTION_COUNT = 8
@@ -152,10 +160,10 @@ Return JSON only:
 
 
 def client():
-    """Return an OpenAI-protocol client pointed at DeepSeek, the one provider this script uses."""
-    key = os.getenv("DEEPSEEK_API_KEY")
+    """Return an OpenAI-protocol client for the provider chosen above."""
+    key = API_KEY
     if not key:
-        raise SystemExit("DEEPSEEK_API_KEY is not set. Add it to .env and retry.")
+        raise SystemExit("Set DEEPSEEK_API_KEY or OPENAI_API_KEY in .env and retry.")
     return OpenAI(api_key=key, base_url=BASE_URL)
 
 

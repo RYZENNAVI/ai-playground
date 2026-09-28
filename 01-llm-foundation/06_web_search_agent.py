@@ -56,7 +56,7 @@ elif gemini_key:
 else:
     api_key = openai_key
     base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    default_model = "gpt-4o-mini"
+    default_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     provider = "OpenAI"
 
 client = OpenAI(api_key=api_key, base_url=base_url)

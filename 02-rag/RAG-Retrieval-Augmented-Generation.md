@@ -29,8 +29,12 @@ explains what each script does and the ideas it relies on.
     OpenAI-compatible protocol, as in module 01.
 *   Chat models: DeepSeek (`deepseek-chat`) in 05 and 08 to 11, and
     `gemini-3.1-flash-lite` in 06, 07 and 13. Embeddings: `gemini-embedding-001` in
-    03, 06, 07, 12 and 13. Scripts 06 and 07 take the first key set, Gemini before
-    OpenAI.
+    03, 06, 07, 12 and 13. The numbers below come from these models.
+*   Scripts 08 to 11 fall back to OpenAI's `gpt-4o-mini` when `DEEPSEEK_API_KEY` is not
+    set, and 05 tries Gemini before OpenAI. Scripts 06 and 07 take the first key set,
+    Gemini before OpenAI. `OPENAI_BASE_URL` and `OPENAI_MODEL` point the OpenAI key at
+    another compatible vendor. Scripts 03, 12 and 13 embed text with Gemini and need
+    `GEMINI_API_KEY`.
 *   gemini-embedding-001 returns 3072 values of unit length. Asked for fewer
     dimensions, it returns the leading values of the same vector, which is shorter
     than 1 and shorter by a different amount for each text. Scripts 03, 07 and 12

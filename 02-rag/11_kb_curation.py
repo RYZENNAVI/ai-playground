@@ -1,6 +1,6 @@
 """This script uses a chat model for two knowledge base jobs: knowledge extraction
 from support conversations, and an audit of an existing base for coverage,
-freshness and consistency. DeepSeek does both. Extraction pulls typed points (fact,
+freshness and consistency. The model does both. Extraction pulls typed points (fact,
 need, question, process, caution) out of three visitor conversations about an
 invented theme park. The audit checks a separate six-entry base with three planted
 defects: no entry about pets, a festival that has ended, and two entries that
@@ -36,8 +36,16 @@ from openai import OpenAI
 sys.stdout.reconfigure(encoding="utf-8")
 load_dotenv(Path(__file__).parents[1] / ".env")
 
-MODEL = "deepseek-chat"
-BASE_URL = "https://api.deepseek.com"
+# DeepSeek when its key is set, otherwise OpenAI. OPENAI_BASE_URL and
+# OPENAI_MODEL point the OpenAI key at another compatible vendor.
+if os.getenv("DEEPSEEK_API_KEY"):
+    API_KEY = os.getenv("DEEPSEEK_API_KEY")
+    BASE_URL = "https://api.deepseek.com"
+    MODEL = "deepseek-chat"
+else:
+    API_KEY = os.getenv("OPENAI_API_KEY")
+    BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 # Needs and questions record what a visitor wanted, not facts about the park.
 TRANSIENT_TYPES = {"need", "question"}
@@ -166,10 +174,10 @@ Return JSON only:
 
 
 def client():
-    """Return an OpenAI-protocol client pointed at DeepSeek, the one provider this script uses."""
-    key = os.getenv("DEEPSEEK_API_KEY")
+    """Return an OpenAI-protocol client for the provider chosen above."""
+    key = API_KEY
     if not key:
-        raise SystemExit("DEEPSEEK_API_KEY is not set. Add it to .env and retry.")
+        raise SystemExit("Set DEEPSEEK_API_KEY or OPENAI_API_KEY in .env and retry.")
     return OpenAI(api_key=key, base_url=BASE_URL)
 
 

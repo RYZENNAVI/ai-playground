@@ -71,9 +71,15 @@ cp .env.example .env          # PowerShell: copy .env.example .env
 |----------|---------|
 | `DEEPSEEK_API_KEY` | Text and reasoning, the primary provider |
 | `GEMINI_API_KEY` | Multimodal vision and long context |
-| `OPENAI_API_KEY` | Universal fallback |
+| `OPENAI_API_KEY` | Fallback, used when a script's first-choice key is not set |
 | `OPENAI_BASE_URL` | Where `OPENAI_API_KEY` is sent. Point it at another vendor's OpenAI-compatible endpoint to use that vendor's models instead |
+| `OPENAI_MODEL` | The chat model asked for with `OPENAI_API_KEY`, `gpt-4o-mini` by default. Set it together with `OPENAI_BASE_URL`, since another vendor will not know that name |
 | `TAVILY_API_KEY` | Web search in 02-08. Optional: without it that part is skipped. The free tier gives 1,000 credits a month |
+
+The numbers in the write-ups come from each script's first-choice provider, so another
+model will give different ones. Four scripts embed text and need `GEMINI_API_KEY`:
+02-03, 02-12, 02-13 and 10-10. In modules still marked (reviewing), a script may need
+its first-choice key until its review adds the fallback.
 
 ### 3. Run any script
 

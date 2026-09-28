@@ -1,6 +1,6 @@
 """Compare three prompt styles for Text2SQL, then add retrieved few-shot examples.
 
-Text2SQL asks a model to turn a question into a SQL query. Here DeepSeek answers
+Text2SQL asks a model to turn a question into a SQL query. Here the model answers
 7 questions about the insurance database from script 01, under three prompt
 styles. Styles A and B describe four of the tables in a paragraph that names the
 columns only. Style C pastes the CREATE TABLE text, with its column comments,
@@ -52,8 +52,16 @@ _db = import_module("01_build_insurance_db")
 sys.stdout.reconfigure(encoding="utf-8")
 load_dotenv(Path(__file__).parents[1] / ".env")
 
-MODEL = "deepseek-chat"
-BASE_URL = "https://api.deepseek.com"
+# DeepSeek when its key is set, otherwise OpenAI. OPENAI_BASE_URL and
+# OPENAI_MODEL point the OpenAI key at another compatible vendor.
+if os.getenv("DEEPSEEK_API_KEY"):
+    API_KEY = os.getenv("DEEPSEEK_API_KEY")
+    BASE_URL = "https://api.deepseek.com"
+    MODEL = "deepseek-chat"
+else:
+    API_KEY = os.getenv("OPENAI_API_KEY")
+    BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 # A paragraph naming four of the five tables and their columns. It leaves out
 # daily_sales, which no question uses, and it carries no types, comments or
@@ -229,10 +237,10 @@ RETRIEVAL_ANSWER = (
 
 
 def make_client():
-    """Return an OpenAI-protocol client pointed at DeepSeek."""
-    key = os.environ.get("DEEPSEEK_API_KEY")
+    """Return an OpenAI-protocol client for the provider chosen above."""
+    key = API_KEY
     if not key:
-        raise SystemExit("DEEPSEEK_API_KEY is not set. Add it to your .env file.")
+        raise SystemExit("Set DEEPSEEK_API_KEY or OPENAI_API_KEY in .env and retry.")
     return OpenAI(api_key=key, base_url=BASE_URL)
 
 

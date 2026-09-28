@@ -42,7 +42,7 @@ if gemini_key:
     provider_name = "Google Gemini"
 else:
     base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    default_model = "gpt-4o-mini"
+    default_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     provider_name = "OpenAI"
 
 client = OpenAI(api_key=api_key, base_url=base_url)

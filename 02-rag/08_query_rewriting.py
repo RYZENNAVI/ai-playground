@@ -2,7 +2,7 @@
 assistant, rewritten into questions a retriever can use. Parts 1 to 6 use a
 made-up park, Riverbend Park, and most of their questions come with the short
 conversation they depend on. Parts 7 to 9 ask about a real park, Shanghai
-Disneyland, so that part 8 can run a real web search. DeepSeek does every
+Disneyland, so that part 8 can run a real web search. The model does every
 rewrite, and all prompts share one frame: instruction, conversation history,
 current question. Only part 8 retrieves anything: it sends the original question
 and its rewrite to the Tavily search API, when TAVILY_API_KEY is set.
@@ -41,8 +41,16 @@ from openai import OpenAI
 sys.stdout.reconfigure(encoding="utf-8")
 load_dotenv(Path(__file__).parents[1] / ".env")
 
-MODEL = "deepseek-chat"
-BASE_URL = "https://api.deepseek.com"
+# DeepSeek when its key is set, otherwise OpenAI. OPENAI_BASE_URL and
+# OPENAI_MODEL point the OpenAI key at another compatible vendor.
+if os.getenv("DEEPSEEK_API_KEY"):
+    API_KEY = os.getenv("DEEPSEEK_API_KEY")
+    BASE_URL = "https://api.deepseek.com"
+    MODEL = "deepseek-chat"
+else:
+    API_KEY = os.getenv("OPENAI_API_KEY")
+    BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 TAVILY_URL = "https://api.tavily.com/search"
 SEARCH_RESULTS = 3
 
@@ -81,10 +89,10 @@ User: Sold out? A friend of mine walked up and bought one last week."""
 
 
 def client():
-    """Return an OpenAI-protocol client for DeepSeek, which does every step."""
-    key = os.getenv("DEEPSEEK_API_KEY")
+    """Return an OpenAI-protocol client for the model that does every step."""
+    key = API_KEY
     if not key:
-        raise SystemExit("Set DEEPSEEK_API_KEY in .env and retry.")
+        raise SystemExit("Set DEEPSEEK_API_KEY or OPENAI_API_KEY in .env and retry.")
     return OpenAI(api_key=key, base_url=BASE_URL)
 
 

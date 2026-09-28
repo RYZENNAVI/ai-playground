@@ -64,7 +64,9 @@ def pick_provider():
                 "gemini-3.1-flash-lite", "gemini-3.1-flash-lite")
     if os.getenv("OPENAI_API_KEY"):
         return (os.getenv("OPENAI_API_KEY"), os.getenv("OPENAI_BASE_URL"),
-                "text-embedding-3-small", "gpt-4o-mini", "gpt-4o-mini")
+                "text-embedding-3-small",
+                os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+                os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
     raise SystemExit("Set GEMINI_API_KEY or OPENAI_API_KEY first.")
 
 

@@ -2,7 +2,7 @@
 
 Script 02 pasted the schema into the prompt. Here LangChain's SQLDatabaseToolkit
 reads it from the database by reflection, and create_sql_agent builds a ReAct
-agent on DeepSeek that calls the toolkit's four tools until it can answer.
+agent on the chat model that calls the toolkit's four tools until it can answer.
 Reflection rebuilds each CREATE TABLE from the table structure. Types and keys
 survive, but the column comments that explain the status codes are lost. The
 toolkit attaches three sample rows per table instead.
@@ -42,8 +42,16 @@ _db = import_module("01_build_insurance_db")
 sys.stdout.reconfigure(encoding="utf-8")
 load_dotenv(Path(__file__).parents[1] / ".env")
 
-MODEL = "deepseek-chat"
-BASE_URL = "https://api.deepseek.com"
+# DeepSeek when its key is set, otherwise OpenAI. OPENAI_BASE_URL and
+# OPENAI_MODEL point the OpenAI key at another compatible vendor.
+if os.getenv("DEEPSEEK_API_KEY"):
+    API_KEY = os.getenv("DEEPSEEK_API_KEY")
+    BASE_URL = "https://api.deepseek.com"
+    MODEL = "deepseek-chat"
+else:
+    API_KEY = os.getenv("OPENAI_API_KEY")
+    BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 # Answerable from column names plus the sample rows the toolkit attaches.
 PLAIN_QUESTION = (
@@ -62,16 +70,16 @@ MAX_ITERATIONS = 8
 
 
 def build_agent(db_uri):
-    """Build the database wrapper, the toolkit and a ReAct SQL agent on DeepSeek.
+    """Build the database wrapper, the toolkit and a ReAct SQL agent on the chosen model.
     In langchain 1.3 create_sql_agent lives in langchain_community."""
     from langchain_community.agent_toolkits.sql.base import create_sql_agent
     from langchain_community.agent_toolkits.sql.toolkit import SQLDatabaseToolkit
     from langchain_community.utilities import SQLDatabase
     from langchain_openai import ChatOpenAI
 
-    key = os.environ.get("DEEPSEEK_API_KEY")
+    key = API_KEY
     if not key:
-        raise SystemExit("DEEPSEEK_API_KEY is not set. Add it to your .env file.")
+        raise SystemExit("Set DEEPSEEK_API_KEY or OPENAI_API_KEY in .env and retry.")
 
     database = SQLDatabase.from_uri(db_uri)
     # Near-zero temperature because the task has one right answer. Sampling

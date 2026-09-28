@@ -40,7 +40,7 @@ else:
     # OPENAI_BASE_URL belongs to OPENAI_API_KEY only, so a DeepSeek key is never
     # sent to whatever endpoint that variable points at.
     base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    default_model = "gpt-4o-mini"
+    default_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 client = OpenAI(api_key=api_key, base_url=base_url)
 
