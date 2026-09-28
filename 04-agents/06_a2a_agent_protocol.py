@@ -1,15 +1,25 @@
-"""Let one agent discover another at runtime and delegate a task to it.
+"""Discover another agent from its agent card and delegate a task to it, A2A style.
 
-Demonstrates agent-to-agent delegation without a shared codebase:
-    1. Publish a capability card at a well-known path on the provider.
-    2. Start the provider and wait for it to accept connections.
-    3. Discover the provider by reading its card, not by hardcoding its routes.
-    4. Build a task from the schema the card declares and submit it.
-    5. Act on the returned artifact to make a decision the caller owns.
-    6. Submit a task the card's schema forbids, and read the rejection.
-    7. Submit a task without the bearer token the card declared, and read the rejection.
+A2A (Agent2Agent) is a protocol for one agent to find and use another. The
+provider publishes an agent card at a well-known URL. The caller reads the
+card to learn where to send a task, what inputs it takes and how to
+authenticate. Here both sides run locally: a FastAPI provider that knows which
+rooms are free, and a caller that decides whether a workshop goes ahead. The
+card and the task format are simplified. A2A's own card lists skills and
+security schemes, and its tasks go through the SendMessage operation.
 
-Module 04: Agents - Agent-to-Agent Protocol.
+The run prints six parts:
+    1. The capability card. The endpoint, required inputs and auth scheme
+       the provider publishes.
+    2. Starting the provider. It runs in a background thread and is ready
+       once the card URL answers.
+    3. Discovering it. The caller fetches the card and reads the endpoint
+       and the auth scheme from it.
+    4. Delegating three planning decisions. The provider returns the rooms
+       that fit, and the caller confirms the smallest one or cancels.
+    5. A task the card's schema forbids. 500 attendees against the card's
+       maximum of 60, rejected with 400.
+    6. A task without a bearer token. Rejected with 401.
 """
 
 import sys
@@ -26,10 +36,10 @@ sys.stdout.reconfigure(encoding="utf-8")
 HOST = "127.0.0.1"
 PORT = 8931
 PROVIDER_URL = f"http://{HOST}:{PORT}"
+CARD_PATH = "/.well-known/agent-card.json"
 
-# 1. The capability card. A caller that has never seen this code should be able
-# to read this document and learn the endpoint, the accepted inputs and the
-# authentication scheme, which is the entire premise of runtime discovery.
+# 1. The capability card. A caller that has never seen this code learns the
+# endpoint, the accepted inputs and the authentication scheme from it.
 AGENT_CARD = {
     "name": "RoomAvailabilityAgent",
     "version": "1.0",
@@ -46,9 +56,7 @@ AGENT_CARD = {
     "authentication": {"methods": ["bearer"]},
 }
 
-# The provider's private data. The caller never sees this table, only the
-# artifact derived from it - which is what makes this delegation rather than a
-# shared library call.
+# The provider's private data. The caller only sees the rooms a task returns.
 ROOMS = {
     "2026-04-14": [{"room": "Cedar", "seats": 12}, {"room": "Aspen", "seats": 40}],
     "2026-04-15": [{"room": "Cedar", "seats": 12}],
@@ -57,12 +65,7 @@ ROOMS = {
 
 
 def build_provider():
-    """Return a FastAPI application that serves the card and handles tasks.
-
-    The import sits inside the function so the module still loads for anyone who
-    only wants to read the client half, and so a missing web framework produces
-    a clear error at the point of use instead of at import time.
-    """
+    """Return a FastAPI application that serves the card and handles tasks."""
     from fastapi import FastAPI, Header, HTTPException
     from pydantic import BaseModel
 
@@ -72,23 +75,25 @@ def build_provider():
         task_id: str
         params: dict
 
-    @app.get("/.well-known/agent.json")
+    @app.get(CARD_PATH)
     async def get_card() -> dict:
         return AGENT_CARD
 
     @app.post(AGENT_CARD["endpoints"]["task_submit"])
     async def handle_task(request: TaskRequest, authorization: str | None = Header(default=None)) -> dict:
-        # The card declares bearer auth, so this is what makes that declaration
-        # true rather than decorative: a caller that read the card and skipped
-        # the token gets rejected here, not waved through.
+        # The card declares bearer auth, and this check enforces it.
         if authorization != "Bearer local-demo-token":
             raise HTTPException(status_code=401, detail="missing or invalid bearer token")
 
         date = request.params.get("date")
         attendees = request.params.get("attendees")
 
-        if not isinstance(attendees, int) or not 1 <= attendees <= 60:
-            raise HTTPException(status_code=400, detail="attendees must be an integer between 1 and 60")
+        limits = AGENT_CARD["input_schema"]["properties"]["attendees"]
+        if not isinstance(attendees, int) or not limits["minimum"] <= attendees <= limits["maximum"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"attendees must be an integer between {limits['minimum']} and {limits['maximum']}",
+            )
         if date not in ROOMS:
             raise HTTPException(status_code=400, detail=f"no availability data for {date}")
 
@@ -103,12 +108,8 @@ def build_provider():
 
 
 def start_provider() -> threading.Thread:
-    """Step 2. Run the provider in a background thread and wait until it answers.
-
-    Polling the card endpoint is the readiness check rather than a fixed sleep,
-    because a sleep long enough to be safe on a cold start is wasted on every
-    later run, and a short one turns into an intermittent failure.
-    """
+    """Step 2. Run the provider in a background thread and poll the card until it
+    answers, so no fixed sleep has to guess the start-up time."""
     import uvicorn
 
     config = uvicorn.Config(build_provider(), host=HOST, port=PORT, log_level="error")
@@ -119,7 +120,7 @@ def start_provider() -> threading.Thread:
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         try:
-            urllib.request.urlopen(f"{PROVIDER_URL}/.well-known/agent.json", timeout=1).read()
+            urllib.request.urlopen(f"{PROVIDER_URL}{CARD_PATH}", timeout=1).read()
             return thread
         except (urllib.error.URLError, ConnectionError):
             time.sleep(0.2)
@@ -128,21 +129,13 @@ def start_provider() -> threading.Thread:
 
 def discover(base_url: str) -> dict:
     """Step 3. Fetch the card and return it as the caller's only knowledge."""
-    with urllib.request.urlopen(f"{base_url}/.well-known/agent.json", timeout=5) as response:
+    with urllib.request.urlopen(f"{base_url}{CARD_PATH}", timeout=5) as response:
         return loads(response.read())
 
 
 def submit_task(base_url: str, card: dict, params: dict, token: str | None = "local-demo-token") -> tuple[int, dict]:
-    """Step 4. Post a task to whatever path the card named, and return the reply.
-
-    The endpoint comes out of the card rather than a constant in this file. That
-    is the difference that matters: the provider can move its route, and the
-    caller follows without being redeployed, because it re-reads the card.
-
-    `token` defaults to the value that satisfies the bearer scheme the card
-    declared. Step 7 passes None to send the request with no Authorization
-    header at all, to show that scheme is enforced rather than descriptive.
-    """
+    """Post a task to the path the card names and return (status, reply).
+    token=None sends no Authorization header."""
     payload = dumps({"task_id": str(uuid.uuid4()), "params": params}).encode()
     headers = {"Content-Type": "application/json"}
     if token is not None:
@@ -156,23 +149,21 @@ def submit_task(base_url: str, card: dict, params: dict, token: str | None = "lo
 
 
 def plan_workshop(base_url: str, card: dict, date: str, attendees: int) -> None:
-    """Step 5. Turn the returned artifact into a decision this agent owns.
-
-    The provider reports facts about rooms and stops there. Whether a workshop
-    goes ahead is not its call, and keeping that split is what lets either side
-    change its rules without renegotiating with the other.
-    """
+    """Step 4. Ask the provider which rooms fit, then decide here: the smallest
+    room that fits, or cancel. The provider only reports rooms."""
     status, reply = submit_task(base_url, card, {"date": date, "attendees": attendees})
     if status != 200:
         print(f"  {date} for {attendees}: request rejected ({reply.get('detail')})")
         return
 
     rooms = reply["artifact"]["rooms"]
+    returned = ", ".join(f"{room['room']} ({room['seats']})" for room in rooms) or "none"
     if rooms:
         best = min(rooms, key=lambda room: room["seats"])
-        print(f"  {date} for {attendees}: confirmed in {best['room']} ({best['seats']} seats)")
+        decision = f"confirmed in {best['room']}"
     else:
-        print(f"  {date} for {attendees}: cancelled, no room fits")
+        decision = "cancelled, no room fits"
+    print(f"  {date} for {attendees}: provider returned {returned} -> {decision}")
 
 
 def main() -> None:
@@ -187,21 +178,21 @@ def main() -> None:
 
     print("\n--- 3. Discovering it from the caller's side ---")
     card = discover(PROVIDER_URL)
-    print(f"  discovered {card['name']} v{card['version']}")
+    print(f"  discovered {card['name']} v{card['version']} at {CARD_PATH}")
     print(f"  learned endpoint: {card['endpoints']['task_submit']}")
     print(f"  learned auth:     {card['authentication']['methods']}")
 
-    print("\n--- 4-5. Delegating three planning decisions ---")
-    plan_workshop(PROVIDER_URL, card, "2026-04-14", 30)
+    print("\n--- 4. Delegating three planning decisions ---")
+    plan_workshop(PROVIDER_URL, card, "2026-04-14", 10)
     plan_workshop(PROVIDER_URL, card, "2026-04-15", 30)
     plan_workshop(PROVIDER_URL, card, "2026-04-16", 8)
 
-    print("\n--- 6. A task the card's schema forbids ---")
+    print("\n--- 5. A task the card's schema forbids ---")
     status, reply = submit_task(PROVIDER_URL, card, {"date": "2026-04-14", "attendees": 500})
     print(f"  status {status}: {reply.get('detail')}")
     print(f"  the card said attendees max is {card['input_schema']['properties']['attendees']['maximum']}")
 
-    print("\n--- 7. A task without the bearer token the card declared ---")
+    print("\n--- 6. A task without a bearer token ---")
     status, reply = submit_task(PROVIDER_URL, card, {"date": "2026-04-14", "attendees": 5}, token=None)
     print(f"  status {status}: {reply.get('detail')}")
     print(f"  the card declared authentication methods: {card['authentication']['methods']}")

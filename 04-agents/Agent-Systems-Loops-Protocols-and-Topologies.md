@@ -1054,14 +1054,16 @@ Or, in terms of what crosses the boundary: MCP moves a **call and a result**; A2
 | Long-running work is normal | A task has states, and can pause for more input |
 | Multi-modal | Parts can be text, files or structured data |
 
-`06` implements the first three directly: a JSON document over HTTP, a task submitted to an
-endpoint, and a bearer token the provider actually enforces.
+`06` follows the first three in a simplified form: a JSON card over HTTP, a task submitted to an
+endpoint, and a bearer token the provider actually enforces. Its card fields and its task route
+are its own, not A2A's: A2A 1.0 cards list skills and security schemes, and tasks go through the
+SendMessage operation.
 
 ### 11.3 The vocabulary
 
 | Term | Meaning |
 | :--- | :--- |
-| **Agent Card** | The public description at `/.well-known/agent.json`: name, endpoints, input schema, auth |
+| **Agent Card** | The public description at `/.well-known/agent-card.json`: name, skills, security schemes |
 | **Task** | The unit of work, with an id and a lifecycle |
 | **Message** | What passes back and forth while a task runs |
 | **Part** | A piece of a message: text, file, or data |
@@ -1084,8 +1086,8 @@ completed status are all visible in the same response.
 
 **Step 4 is the part an ordinary HTTP call has no room for.** A normal request succeeds or
 fails; it cannot say "I need one more thing from you before I can continue" and stay the same
-piece of work. `06` implements steps 1, 2, 3 and 5 — its provider answers immediately — but the
-card's declared `sse_subscribe` endpoint is the seam where the streaming variant would attach.
+piece of work. `06` covers steps 1, 2, 3 and 5. Its provider answers at once, so there is no
+streaming and no `input-required` state.
 
 ### 11.5 The division of labour, as code
 
@@ -1145,14 +1147,16 @@ AGENT_CARD = {
 }
 ```
 
-Served at `/.well-known/agent.json`. A caller that has never seen this code should be able to
-read this one document and learn the endpoint, the accepted inputs, and the authentication
-scheme. That is the entire premise of runtime discovery.
+Served at `/.well-known/agent-card.json`, the path A2A uses. A caller that has never seen this
+code learns the endpoint, the accepted inputs and the authentication scheme from this one
+document. The fields themselves are simplified and are not A2A's card format. The provider reads
+its attendee limits from this card when it checks a task, so the card and the check cannot
+drift apart.
 
 ### 12.2 The caller reads routes instead of hardcoding them
 
 ```python
-card = discover(PROVIDER_URL)                       # GET /.well-known/agent.json
+card = discover(PROVIDER_URL)                       # GET /.well-known/agent-card.json
 response = urllib.request.Request(
     f"{base_url}{card['endpoints']['task_submit']}",  # route comes from the card
     ...
@@ -1163,7 +1167,7 @@ response = urllib.request.Request(
 Measured:
 
 ```
-discovered RoomAvailabilityAgent v1.0
+discovered RoomAvailabilityAgent v1.0 at /.well-known/agent-card.json
 learned endpoint: /api/tasks/availability
 learned auth:     ['bearer']
 ```
@@ -1178,34 +1182,35 @@ The provider's room table is private. What crosses the wire is an artifact deriv
 
 ```json
 {"task_id": "...", "status": "completed",
- "artifact": {"date": "2026-04-14", "attendees": 30,
-              "rooms": [{"room": "Aspen", "seats": 40}]}}
+ "artifact": {"date": "2026-04-14", "attendees": 10,
+              "rooms": [{"room": "Cedar", "seats": 12}, {"room": "Aspen", "seats": 40}]}}
 ```
 
-The caller turns that into a decision that is its own:
+The caller turns that into a decision that is its own, the smallest room that fits:
 
 ```
-2026-04-14 for 30: confirmed in Aspen (40 seats)
-2026-04-15 for 30: cancelled, no room fits
-2026-04-16 for 8:  cancelled, no room fits
+2026-04-14 for 10: provider returned Cedar (12), Aspen (40) -> confirmed in Cedar
+2026-04-15 for 30: provider returned none -> cancelled, no room fits
+2026-04-16 for 8: provider returned none -> cancelled, no room fits
 ```
 
-Three different situations behind those lines: a room that fits, a date whose only room seats 12,
-and a date with no rooms at all. **Whether a workshop goes ahead is not the provider's call**,
-and keeping that split is what lets either side change its rules without renegotiating with the
-other. Note also that there is no model in this script at all — delegation between agents is a
-protocol question, not an intelligence question.
+The first case has two rooms to choose from, so the smallest-room rule decides something. The
+other two return nothing for different reasons: the 15th has only a 12-seat room, the 16th has
+no rooms at all. **Whether a workshop goes ahead is not the provider's call**, and keeping that
+split is what lets either side change its rules without renegotiating with the other. There is
+no model in this script at all: delegation between agents is a protocol question, not an
+intelligence question.
 
 ### 12.4 A declaration that is not enforced is decoration
 
 Two negative cases, both driven by what the card promised:
 
 ```
---- 6. A task the card's schema forbids ---
+--- 5. A task the card's schema forbids ---
   status 400: attendees must be an integer between 1 and 60
   the card said attendees max is 60
 
---- 7. A task without the bearer token the card declared ---
+--- 6. A task without a bearer token ---
   status 401: missing or invalid bearer token
   the card declared authentication methods: ['bearer']
 ```
