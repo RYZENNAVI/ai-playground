@@ -75,20 +75,9 @@ rounds floats to four places, since no question asks for an order.
 
 *   Styles A and B describe four of the tables in a paragraph that names the columns,
     with no types, comments or codes. B adds an explicit "Write one SQL query". Style C
-    pastes the CREATE TABLE text into a completion template:
-
-    ```python
-    PROMPT_C = """-- language: SQL
-    ### Question: {question}
-    ### Input: {schema}
-    ### Response:
-    Here is the SQL query I have generated to answer the question `{question}`:
-    ```sql
-    """
-    ```
-
-    The prompt ends inside an open `sql` block, so the reply starts with SQL.
-    `extract_sql()` handles a reply with no opening fence.
+    pastes the CREATE TABLE text into a completion template (`### Question`,
+    `### Input`, `### Response`) that ends inside an open `sql` block, so the reply
+    starts with SQL.
 *   C changes the template as well as the schema, so only A against B changes one
     thing at a time.
 *   Three questions filter on a status code. For those the script also checks whether
@@ -153,18 +142,8 @@ Part 6 asks the same question three ways. Three runs gave the same results:
 
 `SQLDatabase.from_uri()` opens the database and reads its structure by reflection.
 `SQLDatabaseToolkit` turns it into four tools, and `create_sql_agent` builds a ReAct
-agent that calls them until it can answer. All of these ship with LangChain. The
-script only wires them together:
-
-```python
-database = SQLDatabase.from_uri(db_uri)
-llm = ChatOpenAI(model=MODEL, temperature=0.01, api_key=key, base_url=BASE_URL)
-toolkit = SQLDatabaseToolkit(db=database, llm=llm)
-agent = create_sql_agent(
-    llm=llm, toolkit=toolkit, verbose=True, max_iterations=MAX_ITERATIONS,
-    agent_executor_kwargs={"return_intermediate_steps": True},
-)
-```
+agent that calls them until it can answer. All of these ship with LangChain, and the
+script only wires them together.
 
 | Tool | Job |
 | :--- | :--- |
@@ -214,12 +193,8 @@ Three runs gave the same results:
 ## Script 04: Vanna
 
 Vanna applies retrieval-augmented generation to Text2SQL. A client is composed from
-two mixins, a vector store and a chat model, so either half can be replaced:
-
-```python
-class LocalVanna(ChromaDB_VectorStore, OpenAI_Chat):
-    ...
-```
+two mixins, a vector store and a chat model (`LocalVanna(ChromaDB_VectorStore,
+OpenAI_Chat)`), so either half can be replaced.
 
 *   In vanna 2 these classes live under `vanna.legacy`. Chroma computes the
     embeddings locally, so only the chat call leaves the machine.
@@ -240,24 +215,16 @@ class LocalVanna(ChromaDB_VectorStore, OpenAI_Chat):
 Part 5 asks "How many policies have lapsed, and what do they cost in premium per
 year?". The query always filters on `'LP'`, from the note on stored codes, and joins
 products, from the note on where premium lives. The premium is per payment period,
-and whether the query converts it to a yearly amount changes from run to run:
-
-```sql
-SELECT COUNT(*), SUM(pr.premium)
-FROM policies po
-JOIN products pr ON po.product_id = pr.product_id
-WHERE po.policy_status = 'LP'
-```
-
-The script checks the result against a hand-written query that multiplies each
-premium by the payments per year, taken from `payment_frequency`:
+and whether the query converts it to a yearly amount changes from run to run. The
+script checks the result against a hand-written query that multiplies each premium by
+the payments per year, taken from `payment_frequency`:
 
 | | Policies | Premium |
 | :--- | :---: | :---: |
 | Generated SQL without the conversion | 13 | 8912.0, per payment period added up |
 | Generated SQL with the conversion, or hand-written | 13 | 13632.0 per year |
 
-Three runs on 2026-09-27 all produced the query above and 8912.0. Of four runs on
+Three runs on 2026-09-27 all summed the raw premium and got 8912.0. Of four runs on
 2026-09-28, three converted and matched 13632.0. No note says how to annualise a
 premium, so the result depends on whether the model thinks of it, and the check is
 what catches the runs where it does not.
@@ -285,18 +252,9 @@ as defence in depth. A request one layer refuses never reaches the next.
     `{"is_safe": "yes" or "no", "reason": "<short>", "sql": "<the SELECT, or empty>"}`.
     Judging and writing in one call saves a second round trip.
 *   Static rules check the SQL text: one statement only, starting with `SELECT` or
-    `WITH`, no forbidden keyword, no always-true predicate.
-
-    ```python
-    FORBIDDEN = re.compile(
-        r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|REPLACE|ATTACH|PRAGMA)\b",
-        re.I,
-    )
-    ALWAYS_TRUE = re.compile(r"\b1\s*=\s*1\b|\bOR\s+'[^']*'\s*=\s*'[^']*'", re.I)
-    ```
-
-    `ATTACH` mounts another database file and `PRAGMA` changes settings, so neither
-    is a read.
+    `WITH`, no forbidden keyword, no always-true predicate such as `1=1` or
+    `'a'='a'`. The forbidden keywords include `ATTACH`, which mounts another database
+    file, and `PRAGMA`, which changes settings, since neither is a read.
 *   A second model call reviews the query and returns
     `{"verdict": "allow" or "block", "reason": "<short>"}`. It only asks whether the
     query is read-only.
@@ -371,44 +329,10 @@ script runs them. The model never touches the database itself.
 | `fit_segment_premium` | Fits a linear regression on `daily_sales` for one campaign or all, and returns the price per segment and R^2 |
 | `rank_drivers` | Fits a decision tree on `daily_sales` and returns the five most important factors |
 
-A tool is declared as a JSON schema. The model sees only the name, the description
-and the parameters:
-
-```python
-{
-    "type": "function",
-    "function": {
-        "name": "run_sql",
-        "description": "Run a read-only SELECT and return the rows.",
-        "parameters": {
-            "type": "object",
-            "properties": {"sql": {"type": "string",
-                                   "description": "A single SELECT statement."}},
-            "required": ["sql"],
-        },
-    },
-}
-```
-
-A simplified version of the loop in `converse`:
-
-```python
-for _ in range(MAX_TURNS):
-    response = client.chat.completions.create(
-        model=MODEL, messages=messages, tools=TOOLS, temperature=0.0
-    )
-    message = response.choices[0].message
-    if not message.tool_calls:
-        return message.content
-    messages.append(message)
-    for call in message.tool_calls:
-        result = dispatch(connection, call.function.name,
-                          json.loads(call.function.arguments))
-        messages.append({"role": "tool", "tool_call_id": call.id,
-                         "content": json.dumps(result)})
-return "stopped after the turn limit"
-```
-
+*   A tool is declared as a JSON schema. The model sees only the name, the
+    description and the parameters.
+*   The loop in `converse` sends the history with the tools, runs every tool call
+    the reply asks for, adds each result, and stops when a reply has no tool calls.
 *   `arguments` arrives as a JSON string and needs `json.loads`. Every tool call needs
     its own `tool` message with the matching id.
 *   The model's reply goes back into the history as it came. An earlier version rebuilt
@@ -420,14 +344,9 @@ return "stopped after the turn limit"
 *   The connection is read-only, as in 05.
 
 The system message is 5328 characters. It holds the commented schema, the meaning of
-each code, three settled questions, and a note about what `daily_sales` does not hold:
-
-```
-It does not hold the average premium per segment. Use fit_segment_premium when that
-is asked for.
-```
-
-A CREATE TABLE statement can only say what a table holds. Without the note the model
+each code, three settled questions, and a note that `daily_sales` does not hold the
+average premium per segment, so `fit_segment_premium` should answer that. A CREATE TABLE
+statement can only say what a table holds. Without the note the model
 would try to answer the price question with SQL. The settled questions are house
 rules the schema cannot express, each written with its reason, for example "Closed
 accounts are not counted as customers."
