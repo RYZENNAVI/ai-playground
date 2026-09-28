@@ -1231,13 +1231,13 @@ def tool_run_sql(connection, sql):
     ...
 ```
 
-**The loop** — send, inspect, dispatch, append, repeat:
+**The loop** — send, inspect, dispatch, append, repeat. A simplified version of `converse`:
 
 ```python
 def converse(client, connection, system, question):
     messages = [{"role": "system", "content": system},
                 {"role": "user", "content": question}]
-    while True:
+    for _ in range(MAX_TURNS):
         response = client.chat.completions.create(
             model=MODEL, messages=messages, tools=TOOLS, temperature=0.0
         )
@@ -1250,7 +1250,10 @@ def converse(client, connection, system, question):
                               json.loads(call.function.arguments))
             messages.append({"role": "tool", "tool_call_id": call.id,
                              "content": json.dumps(result)})
+    return "stopped after the turn limit"
 ```
+
+`MAX_TURNS` is 10. The questions in this script finish in two or three model calls.
 
 **Two details that catch people out:**
 
@@ -1688,8 +1691,7 @@ def tool_plot_chart(connection, sql, title):
     """Render a two-column result as a bar chart and save it."""
     import matplotlib
 
-    # Pick the non-interactive backend before pyplot is imported, or a machine
-    # with no display will fail on import rather than on draw.
+    # Agg draws to files only, so no window opens.
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -1714,15 +1716,12 @@ def tool_plot_chart(connection, sql, title):
 | Field mapping | Infer x and y from column dtypes | **Convention: first column is the label, second is the number** — stated in the tool description |
 | Series | Grouped bars, pivot tables | Single series only |
 | Title | Composed from column names | **Passed in by the model** |
-| Filename | Timestamped | Derived from the title, so **re-running overwrites instead of accumulating** |
+| Filename | Timestamped | Derived from the title the model writes. The same title overwrites the old file, but runs have used two different titles, so files can still accumulate |
 
 ⇒ **A convention is more controllable than an inference.** Putting "label column then numeric column"
 in the `description` means the model writes its SQL in that shape to begin with — **the chart's
 structural requirement moves forward into SQL generation**, which is far steadier than receiving
 arbitrary results and guessing how to draw them.
-
-⚠️ **`matplotlib.use("Agg")` must come before `pyplot` is imported.** Without it, a machine with no
-display fails at import rather than at draw time — and the error surfaces a long way from its cause.
 
 ⚠️ **`plt.close(figure)` is not optional.** Unclosed figures accumulate in memory, and a long-running
 service leaks.
@@ -1730,9 +1729,11 @@ service leaks.
 ### 18.4 Measured
 
 Asked to *chart the total amount claimed by claim type, then tell me which type is largest*, the model
-**called two tools in sequence** — `run_sql` for the numbers, then `plot_chart` for the picture — and
-answered from what it had: Death is largest at $396,756.03, followed by Property, Medical and
-Accident.
+called both `run_sql` and `plot_chart` and answered from what they returned: Death is largest at
+396,756.03, followed by Property (216,956.69), Medical (127,968.68) and Accident (107,311.81). The
+order is the model's choice: three runs on 2026-09-28 queried first, and three later runs drew the
+chart first. The script prints where the PNG was saved, for example
+`data/charts/total_amount_claimed_by_claim_type.png`.
 
 ### 18.5 How a Language Model "Draws"
 
@@ -1866,25 +1867,31 @@ def tool_fit_segment_premium(connection, campaign="all"):
 `rank_drivers` ranks factors by a decision tree's split importance, over the same table.
 
 **Why a tree rather than correlations**: correlation only sees a linear relationship with one
-feature at a time, while a tree captures **threshold effects** (month-end is a jump, not a slope) and
-**interactions**, and it emits a ranked list that makes a natural tool result.
+feature at a time, while a tree takes counts and categories together and copes with a campaign lift
+that multiplies the total. It also emits a ranked list that makes a natural tool result.
 
 **Measured over 180 days:**
 
 | Feature | Importance |
 | :--- | ---: |
-| `renewal_count` | **0.42** |
+| `renewal_count` | 0.42 |
 | `upgrade_count` | 0.28 |
 | `new_count` | 0.26 |
-| `campaign` | negligible |
+| `campaign` flags together | 0.04 |
+| `is_month_end` and `weekday` flags together | 0.00 |
+
+Script 01 priced each day from the three counts and the campaign multiplier only, so month end and
+weekday have no effect by construction. The tree gives them nothing, and part 6 of the script prints
+that check.
 
 ⚠️ **Read that honestly**: the top three are the **segment volumes**, and daily total premium is by
 construction their weighted sum — **the tree has largely rediscovered an identity.**
 
-The genuinely informative row is the last one: **campaign barely registers.** That says the campaign
-works mainly by **raising unit price** (the year-end multiplier is 1.3) rather than by **changing the
-mix of volumes** — a conclusion reachable only by noticing how completely the volume features
-dominate.
+The campaign row needs the same care. Year-end days are priced 30% higher, but they are 18 of the 180
+days, and the day-to-day swings in the counts are far larger. **A low importance is not a small
+effect.** Importance measures how much of the variation in this sample a feature explains, not how far
+the feature moves the outcome when it is present. The model's own summary, "campaign timing matters
+far less", reads the number the wrong way.
 
 ⚠️ **A second limit**: feature importance measures **how useful a feature is for prediction**, not how
 much changing it would move the outcome. **It is not causal.** Fine as the starting point of an
@@ -1901,17 +1908,20 @@ the agent called `fit_segment_premium({"campaign": "yearend"})` and reported:
 
 | Segment | Recovered | True value | Error |
 | :--- | ---: | ---: | ---: |
-| New (`new`) | **$789.07** | 806.0 | **−2.1%** |
-| Renewal (`renewal`) | **$549.15** | 533.0 | **+3.0%** |
+| New (`new`) | 789.07 | 806.0 | -2.1% |
+| Renewal (`renewal`) | 549.15 | 533.0 | +3.0% |
+| Upgrade (`upgrade`), not asked for | 1118.80 | 1144.0 | -2.2% |
+
+The fit used the 18 year-end days, with an R^2 of 0.9955.
 
 The true values are fixed at generation time — base prices of 620 for new, 410 for renewal and 880
 for upgrade, with a year-end multiplier of 1.3, giving 620 × 1.3 = 806 and 410 × 1.3 = 533.
 
 ⇒ **Two numbers held in no column, recovered to within 3%.**
 
-The script **prints the ground truth at the end** on purpose: without it a reader has no way to judge
-whether the recovered figures are real. **A model output with nothing to check it against is not a
-result.**
+Part 5 of the script prints this comparison itself. An earlier version printed only the base prices
+(620 and 410) at the end, which a reader would compare with 789 and 549 and conclude the fit had
+failed. **A model output with nothing to check it against is not a result.**
 
 All four tools fired across the run: `run_sql`, `plot_chart`, `fit_segment_premium` and
 `rank_drivers`.
@@ -2431,7 +2441,7 @@ Every script has been run. From the most recent full pass:
 | 03 | Reflection drops every column comment; a missing table raises a parsing exception in all three runs; the coded question was answered correctly (43, matching the reference SQL) after the agent queried the distinct codes and guessed that `IF` means in force; 4 and 5 tool calls |
 | 04 | Retrieved all 5 DDL statements, 5 notes and 3 pairs; the lapsed-policy question got 13 policies but 8912.0 instead of 13632.0 per year, because the query never converted the premium (three runs); the stored correction took the same question from 40 to 35, while a reworded question stayed at 40 |
 | 05 | The screen refused all four hostile requests and passed the four ordinary ones, in three runs; sent directly, the static rules blocked all six hand-written statements and the review blocked only the three that write; read-only connection verified as non-writable; benchmark 7/7: single 3/3, two-table 2/2, three-table 2/2 |
-| 06 | All four tools fired; regression recovered year-end new at **$789.07** and renewal at **$549.15** against true values of 806 and 533 (**−2.1% / +3.0%**) |
+| 06 | All four tools fired in three runs; regression recovered year-end new at 789.07 and renewal at 549.15 against true values of 806 and 533 (-2.1% / +3.0%); the tree gave month end and weekday no importance, as generated, and campaign 0.04 although year-end days are priced 30% higher |
 
 ⚠️ **Two of these move between runs, so quote them with care:**
 

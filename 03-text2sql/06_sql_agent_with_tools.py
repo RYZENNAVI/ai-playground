@@ -1,22 +1,41 @@
-"""Hand the model a set of tools and let it decide which ones a question needs.
+"""Let the model pick tools to answer database questions, via function calling.
 
-Demonstrates the step from writing SQL to acting on a database:
-    1. Declare four tools: run a query, draw a chart, fit a model, rank drivers.
-    2. Put the schema, the stored-code meanings and the settled questions into
-       the system message.
-    3. Loop: send the conversation, run whatever tool the model asks for, repeat.
-    4. Answer a question that needs one query.
-    5. Answer one that needs a query and then a chart.
-    6. Answer one whose numbers are not in any column, only implied by totals.
-    7. Answer one asking which factors move a figure the most.
+This script gives DeepSeek four tools through function calling (also called
+tool calling): run a query, draw a bar chart, fit a linear regression, and
+rank factors with a decision tree. The system message holds the schema, what
+each stored code means and three settled questions. A hand-written loop sends
+the conversation, runs whatever tools the model asks for and sends back the
+results, until the model answers in words or ten turns pass.
 
-Module 03: Text2SQL - Tool-Calling Agent.
+Two of the tools reach numbers no column holds. daily_sales stores how many
+new, renewal and upgrade policies sold each day and the day's total premium,
+but not what one policy of each kind costs. A linear regression without an
+intercept recovers those prices as its coefficients:
+
+    total_premium = w_new * new + w_renewal * renewal + w_upgrade * upgrade
+
+A day with no sales takes no premium, so the line goes through the origin and
+each coefficient reads as a price. Script 01 generated the table from fixed
+prices and campaign multipliers, so parts 5 and 6 check the tools against them.
+
+The run prints six parts:
+    1. Tools declared. Each tool's name and description.
+    2. System message. Its length and what it holds.
+    3. One query. "How many customers do we have?", which a settled question
+       answers as 35, not the 40 rows in the table.
+    4. A query and then a chart. Total claimed by claim type, saved as a PNG
+       in data/charts.
+    5. A number no column holds. New against renewal premium in the yearend
+       campaign, checked against the prices that generated the data.
+    6. Which factors move the total. The decision tree's ranking, checked
+       against what the generator actually used.
 """
 
 import json
 import os
 import sqlite3
 import sys
+import textwrap
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -40,6 +59,10 @@ CHART_DIR = Path(__file__).parent / "data" / "charts"
 # a model going in circles stops rather than billing indefinitely.
 MAX_TURNS = 10
 
+# run_sql sends back at most this many rows, so a large result cannot flood the
+# conversation.
+MAX_ROWS = 50
+
 SYSTEM_TEMPLATE = """You answer questions about an insurance database by calling
 tools. Write SQLite-compatible SQL only.
 
@@ -54,7 +77,7 @@ Stored codes:
 
 The daily_sales table holds one row per day with the number of policies sold to
 each customer segment and the total premium taken that day. It does not hold the
-average premium per segment - use fit_segment_premium when that is asked for.
+average premium per segment. Use fit_segment_premium when that is asked for.
 
 Settled questions. These are house rules, not facts the schema can tell you, so
 follow them rather than deriving your own:
@@ -156,27 +179,27 @@ def make_client():
 
 
 def tool_run_sql(connection, sql):
-    """Execute a SELECT and hand back rows the model can read.
-
-    Errors are returned rather than raised. The model wrote this SQL, so a
-    failure is information it can act on - raising would end the conversation
-    instead of letting it fix the query.
-    """
+    """Execute a SELECT and return the rows, or the error so the model can fix
+    its query instead of the conversation ending."""
     try:
         cursor = connection.execute(sql)
         columns = [c[0] for c in cursor.description]
-        rows = cursor.fetchall()[:50]
-        return {"columns": columns, "rows": rows, "row_count": len(rows)}
+        rows = cursor.fetchall()
     except sqlite3.Error as error:
         return {"error": str(error)}
+    result = {
+        "columns": columns, "rows": rows[:MAX_ROWS], "row_count": len(rows)
+    }
+    if len(rows) > MAX_ROWS:
+        result["note"] = f"only the first {MAX_ROWS} rows are included"
+    return result
 
 
 def tool_plot_chart(connection, sql, title):
     """Render a two-column result as a bar chart and save it."""
     import matplotlib
 
-    # Pick the non-interactive backend before pyplot is imported, or a machine
-    # with no display will fail on import rather than on draw.
+    # Agg draws to files only, so no window opens.
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -205,19 +228,8 @@ def tool_plot_chart(connection, sql, title):
 
 
 def tool_fit_segment_premium(connection, campaign="all"):
-    """Recover per-segment premium from daily totals with a linear fit.
-
-    Nothing in the database stores what one new customer pays on average. What
-    it does store is how many of each segment signed on a given day and what
-    came in that day, so the per-segment figures sit in the coefficients of
-
-        total_premium = w_new * new + w_renewal * renewal + w_upgrade * upgrade
-
-    Fitting that model is the only way to get them, which is what makes this a
-    tool rather than a query. No intercept is fitted: a day with no sales takes
-    no premium, and forcing the line through the origin keeps each coefficient
-    interpretable as a price rather than a price plus a share of some constant.
-    """
+    """Fit total premium on the three daily counts, with no intercept, and
+    return the coefficients as per-segment prices with the fit's R^2."""
     from sklearn.linear_model import LinearRegression
 
     sql = ("SELECT new_count, renewal_count, upgrade_count, total_premium "
@@ -246,13 +258,9 @@ def tool_fit_segment_premium(connection, campaign="all"):
     }
 
 
-def tool_rank_drivers(connection):
-    """Rank what moves daily premium, using a decision tree's split importance.
-
-    A tree is used rather than a correlation because the candidate factors are a
-    mix of counts and categories, and because a split-based ranking survives the
-    fact that the campaign lift is multiplicative rather than additive.
-    """
+def driver_importances(connection):
+    """Return every factor's decision-tree importance, highest first. A tree
+    mixes counts with categories, and copes with a lift that multiplies."""
     from sklearn.tree import DecisionTreeRegressor
 
     rows = connection.execute(
@@ -278,10 +286,16 @@ def tool_rank_drivers(connection):
     ranked = sorted(
         zip(names, model.feature_importances_), key=lambda p: p[1], reverse=True
     )
+    return len(rows), [(name, float(score)) for name, score in ranked]
+
+
+def tool_rank_drivers(connection):
+    """Return the five most important factors that have any importance."""
+    days, ranked = driver_importances(connection)
     return {
-        "days_used": len(rows),
+        "days_used": days,
         "top_factors": [
-            {"factor": name, "importance": round(float(score), 4)}
+            {"factor": name, "importance": round(score, 4)}
             for name, score in ranked[:5]
             if score > 0
         ],
@@ -302,12 +316,8 @@ def dispatch(connection, name, arguments):
 
 
 def converse(client, connection, system, question):
-    """Run the tool-calling loop until the model answers in words.
-
-    Each turn either produces a final message or a batch of tool calls. Tool
-    results go back in as messages of their own, which is what lets the model
-    chain one call into the next - query first, then chart what the query found.
-    """
+    """Run the tool-calling loop until the model answers in words. Tool results
+    go back as messages, so the model can chain one call into the next."""
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": question},
@@ -339,9 +349,15 @@ def converse(client, connection, system, question):
 
         for call in message.tool_calls:
             arguments = json.loads(call.function.arguments or "{}")
-            preview = json.dumps(arguments)[:88]
+            preview = json.dumps(arguments)
+            if len(preview) > 88:
+                preview = preview[:85] + "..."
             print(f"    -> {call.function.name}({preview})")
             result = dispatch(connection, call.function.name, arguments)
+            if "saved_to" in result:
+                here = Path(__file__).parent
+                saved = Path(result["saved_to"]).relative_to(here)
+                print(f"       saved to {saved.as_posix()}")
             messages.append({
                 "role": "tool",
                 "tool_call_id": call.id,
@@ -359,46 +375,77 @@ def main():
     system = SYSTEM_TEMPLATE.format(schema=schema)
 
     try:
+        # 1. Tools declared
         print("--- 1. Tools declared ---")
         for tool in TOOLS:
             function = tool["function"]
-            print(f"  {function['name']:<22}{function['description'][:60]}")
+            print(f"  {function['name']}")
+            for line in textwrap.wrap(function["description"], 68):
+                print(f"      {line}")
 
+        # 2. System message
         print("\n--- 2. System message ---")
         print(f"  {len(system)} characters: schema, code meanings, settled")
         print("  questions, and one note telling the model which question the")
         print("  fitting tool answers.")
 
-        print("\n--- 3./4. One query ---")
+        # 3. One query
+        print("\n--- 3. One query ---")
         # Governed by a settled question: closed accounts are not customers, so
         # the expected answer is 35 rather than the 40 rows in the table.
         question = "How many customers do we have?"
         print(f"  Q: {question}")
         print(converse(client, connection, system, question))
 
-        print("\n--- 5. A query and then a chart ---")
+        # 4. A query and then a chart
+        print("\n--- 4. A query and then a chart ---")
         question = ("Chart the total amount claimed by claim type, then tell me "
                     "which type is largest.")
         print(f"  Q: {question}")
         print(converse(client, connection, system, question))
 
-        print("\n--- 6. A number no column holds ---")
+        # 5. A number no column holds
+        print("\n--- 5. A number no column holds ---")
         question = ("What does a new customer pay on average compared with a "
                     "renewal, during the yearend campaign?")
         print(f"  Q: {question}")
         print(converse(client, connection, system, question))
+        # The fit is deterministic, so running it again gives the numbers the
+        # model received. The generator priced yearend days at base x lift.
+        fit = tool_fit_segment_premium(connection, "yearend")
+        lift = _db.CAMPAIGN_LIFT["yearend"]
+        print(f"\n  Check: the fit used {fit['days_used']} yearend days, "
+              f"R^2 {fit['fit_quality_r2']}.")
+        for segment, base in _db.SEGMENT_PREMIUM.items():
+            recovered = fit["average_premium"][segment]
+            true = base * lift
+            print(f"    {segment:<9}fit {recovered:>8.2f}   generator "
+                  f"{base} x {lift} = {true:.1f}   "
+                  f"({(recovered - true) / true:+.1%})")
 
-        print("\n--- 7. Which factors move the total ---")
+        # 6. Which factors move the total
+        print("\n--- 6. Which factors move the total ---")
         question = "Which factors drive daily premium the most?"
         print(f"  Q: {question}")
         print(converse(client, connection, system, question))
-
-        print("\n--- Ground truth for step 6 ---")
-        # The generator used fixed prices, so the fit can be checked rather than
-        # taken on faith. Anything close to these three numbers means the model
-        # recovered figures the database never stored.
-        print(f"  prices used to generate the data: {_db.SEGMENT_PREMIUM}")
-        print(f"  campaign multipliers:             {_db.CAMPAIGN_LIFT}")
+        # The generator priced each day from the three counts and the campaign
+        # only, so month end and weekday should get nothing.
+        days, ranked = driver_importances(connection)
+        unused = sum(s for n, s in ranked
+                     if n == "is_month_end" or n.startswith("weekday="))
+        campaign = sum(s for n, s in ranked if n.startswith("campaign="))
+        yearend_days = connection.execute(
+            "SELECT COUNT(*) FROM daily_sales WHERE campaign = 'yearend'"
+        ).fetchone()[0]
+        print(f"\n  Check: is_month_end and weekday get {unused:.2f} together.")
+        if unused == 0:
+            print("  The generator never used them, and the tree agrees.")
+        else:
+            print("  The generator never used them, so this is noise.")
+        print(f"  The campaign factors get {campaign:.2f} together. Yearend")
+        print(f"  days are priced {lift - 1:.0%} higher, but they are "
+              f"{yearend_days} of {days}")
+        print("  days, so a low importance is not a small effect.")
     finally:
         connection.close()
 
