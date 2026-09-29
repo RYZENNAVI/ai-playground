@@ -1,15 +1,24 @@
-"""Train on scored samples instead of written answers, using group-relative policy optimisation.
+"""GRPO (group relative policy optimisation) with rule-based rewards, trained as a LoRA adapter.
 
-Demonstrates reinforcement learning from rules rather than from labelled outputs:
-    1. Generate arithmetic problems whose answers can be checked automatically.
-    2. Define five reward functions, from tag counting up to answer correctness.
-    3. Sample a group of answers per problem so the group can grade itself.
-    4. Turn raw rewards into advantages by standardising them inside each group.
-    5. Hold the policy near the frozen base with a penalty on the log ratio.
-    6. Update the adapter from sampled text, and watch each reward term move.
-    7. Score format compliance and accuracy before and after on unseen problems.
+This is reinforcement learning with verifiable rewards. The model gets no written answers.
+Five rules score what it writes, and each sample is judged against the other samples drawn
+for the same problem. The model is DeepSeek-R1-Distill-Qwen-1.5B, and the task is a
+subtraction problem whose answer the script computes.
 
-Module 05: Fine-Tuning - Group Relative Policy Optimisation.
+The run prints six parts:
+    1. Build 60 subtraction problems and hold out 12 for evaluation.
+    2. Score two hand-written samples with the five rewards: tag count, soft format,
+       strict format, a bare integer, and the right answer, worth 2.0 of the 4.0.
+    3. Load the base model and attach a rank 16 adapter to the four attention projections.
+    4. Score the held-out problems before training, with greedy decoding.
+    5. Train for 24 steps. Each step samples six answers to each of two problems,
+       standardises the rewards inside each group into advantages, and updates the
+       adapter. A KL penalty toward the base, computed with the adapter switched off,
+       keeps the policy close to it.
+    6. Score the held-out problems again and compare with part 4.
+
+The prompt ends with the opening <reasoning> tag. Without it the base model writes prose,
+every sample in a group scores zero, and a group with no spread gives no gradient.
 """
 
 import os
@@ -57,13 +66,8 @@ SOFT_PATTERN = re.compile(r"<reasoning>.*?</reasoning>\s*<answer>.*?</answer>", 
 
 
 def make_problems(count, seed):
-    """Step 1. Build problems from arithmetic that is verifiable by construction.
-
-    The answer is computed here, not written by a person, so the correctness
-    reward is a fact rather than a judgement. This is what separates a reward
-    that can be optimised from one that only looks like it can: a scorer that
-    needs an opinion cannot be run thousands of times inside a training loop.
-    """
+    """Build subtraction problems whose answer is computed here, so the correctness
+    reward is a fact rather than a judgement."""
     rng = random.Random(seed)
     problems = []
     while len(problems) < count:
@@ -92,14 +96,8 @@ def extract_answer(text):
 
 
 def reward_tag_count(completion, expected):
-    """Partial credit for each tag that appears exactly once.
-
-    This is the only reward that pays out for a half-formed answer, and it exists
-    to keep the early steps from being flat. If every reward were all-or-nothing,
-    a model that never once produced the full shape would receive an identical
-    score for every sample, the advantages inside the group would all be zero,
-    and there would be no gradient to learn from at all.
-    """
+    """0.125 for each of the four tags that appears exactly once; the prefilled
+    <reasoning> earns the first 0.125."""
     score = 0.0
     for tag in ("<reasoning>", "</reasoning>", "<answer>", "</answer>"):
         if completion.count(tag) == 1:
@@ -124,7 +122,7 @@ def reward_integer(completion, expected):
 
 
 def reward_correct(completion, expected):
-    """The reward that actually matters, and the largest one."""
+    """2.0 for the right integer, as much as the four format rewards together."""
     answer = extract_answer(completion)
     return 2.0 if answer is not None and answer == str(expected) else 0.0
 
@@ -145,12 +143,8 @@ def score_completion(completion, expected):
 
 
 def load_policy(model_id, cache_dir, rank, alpha, target_modules):
-    """Load the base model and attach the adapter that will be trained.
-
-    The frozen base is not loaded a second time to act as the reference policy.
-    Switching the adapter off inside a context manager turns the same weights
-    back into the original model, which halves the memory this loop needs.
-    """
+    """Load the base model and attach the adapter. The reference policy is the same model
+    with the adapter switched off, which saves a second 3.6 GB copy of the weights."""
     from huggingface_hub import snapshot_download
     from peft import LoraConfig, get_peft_model
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -185,16 +179,7 @@ def load_policy(model_id, cache_dir, rank, alpha, target_modules):
 
 
 def build_prompt(tokenizer, question):
-    """Render one problem through the chat template and open the first tag.
-
-    The opening tag is written into the prompt instead of being left for the
-    model to produce. Without it this loop stalls at reward zero: a base model
-    asked for tagged output writes a paragraph of prose instead, no sample in the
-    group earns anything, every advantage is zero and no gradient exists. Handing
-    over the first token of the structure is the cheapest way to make some
-    samples better than others, which is the only condition under which a
-    group-relative method can start.
-    """
+    """Render one problem through the chat template and write the opening tag after it."""
     messages = [{"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": question}]
     rendered = tokenizer.apply_chat_template(messages, tokenize=False,
@@ -204,12 +189,8 @@ def build_prompt(tokenizer, question):
 
 def sample_group(model, tokenizer, question, device, group_size, max_new_tokens,
                  temperature, top_p):
-    """Step 3. Draw several answers to the same problem from the current policy.
-
-    Sampling has to be on, and the temperature has to be high enough that the
-    group actually differs. Identical samples all earn identical rewards, and the
-    centring step that follows would then hand back nothing but zeros.
-    """
+    """Sample several answers to one problem. Sampling has to be on: identical samples
+    earn identical rewards, and their advantages are all zero."""
     prompt = build_prompt(tokenizer, question)
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
     model.eval()
@@ -232,14 +213,8 @@ def sample_group(model, tokenizer, question, device, group_size, max_new_tokens,
 
 
 def advantages_from_rewards(rewards):
-    """Step 4. Centre and scale the rewards inside the group.
-
-    A group that grades itself needs no value network: the mean of the group is
-    the baseline, and each sample is judged on how much better or worse it is
-    than its siblings on the very same problem. That is what "group relative"
-    names. When every sample in a group scores the same, the standard deviation
-    is zero, the advantages are zero, and the step is correctly a no-op.
-    """
+    """Standardise the rewards inside the group. A group whose samples all score the same
+    gets zero advantages and adds no gradient."""
     tensor = torch.tensor(rewards, dtype=torch.float32)
     spread = tensor.std()
     if spread < 1e-6:
@@ -248,15 +223,8 @@ def advantages_from_rewards(rewards):
 
 
 def sequence_log_probabilities(model, sequences, prompt_length, pad_token_id):
-    """Per-token log probabilities of the sampled continuation, with padding masked.
-
-    The log probability of the chosen token is taken as its logit minus the log
-    sum of all logits, rather than by normalising the whole distribution first.
-    Both give the same number, but a full log-softmax allocates another array the
-    size of the logits - sequences by positions by the entire vocabulary - and on
-    a vocabulary of a hundred and fifty thousand entries that second copy is
-    hundreds of megabytes that the card does not have to spare.
-    """
+    """Per-token log probabilities of the sampled tokens, masked to the completion up to
+    and including its first end token."""
     attention = (sequences != pad_token_id).long()
     attention[:, :prompt_length] = 1
     logits = model(input_ids=sequences, attention_mask=attention).logits[:, :-1]
@@ -264,30 +232,19 @@ def sequence_log_probabilities(model, sequences, prompt_length, pad_token_id):
     chosen = logits.gather(2, targets.unsqueeze(-1)).squeeze(-1).float()
     normaliser = torch.logsumexp(logits.float(), dim=-1)
     gathered = chosen - normaliser
+    # This tokenizer pads with its end token, so the first one in a completion is the
+    # real stop and stays in the loss; everything after it is padding.
+    completion = (targets[:, prompt_length - 1:] == pad_token_id).long()
+    after_end = (completion.cumsum(dim=1) - completion) > 0
     mask = torch.zeros_like(gathered)
-    mask[:, prompt_length - 1:] = 1.0
-    mask = mask * (targets != pad_token_id).float()
+    mask[:, prompt_length - 1:] = (~after_end).float()
     return gathered, mask
 
 
 def policy_step(model, sequences, prompt_length, advantages, pad_token_id,
                 kl_coefficient, loss_scale, chunk_size):
-    """Step 5-6. Push probability toward the samples that beat their group.
-
-    Two terms are added. The first multiplies each sampled token's log
-    probability by the advantage of the sample it came from, so text that scored
-    above its siblings becomes more likely. The second penalises drifting away
-    from the frozen base, measured on the same tokens with the adapter switched
-    off. Without that second term the policy is free to collapse onto whatever
-    quirk the reward functions reward, and fluency is not among the things they
-    check.
-
-    The group is walked in chunks and each chunk is backpropagated as it is
-    computed, so only one chunk of logits is alive at a time. Gradients add up in
-    the parameters exactly as they would from one large batch; what changes is
-    the peak memory, which is what decides whether this runs at all on a single
-    consumer card.
-    """
+    """Weight each sample's log probability by its advantage and add a KL penalty toward
+    the base. Chunks of two peak at 6.6 GB, the group of six in one pass at 11.7 GB."""
     group_size = sequences.shape[0]
     policy_total = 0.0
     kl_total = 0.0
@@ -306,8 +263,11 @@ def policy_step(model, sequences, prompt_length, advantages, pad_token_id,
         token_counts = mask.sum(dim=1).clamp(min=1.0)
         mean_log_probability = (log_probabilities * mask).sum(dim=1) / token_counts
         policy_loss = -(piece_advantages * mean_log_probability).sum() / group_size
-        log_ratio = (log_probabilities - reference) * mask
-        kl = (log_ratio.sum(dim=1) / token_counts).sum() / group_size
+        # The k3 estimator used by GRPO: never negative per token, and its gradient pulls
+        # the policy toward the base. The plain log ratio has zero expected gradient.
+        log_ratio = reference - log_probabilities
+        kl_tokens = (torch.exp(log_ratio) - log_ratio - 1.0) * mask
+        kl = (kl_tokens.sum(dim=1) / token_counts).sum() / group_size
 
         (loss_scale * (policy_loss + kl_coefficient * kl)).backward()
         policy_total += float(policy_loss.detach())
@@ -317,10 +277,13 @@ def policy_step(model, sequences, prompt_length, advantages, pad_token_id,
 
 
 def evaluate(model, tokenizer, problems, device, max_new_tokens, label, show=2):
-    """Step 7. Score greedy answers on format compliance and correctness."""
+    """Score greedy answers on format, on the extracted integer, and on the right number
+    appearing anywhere, which separates a format gain from an arithmetic one."""
     model.eval()
     shaped = 0
     correct = 0
+    anywhere = 0
+    cut_off = 0
     samples = []
     for problem in problems:
         prompt = build_prompt(tokenizer, problem["question"])
@@ -332,37 +295,35 @@ def evaluate(model, tokenizer, problems, device, max_new_tokens, label, show=2):
                 do_sample=False,
                 pad_token_id=tokenizer.pad_token_id,
             )
-        completion = PREFILL + tokenizer.decode(
-            output[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+        new_tokens = output[0][inputs["input_ids"].shape[1]:]
+        completion = PREFILL + tokenizer.decode(new_tokens, skip_special_tokens=True)
         is_correct = extract_answer(completion) == str(problem["answer"])
         shaped += int(bool(SOFT_PATTERN.search(completion)))
         correct += int(is_correct)
+        anywhere += int(str(problem["answer"]) in re.findall(r"-?\d+", completion))
+        cut_off += int(tokenizer.eos_token_id not in new_tokens.tolist())
         samples.append((problem, completion, is_correct))
 
+    count = len(problems)
     print(f"\n{label}")
-    print(f"  answers holding the tag structure: {shaped}/{len(problems)} "
-          f"({shaped / len(problems):.1%})")
-    print(f"  answers with the right integer:    {correct}/{len(problems)} "
-          f"({correct / len(problems):.1%})")
-    # Pick one right and one wrong answer rather than the first two by
-    # position: a fixed positional slice can land on the same two problems
-    # every call and, if those happen to be unaffected by training, the
-    # printed excerpt would show no change even when the headline numbers do.
+    print(f"  answers holding the tag structure: {shaped}/{count} ({shaped / count:.1%})")
+    print(f"  answers with the right integer:    {correct}/{count} ({correct / count:.1%})")
+    print(f"  right number anywhere in the text: {anywhere}/{count} ({anywhere / count:.1%})")
+    print(f"  answers cut off at {max_new_tokens} tokens:     {cut_off}/{count}")
+    # One right and one wrong answer, so the excerpt shows the change the numbers report.
     right = [item for item in samples if item[2]]
     wrong = [item for item in samples if not item[2]]
     picked = (right[:1] + wrong[:1]) if right and wrong else samples[:show]
     for problem, completion, _ in picked[:show]:
         collapsed = " ".join(completion.split())
-        # A head-only cut can end before the <answer> tag: the reasoning
-        # alone often runs past 160 characters, so the printed excerpt would
-        # never show the part that right/wrong actually hinges on.
+        # Cut around the answer tag: the reasoning alone often fills a head-only excerpt.
         if "<answer>" in collapsed:
             head, _, tail = collapsed.partition("<answer>")
             shown = f"{head[:80]}...<answer>{tail[:60]}"
         else:
             shown = collapsed[:160]
         print(f"    expected {problem['answer']}, produced {shown!r}")
-    return shaped / len(problems), correct / len(problems)
+    return shaped / count, correct / count, anywhere / count
 
 
 def train(model, tokenizer, problems, device, steps, prompts_per_step, group_size,
@@ -377,7 +338,6 @@ def train(model, tokenizer, problems, device, steps, prompts_per_step, group_siz
     started = time.time()
     history = []
     for step in range(1, steps + 1):
-        batch_loss = 0.0
         batch_reward = 0.0
         batch_spread = 0.0
         batch_kl = 0.0
@@ -398,11 +358,10 @@ def train(model, tokenizer, problems, device, steps, prompts_per_step, group_siz
             advantages = advantages.to(device)
 
             model.train()
-            policy_loss, kl = policy_step(
+            _, kl = policy_step(
                 model, sequences, prompt_length, advantages,
                 tokenizer.pad_token_id, kl_coefficient,
                 loss_scale=1.0 / prompts_per_step, chunk_size=CHUNK_SIZE)
-            batch_loss += policy_loss / prompts_per_step
             batch_reward += mean_reward / prompts_per_step
             batch_spread += spread / prompts_per_step
             batch_kl += kl / prompts_per_step
@@ -443,23 +402,25 @@ def main():
         detail = ", ".join(f"{name} {value:.3f}" for name, value in parts.items())
         print(f"  {label:>22}: total {total:.3f}  ({detail})")
 
-    print("\n--- Load the policy and attach the adapter ---")
+    print("\n--- 3. Load the base model and attach the adapter ---")
     model, tokenizer, device = load_policy(MODEL_ID, CACHE_DIR, RANK, ALPHA,
                                            TARGET_MODULES)
     print(f"[Device] {torch.cuda.get_device_name(0) if device == 'cuda' else 'CPU'}")
 
-    print("\n--- 7. Score the policy before any updates ---")
-    before_shape, before_correct = evaluate(
-        model, tokenizer, evaluation, device, MAX_NEW_TOKENS, "Before training:")
+    print("\n--- 4. Score the held-out problems before training ---")
+    before = evaluate(model, tokenizer, evaluation, device, MAX_NEW_TOKENS,
+                      "Before training:")
 
-    print("\n--- 3-6. Sample groups, centre the rewards, update the adapter ---")
+    print("\n--- 5. Train: sample groups, standardise the rewards, update the adapter ---")
     train(model, tokenizer, training, device, STEPS, PROMPTS_PER_STEP, GROUP_SIZE,
           LEARNING_RATE, KL_COEFFICIENT, MAX_NEW_TOKENS, TEMPERATURE, TOP_P, SEED)
 
-    after_shape, after_correct = evaluate(
-        model, tokenizer, evaluation, device, MAX_NEW_TOKENS, "After training:")
-    print(f"\nTag structure {before_shape:.1%} -> {after_shape:.1%}")
-    print(f"Correct integer {before_correct:.1%} -> {after_correct:.1%}")
+    print("\n--- 6. Score the held-out problems after training ---")
+    after = evaluate(model, tokenizer, evaluation, device, MAX_NEW_TOKENS,
+                     "After training:")
+    print(f"\nTag structure {before[0]:.1%} -> {after[0]:.1%}")
+    print(f"Correct integer {before[1]:.1%} -> {after[1]:.1%}")
+    print(f"Right number anywhere in the text {before[2]:.1%} -> {after[2]:.1%}")
 
 
 if __name__ == "__main__":

@@ -1,29 +1,33 @@
-"""Test the assumption a low-rank adapter rests on: that a weight update is nearly low rank.
+"""LoRA's premise, measured: is a full fine-tuning update nearly low rank?
 
-Demonstrates where the rank budget of an adapter comes from:
-    1. Build a low-rank adapter by hand and confirm it starts as a no-op.
-    2. Count adapter parameters against the frozen matrix for a range of ranks.
-    3. List which projections an adapter would attach to, and what each choice costs.
-    4. Update two projections per layer with unconstrained full-rank gradients.
-    5. Decompose the resulting update and read off how many terms it really uses.
-    6. Compare that spectrum against the frozen weight and against random noise.
-    7. Truncate the update to rank r and measure how much of it survives.
-    8. Repeat the measurement as the training pool covers more kinds of task.
+LoRA trains two thin matrices beside a frozen weight instead of the weight
+itself, which only works if the update it stands in for is nearly low rank.
+This script trains two projections per layer with no rank limit, then reads the
+singular values of the update.
 
-What the measurement covers, and what it therefore does not claim. The update
-studied here comes from eight fixed pairs trained for forty steps, from the
-q_proj and v_proj of the last four layers only, in a single run. The loss ends
-at 0.05, which is closer to memorisation than to a learned skill, and a task
-that narrow may concentrate the update into fewer directions than a broader one
-would, which is what step 8 goes on to measure. The seven feed forward and
-output projections, holding most of the parameters, are never measured, and
-neither is any layer below the twenty fourth. So the reading below supports
-"the update from this kind of fine-tuning concentrates its energy in a small
-number of directions" rather than the
-unqualified "weight updates are low rank", and the rank a real task needs has
-to be established for that task.
+The run prints eight parts:
+    1. A LoRA layer by hand. It starts as a no-op because `up` starts at zero.
+    2. Adapter parameters against a 1536x1536 matrix, for ranks 1 to 128.
+    3. The projections an adapter can attach to, and what three selections cost.
+    4. A full-rank update. AdamW trains q_proj and v_proj in the last four layers
+       for 40 steps on eight fixed pairs.
+    5. The spectrum of each of the eight updates: how many directions 50, 90 and
+       99 percent of the energy need.
+    6. Two controls for layer 24's q_proj: the frozen weight and random noise of
+       the same shape and scale.
+    7. Layer 24's q_proj update truncated to rank r: the energy kept, the relative
+       error left and the adapter parameters.
+    8. The same reading as the training pool covers 1, 3 and 10 kinds of task,
+       with pool size, batch, steps and learning rate held fixed. The final
+       losses differ, so a tier may need more directions because it is less
+       converged, not only because its work is broader.
 
-Module 05: Fine-Tuning - The Low-Rank Update Hypothesis.
+What the measurement covers. The update comes from eight pairs trained for 40
+steps, and its loss ends at 0.05, closer to memorisation than to a skill. Only
+q_proj and v_proj in layers 24 to 27 are measured. k_proj, o_proj and the three
+feed forward projections hold most of the parameters and are never measured, and
+neither is any lower layer. So the reading supports "this kind of fine-tuning
+concentrates its update in few directions", not "weight updates are low rank".
 """
 
 import os
@@ -50,9 +54,8 @@ TASK_TIERS = (1, 3, 10)
 TASK_POOL = 48
 TASK_BATCH = 8
 
-# Short, repetitive supervision. The task is not the point here; a consistent
-# gradient signal is, because the update has to come from real optimisation
-# rather than from random perturbation for the decomposition to mean anything.
+# Short, repetitive supervision. What matters is a consistent gradient signal, so
+# that the update comes from real optimisation and not from random perturbation.
 TRAINING_PAIRS = (
     ("Summarise the risk: driver aged 19, three claims.", "Risk level: high."),
     ("Summarise the risk: driver aged 45, no claims.", "Risk level: low."),
@@ -66,19 +69,8 @@ TRAINING_PAIRS = (
 
 
 class LowRankAdapter(torch.nn.Module):
-    """Step 1. A frozen matrix plus a trainable pair of thin matrices.
-
-    The forward pass adds two things: the frozen projection, and the input pushed
-    through a narrow bottleneck of width r and back out. `down` starts at random
-    and `up` starts at zero, so the added term is exactly zero at the start and
-    the adapted layer answers identically to the frozen one. That is what makes
-    attaching an adapter safe: training begins from the original behaviour rather
-    than from a perturbed version of it.
-
-    The scale factor alpha / r keeps the size of the added term roughly constant
-    when r changes, so raising the rank adds capacity without also multiplying
-    the effective learning rate.
-    """
+    """Part 1. A frozen linear layer plus up @ down, scaled by alpha / r.
+    `up` starts at zero, so training begins from the frozen layer's exact output."""
 
     def __init__(self, base: torch.nn.Linear, rank: int, alpha: float):
         super().__init__()
@@ -97,7 +89,7 @@ class LowRankAdapter(torch.nn.Module):
 
 
 def adapter_is_identity_at_start():
-    """Step 1. Show the adapter changes nothing before training and something after."""
+    """Part 1. Show the adapter changes nothing before training and something after."""
     torch.manual_seed(3407)
     base = torch.nn.Linear(256, 256, bias=False)
     adapter = LowRankAdapter(base, rank=8, alpha=16.0)
@@ -123,7 +115,7 @@ def adapter_is_identity_at_start():
 
 
 def parameter_accounting(out_features, in_features, ranks):
-    """Step 2. Compare adapter parameters against the frozen matrix they sit beside."""
+    """Part 2. Compare adapter parameters against the frozen matrix they sit beside."""
     dense = out_features * in_features
     print(f"\nFrozen matrix: {out_features} x {in_features} = {dense:,} parameters")
     print(f"{'rank':>6} {'adapter params':>16} {'share of matrix':>17}")
@@ -133,14 +125,8 @@ def parameter_accounting(out_features, in_features, ranks):
 
 
 def survey_projections(model, ranks):
-    """Step 3. Report every attachable projection and price the usual selections.
-
-    An adapter is not paired one-to-one with every weight in the network. It is
-    attached to a chosen list of module names, and that list is a decision with a
-    cost. Attaching to the two attention projections most commonly chosen touches
-    a small fraction of the network; attaching to all seven linear projections
-    multiplies both the parameter count and the memory the optimiser needs.
-    """
+    """Part 3. Report every linear projection and price three selections of them.
+    An adapter attaches to a chosen list of module names, and the list sets its cost."""
     groups = {}
     for name, module in model.named_modules():
         if isinstance(module, torch.nn.Linear):
@@ -160,9 +146,8 @@ def survey_projections(model, ranks):
     selections = {
         "q_proj + v_proj": ("q_proj", "v_proj"),
         "all four attention projections": ("q_proj", "k_proj", "v_proj", "o_proj"),
-        # Every linear layer in the checkpoint, which includes lm_head alongside
-        # the attention and feed forward projections.
-        "every linear layer": tuple(groups.keys()),
+        # The seven per-layer projections. lm_head is left out, as in PEFT's all-linear.
+        "all seven projections": tuple(key for key in groups if key != "lm_head"),
     }
     print(f"\n{'selection':>32} {'modules':>9} " +
           " ".join(f"{f'r={rank}':>11}" for rank in ranks[:5]))
@@ -177,13 +162,8 @@ def survey_projections(model, ranks):
 
 
 def load_model():
-    """Load the checkpoint in float32 so a small weight change is not lost to rounding.
-
-    bfloat16 carries about three decimal digits, and the update measured in step 4
-    is far smaller than the weights it is added to. Storing the weights in float32
-    keeps the difference between before and after meaningful; the cost is roughly
-    double the memory, which a 1.5B checkpoint can still afford here.
-    """
+    """Load the checkpoint in float32, because in bfloat16 (about three decimal digits)
+    an update far smaller than the weights would be partly rounded away."""
     from huggingface_hub import snapshot_download
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from transformers.utils import logging as hf_logging
@@ -223,13 +203,8 @@ def select_trained_modules(model, suffixes, layer_count):
 
 
 def build_batch(tokenizer, pairs, device, max_length):
-    """Tokenise the pairs and mask the prompt tokens out of the loss.
-
-    Only the answer tokens carry a label. Leaving the prompt tokens in the loss
-    would train the model to generate the questions as well, which is a different
-    objective than the one intended and dilutes the gradient that produces the
-    update being measured.
-    """
+    """Tokenise the pairs and mask the prompt tokens out of the loss, so only the
+    answer tokens produce the gradient behind the measured update."""
     input_ids, labels = [], []
     for prompt, answer in pairs:
         prompt_ids = tokenizer(f"{prompt}\n", add_special_tokens=False)["input_ids"]
@@ -246,18 +221,8 @@ def build_batch(tokenizer, pairs, device, max_length):
 
 def train_full_rank(model, tokenizer, modules, device, steps, learning_rate,
                     max_length, pairs=None, batch_size=None, verbose=True):
-    """Step 4. Update the chosen projections with no rank constraint at all.
-
-    Every entry of these matrices is free to move, so the update that comes out
-    is whatever plain gradient descent wanted. If its singular values still decay
-    steeply, that decay is a property of the learning problem rather than
-    something an adapter imposed - which is the only way this measurement can
-    support the low-rank choice instead of assuming it.
-
-    `pairs` defaults to TRAINING_PAIRS, and `batch_size` to the whole set in one
-    batch, which is what step 4 uses. Step 8 passes a larger pool and a fixed
-    batch size so that every tier it compares sees the same number of tokens.
-    """
+    """Part 4. Train the chosen projections with AdamW and no rank limit, and return
+    the update. Part 8 passes a larger pool and a fixed batch size."""
     for parameter in model.parameters():
         parameter.requires_grad_(False)
     trainable = []
@@ -316,7 +281,7 @@ def spectrum_summary(matrix, targets):
 
 
 def inspect_updates(updates, weights, targets, ranks):
-    """Step 5-7. Decompose each update, compare it against controls, and truncate it."""
+    """Parts 5 to 7. Decompose each update, then compare and truncate layer 24's q_proj."""
     generator = torch.Generator().manual_seed(3407)
     print(f"\n{'matrix':>22} {'shape':>14} {'full rank':>10} " +
           " ".join(f"{f'{target:.0%}':>7}" for target in targets))
@@ -334,7 +299,7 @@ def inspect_updates(updates, weights, targets, ranks):
     print(f"  singular value 64       {values[63]:.6f}")
     print(f"  ratio                   {values[0] / values[63]:.1f}x")
 
-    print("\nStep 6. The same reading for two controls of identical shape:")
+    print("\n--- 6. Two controls for layer 24's q_proj ---")
     weight = weights[name]
     weight_values, weight_needed = spectrum_summary(weight, targets)
     noise = torch.randn(update.shape, generator=generator) * update.std()
@@ -351,26 +316,28 @@ def inspect_updates(updates, weights, targets, ranks):
     print("Only the first of those three is compressible, and it is the one an")
     print("adapter has to represent.")
 
-    print("\nStep 7. Share of the update kept when it is truncated to rank r:")
+    print("\n--- 7. The update truncated to rank r ---")
     left, singular, right = torch.linalg.svd(update, full_matrices=False)
     total_norm = torch.linalg.norm(update)
-    print(f"{'rank':>6} {'kept':>9} {'dropped':>9} {'adapter params':>16}")
+    print(f"{'rank':>6} {'energy kept':>12} {'rel. error':>11} {'adapter params':>16}")
+    errors = {}
     for rank in ranks:
         if rank > len(singular):
             continue
         approximation = (left[:, :rank] * singular[:rank]) @ right[:rank]
-        kept = 1 - (torch.linalg.norm(update - approximation) / total_norm) ** 2
+        error = torch.linalg.norm(update - approximation) / total_norm
+        kept = 1 - error**2
+        errors[rank] = (kept, error)
         params = rank * (update.shape[0] + update.shape[1])
-        print(f"{rank:>6} {kept:>8.2%} {1 - kept:>8.2%} {params:>16,}")
-    print("These shares belong to an update trained on one narrow task. Step 8")
-    print("repeats the reading as the training pool widens, and the count of")
-    print("directions moves with it, so a rank read off this table is a rank for")
-    print("this task rather than a constant.")
+        print(f"{rank:>6} {kept:>11.2%} {error:>10.2%} {params:>16,}")
+    kept, error = errors[16]
+    print(f"At rank 16 the update keeps {kept:.0%} of its energy, but {error:.0%} of its magnitude")
+    print("is still wrong. These shares belong to one narrow task, and part 8 shows the")
+    print("count of directions moving as the training pool widens.")
 
 
-# Ten short input-output tasks used by step 8. The tiers it compares are nested
-# prefixes of this tuple, so moving from one tier to the next only adds kinds of
-# work and never swaps one out.
+# Ten short input-output tasks used by part 8. Its tiers are nested prefixes of
+# TASK_BUILDERS, so moving up a tier only adds kinds of work.
 CAPITALS = (("France", "Paris"), ("Japan", "Tokyo"), ("Brazil", "Brasilia"),
             ("Egypt", "Cairo"), ("Norway", "Oslo"), ("Chile", "Santiago"))
 ANTONYMS = (("increase", "decrease"), ("wide", "narrow"), ("early", "late"),
@@ -400,7 +367,8 @@ def task_risk(count):
             level = "elevated"
         else:
             level = "low"
-        pairs.append((f"Summarise the risk: driver aged {age}, {claims} claims.",
+        noun = "claim" if claims == 1 else "claims"
+        pairs.append((f"Summarise the risk: driver aged {age}, {claims} {noun}.",
                       f"Risk level: {level}."))
     return pairs
 
@@ -478,32 +446,8 @@ def build_task_pool(kinds, size):
 def rank_versus_task_variety(model, tokenizer, modules, baseline, device, tiers,
                              pool_size, steps, batch_size, learning_rate,
                              max_length, targets):
-    """Step 8. Vary how many kinds of task the update has to serve, nothing else.
-
-    The scope note at the top of this file says the reading in steps 5 to 7 comes
-    from a single narrow task, and that a task that narrow may concentrate the
-    update into fewer directions than a broad one would. This measures that.
-    Pool size, batch size, step count and learning rate are all held fixed, so
-    every tier sees the same number of tokens and takes the same number of
-    gradient steps; the tiers are nested prefixes of TASK_BUILDERS, so moving up
-    a tier only adds kinds of work. The weights are restored from a snapshot
-    before every tier, since otherwise the second run would start from the first
-    run's update rather than from the checkpoint. `baseline` is the snapshot step
-    4 took before it trained, so every tier starts from the original checkpoint
-    and not from step 4's result - which matters because the first tier trains on
-    the same task step 4 already used.
-
-    One thing the fixed step count does not equalise is how far each tier gets:
-    the final losses printed below are not the same, so a tier that needs more
-    directions may need them because the work is broader or because it is less
-    converged. Reading the loss column alongside the direction columns is part of
-    reading the table.
-
-    The outcome is not assumed. A flat curve would say the concentration belongs
-    to fine-tuning itself and would strengthen the case for a small rank; a
-    rising curve would say the rank a task needs has to be established for that
-    task. Either reading is a result.
-    """
+    """Part 8. Retrain from the original weights with 1, 3 and 10 kinds of task, same
+    number of examples each; tier 1 uses the same kind of risk prompt as part 4."""
     originals = {name: tensor.to(device) for name, tensor in baseline.items()}
     short = [name.replace("self_attn.", "").replace("layer", "l")
                  .replace("_proj", "") for name in modules]
@@ -539,27 +483,27 @@ def rank_versus_task_variety(model, tokenizer, modules, baseline, device, tiers,
 
 
 def main():
-    print("--- 1. Build a low-rank adapter by hand ---")
+    print("--- 1. A LoRA layer by hand ---")
     adapter_is_identity_at_start()
 
-    print("\n--- 2. Count adapter parameters against the frozen matrix ---")
+    print("\n--- 2. Adapter parameters against the frozen matrix ---")
     parameter_accounting(1536, 1536, RANKS)
 
     model, tokenizer, device = load_model()
 
-    print("\n--- 3. Survey the projections an adapter could attach to ---")
+    print("\n--- 3. The projections an adapter can attach to ---")
     survey_projections(model, RANKS)
 
-    print("\n--- 4. Update two projections per layer with full-rank gradients ---")
+    print("\n--- 4. A full-rank update ---")
     modules = select_trained_modules(model, TARGET_SUFFIXES, TRAINED_LAYERS)
     print(f"Selected: {', '.join(modules)}")
     updates, weights = train_full_rank(model, tokenizer, modules, device, STEPS,
                                        LEARNING_RATE, MAX_LENGTH)
 
-    print("\n--- 5. Decompose the update and read its effective rank ---")
+    print("\n--- 5. The spectrum of each update ---")
     inspect_updates(updates, weights, ENERGY_TARGETS, RANKS)
 
-    print("\n--- 8. Vary how many kinds of task the update has to serve ---")
+    print("\n--- 8. The same reading as the task pool widens ---")
     rank_versus_task_variety(model, tokenizer, modules, weights, device,
                              TASK_TIERS, TASK_POOL, STEPS, TASK_BATCH,
                              LEARNING_RATE, MAX_LENGTH, ENERGY_TARGETS)

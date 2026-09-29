@@ -1,15 +1,22 @@
-"""Teach a base model a fixed answer schema with a low-rank adapter and score the result.
+"""Supervised fine-tuning (SFT) with LoRA: teach a base model a fixed answer line.
 
-Demonstrates supervised fine-tuning end to end on one machine:
-    1. Generate a labelled set from deterministic rules, so answers can be marked.
-    2. Wrap every example in an instruction template and terminate it properly.
-    3. Mask the prompt tokens out of the loss and count what remains supervised.
-    4. Attach a low-rank adapter and report how little of the model is trainable.
-    5. Score the base model twice, on the instruction alone and with the rule given.
-    6. Train, then score again on inputs the model never saw during training.
-    7. Save the adapter, reload it onto a fresh base, and merge it into the weights.
+Every example is rendered in the Alpaca instruction template, and only the answer
+tokens carry a label. PEFT attaches rank-8 adapters to the four attention
+projections, so 0.12% of the weights train. The labels come from a three-branch
+rule on age and claims, so every answer can be marked right or wrong.
+vehicle_value takes no part in the rule.
 
-Module 05: Fine-Tuning - Supervised Fine-Tuning with a Low-Rank Adapter.
+The run prints six parts:
+    1. The data. 540 applications, split by (age, claims) pair so that no pair
+       in the 60 evaluation cases appears in training.
+    2. One example rendered and masked, with the count of supervised tokens.
+    3. The base model scored twice: on the instruction alone, and with the rule
+       written into the prompt. Always answering the most common tier is printed
+       as a baseline.
+    4. The adapter attached, and the share of the model it trains.
+    5. Training for 120 steps, then the same evaluation cases scored again.
+    6. The adapter saved, reloaded onto a fresh base and merged into the
+       weights, each checked on the first four evaluation cases.
 """
 
 import json
@@ -40,11 +47,8 @@ BATCH_SIZE = 4
 LEARNING_RATE = 2e-4
 MAX_LENGTH = 128
 MAX_NEW_TOKENS = 24
-# Sixty rather than a couple of dozen, because score() prints a per-tier
-# breakdown and the rule makes tier A the rarest branch: at 24 cases only two of
-# them are tier A, so that column reads 2/2 or 1/2 and carries no weight. Sixty
-# puts roughly nine cases in the thinnest tier, enough for the breakdown to mean
-# what it claims to mean.
+VEHICLE_VALUES = (8000, 15000, 30000, 60000)
+# Sixty evaluation cases: 15 (age, claims) pairs, each with the four vehicle values.
 EVAL_CASES = 60
 SEED = 3407
 
@@ -60,19 +64,8 @@ TEMPLATE = (
     "### Response:\n"
 )
 
-# The same rule classify() applies, written out for a human reader. Step 5 scores
-# the base model with and without it, because a rule this small fits in a prompt
-# and prompting is the cheaper option a person would reach for first. Reporting
-# only the instruction-only number would credit the adapter with the part of the
-# gain that simply came from stating the rule.
-# The wording matters more than it looks. Three phrasings were compared on the
-# same sixty cases: this operator form (29 exact), a prose version (0 exact) and
-# this form with "output only that one line" appended (23 exact). The prose
-# version actually names the right tier slightly more often, 33 against 29, but
-# it never stops cleanly, so every answer trails an explanation and none of them
-# match exactly; the no-explanation version drops schema compliance to 45 of 60.
-# The strongest of the three is kept here, because a baseline is only worth
-# reporting if it is the best the cheaper method can do.
+# The same rule classify() applies, written out. Part 3 scores the base model with
+# it, because a rule this small fits in a prompt and prompting is cheaper to try.
 RULE_HINT = (
     " Use exactly this rule: if age < 25 or claims >= 3 then TIER C and ACTION "
     "decline; else if claims == 0 and age >= 30 then TIER A and ACTION accept; "
@@ -85,14 +78,8 @@ ACTIONS = {"A": "accept", "B": "refer", "C": "decline"}
 
 
 def classify(age, claims):
-    """The rule the model has to absorb.
-
-    The labels come from a rule rather than from a person, which is what makes
-    the evaluation in steps 5 and 6 a measurement instead of an impression: every
-    held-out input has exactly one correct answer, and a wrong answer is wrong
-    without argument. A dataset scraped from free text could not be scored this
-    way, and "the answers look better" would be the only available verdict.
-    """
+    """The rule the model has to absorb. It gives every input exactly one correct
+    answer, so parts 3 and 5 can mark each answer right or wrong."""
     if age < 25 or claims >= 3:
         tier = "C"
     elif claims == 0 and age >= 30:
@@ -103,43 +90,46 @@ def classify(age, claims):
 
 
 def build_dataset(seed, eval_cases, path):
-    """Step 1. Enumerate every combination, then split so evaluation inputs are unseen.
-
-    The split is over inputs, not over rendered strings. If an evaluation input
-    also appeared in training, a high score would only prove the model memorised
-    it, and the whole comparison would say nothing about whether the rule was
-    learned.
-    """
-    combinations = [
-        (age, claims, value)
-        for age in range(18, 71, 2)
-        for claims in range(0, 5)
-        for value in (8000, 15000, 30000, 60000)
-    ]
+    """Part 1. Enumerate every application and hold out whole (age, claims) pairs.
+    The rule reads only age and claims, so a split by input would leak every pair."""
+    pairs = [(age, claims) for age in range(18, 71, 2) for claims in range(0, 5)]
     rng = random.Random(seed)
-    rng.shuffle(combinations)
+    rng.shuffle(pairs)
+    held_out = set(pairs[:eval_cases // len(VEHICLE_VALUES)])
 
     records = []
-    for age, claims, value in combinations:
-        tier, action = classify(age, claims)
-        records.append({
-            "input": f"age={age}; claims={claims}; vehicle_value={value}",
-            "output": f"TIER: {tier} | ACTION: {action}",
-            "tier": tier,
-        })
+    for age in range(18, 71, 2):
+        for claims in range(0, 5):
+            for value in VEHICLE_VALUES:
+                tier, action = classify(age, claims)
+                records.append(((age, claims), {
+                    "input": f"age={age}; claims={claims}; vehicle_value={value}",
+                    "output": f"TIER: {tier} | ACTION: {action}",
+                    "tier": tier,
+                }))
+    rng.shuffle(records)
 
-    evaluation = records[:eval_cases]
-    training = records[eval_cases:]
+    evaluation = [record for pair, record in records if pair in held_out]
+    training = [record for pair, record in records if pair not in held_out]
+    # Read the pairs back from the rendered inputs, so the check does not trust the split.
+    def pair_of(record):
+        return tuple(part.split("=")[1] for part in record["input"].split("; ")[:2])
+
+    overlap = {pair_of(r) for r in evaluation} & {pair_of(r) for r in training}
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for record in training:
             handle.write(json.dumps(record) + "\n")
 
-    distribution = {tier: sum(1 for r in training if r["tier"] == tier)
-                    for tier in "ABC"}
+    def distribution(rows):
+        return {tier: sum(1 for r in rows if r["tier"] == tier) for tier in "ABC"}
+
     print(f"Training examples: {len(training)}, evaluation examples: {len(evaluation)}")
-    print(f"Tier distribution in training: {distribution}")
+    print(f"Tier distribution in training: {distribution(training)}")
+    print(f"Tier distribution in evaluation: {distribution(evaluation)}")
+    print(f"Evaluation (age, claims) pairs also in training: "
+          f"{len(overlap)} of {len(held_out)}")
     print(f"Wrote the training split to {path}")
     print("\nTwo training examples as the model sees them:")
     for record in training[:2]:
@@ -171,14 +161,8 @@ def load_base(model_id, cache_dir, dtype):
 
 
 def encode(tokenizer, record, max_length):
-    """Step 2-3. Render one example and mask everything the model should not learn.
-
-    Two details decide whether this works at all. The end-of-sequence token has
-    to be appended to the answer, or nothing ever tells the model to stop and
-    generation runs until it hits the token limit. And the prompt tokens have to
-    carry the ignore label, or the model spends its capacity learning to write
-    the questions back out instead of answering them.
-    """
+    """Part 2. Render one example, append the end token so generation learns to stop,
+    and give the prompt tokens the ignore label so only the answer is learned."""
     prompt = TEMPLATE.format(instruction=INSTRUCTION, input=record["input"])
     prompt_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
     answer_ids = tokenizer(record["output"], add_special_tokens=False)["input_ids"]
@@ -216,13 +200,8 @@ def collate(tokenizer, batch, max_length, device):
 
 
 def attach_adapter(model, rank, alpha, dropout, target_modules):
-    """Step 4. Wrap the chosen projections in low-rank adapters and freeze the rest.
-
-    `print_trainable_parameters` is worth reading rather than skipping: it is the
-    number that explains why this fits on one consumer card. The frozen weights
-    still need memory for the forward pass, but no gradients and no optimiser
-    state are kept for them, and those two are what usually exhaust the card.
-    """
+    """Part 4. Wrap the chosen projections in LoRA adapters and freeze the rest.
+    Frozen weights keep no gradients and no optimiser state, which is what saves memory."""
     from peft import LoraConfig, get_peft_model
 
     config = LoraConfig(
@@ -242,13 +221,8 @@ def attach_adapter(model, rank, alpha, dropout, target_modules):
 
 def generate(model, tokenizer, records, device, max_new_tokens,
              instruction=INSTRUCTION):
-    """Answer every evaluation input with greedy decoding.
-
-    Greedy rather than sampled, so the same model and the same input always
-    produce the same line and the before and after numbers can be compared.
-    `instruction` defaults to the plain task description; step 5 also calls this
-    with PROMPTED_INSTRUCTION to measure what prompting alone can reach.
-    """
+    """Answer every input with greedy decoding, so the same model and input always give
+    the same line. Part 3 also passes PROMPTED_INSTRUCTION."""
     model.eval()
     answers = []
     for record in records:
@@ -267,14 +241,8 @@ def generate(model, tokenizer, records, device, max_new_tokens,
 
 
 def score(records, answers, label, show=3):
-    """Step 5-6. Mark the answers on two separate counts.
-
-    Schema compliance and correctness are tracked apart on purpose. A model can
-    produce the right tier inside a paragraph of prose, which is useless to a
-    caller parsing the line, and it can produce a perfectly shaped line with the
-    wrong tier in it. Collapsing both into a single accuracy number would hide
-    whichever of the two failed.
-    """
+    """Parts 3 and 5. Count answers in the required shape and exactly correct answers
+    separately, since a right tier inside prose and a clean line with a wrong tier both fail."""
     exact = 0
     schema = 0
     per_tier = {tier: [0, 0] for tier in "ABC"}
@@ -293,9 +261,8 @@ def score(records, answers, label, show=3):
           f"({schema / len(records):.1%})")
     print(f"  answers exactly correct:       {exact}/{len(records)} "
           f"({exact / len(records):.1%})")
-    # Which branch of the rule was learned, and which was not. An aggregate score
-    # of eighty-something percent could mean small errors everywhere or one whole
-    # branch missed, and those two call for different fixes.
+    # An aggregate score could mean small errors everywhere or one whole branch
+    # of the rule missed, and those two call for different fixes.
     breakdown = "  ".join(
         f"{tier}: {hits}/{total}" for tier, (hits, total) in per_tier.items() if total)
     print(f"  correct by expected tier:      {breakdown}")
@@ -309,7 +276,7 @@ def score(records, answers, label, show=3):
 
 def train(model, tokenizer, records, device, steps, batch_size, learning_rate,
           max_length, seed):
-    """Step 6. Run the optimiser over sampled batches and report loss and cost."""
+    """Part 5. Run the optimiser over sampled batches and report loss and cost."""
     rng = random.Random(seed)
     trainable = [p for p in model.parameters() if p.requires_grad]
     optimiser = torch.optim.AdamW(trainable, lr=learning_rate)
@@ -345,16 +312,8 @@ def directory_size(path):
 
 def save_reload_merge(model, tokenizer, records, device, adapter_dir, dtype,
                       max_new_tokens):
-    """Step 7. Save the adapter, put it back on a clean base, then fold it in.
-
-    Three separate facts get checked here. The saved directory holds only the
-    adapter, which is why it is measured in megabytes next to a multi-gigabyte
-    checkpoint. Reloading it onto a freshly loaded base has to reproduce the same
-    answers, otherwise the saved artefact is not the thing that was trained. And
-    merging writes the adapter into the frozen matrices, after which the model is
-    an ordinary model again with no adapter left to load - convenient to deploy,
-    but no longer swappable for a different adapter.
-    """
+    """Part 6. Save the adapter, reload it onto a fresh base, then merge it into the
+    weights. After merging there is no adapter left to swap for another one."""
     from peft import PeftModel
 
     if adapter_dir.exists():
@@ -371,7 +330,8 @@ def save_reload_merge(model, tokenizer, records, device, adapter_dir, dtype,
     reloaded = PeftModel.from_pretrained(fresh_base, adapter_dir)
     reloaded_answers = generate(reloaded, tokenizer, records[:4], device, max_new_tokens)
     identical = trained_answers == reloaded_answers
-    print(f"\nReloaded adapter reproduces the trained answers: {identical}")
+    print(f"\nReloaded adapter reproduces the trained answers "
+          f"on the first four evaluation cases: {identical}")
     if not identical:
         for trained, restored in zip(trained_answers, reloaded_answers):
             print(f"  trained  {trained!r}")
@@ -379,7 +339,7 @@ def save_reload_merge(model, tokenizer, records, device, adapter_dir, dtype,
 
     merged = reloaded.merge_and_unload()
     merged_answers = generate(merged, tokenizer, records[:4], device, max_new_tokens)
-    print(f"Merged model reproduces the same answers: "
+    print(f"Merged model reproduces the same answers on those four cases: "
           f"{merged_answers == reloaded_answers}")
     print(f"Adapter modules left after merging: "
           f"{sum(1 for name, _ in merged.named_modules() if 'lora' in name)}")
@@ -387,22 +347,21 @@ def save_reload_merge(model, tokenizer, records, device, adapter_dir, dtype,
 
 def main():
     # Adapter dropout draws from the global torch generator, so without this the
-    # same script prints a different accuracy on every run and no number in the
-    # output can be quoted.
+    # same script prints a different accuracy on every run.
     torch.manual_seed(SEED)
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
 
-    print("--- 1. Generate a labelled set from deterministic rules ---")
+    print("--- 1. The data ---")
     training, evaluation = build_dataset(SEED, EVAL_CASES, DATA_FILE)
 
     base, tokenizer, device = load_base(MODEL_ID, CACHE_DIR, dtype)
     print(f"\n[Device] {torch.cuda.get_device_name(0) if device == 'cuda' else 'CPU'}")
     print(f"[Model] {MODEL_ID}, dtype={base.dtype}")
 
-    print("\n--- 2-3. Render one example and mask the prompt out of the loss ---")
+    print("\n--- 2. One example rendered and masked ---")
     report_masking(tokenizer, training[0], MAX_LENGTH)
 
-    print("\n--- 5. Score the untouched base model, with and without the rule ---")
+    print("\n--- 3. The base model, with and without the rule ---")
     base_answers = generate(base, tokenizer, evaluation, device, MAX_NEW_TOKENS)
     base_schema, base_exact = score(evaluation, base_answers,
                                     "Base model, instruction only:")
@@ -410,28 +369,40 @@ def main():
                                 instruction=PROMPTED_INSTRUCTION)
     prompted_schema, prompted_exact = score(evaluation, prompted_answers,
                                             "Base model, rule written into the prompt:")
+    counts = {tier: sum(1 for r in evaluation if r["tier"] == tier) for tier in "ABC"}
+    majority = max(counts, key=counts.get)
+    majority_share = counts[majority] / len(evaluation)
+    prompted_tiers = {tier: sum(1 for answer in prompted_answers
+                                if answer.startswith(f"TIER: {tier}"))
+                      for tier in "ABC"}
 
-    print("\n--- 4. Attach the adapter ---")
+    print("\n--- 4. The adapter ---")
     model = attach_adapter(base, RANK, ALPHA, DROPOUT, TARGET_MODULES)
 
-    print("\n--- 6. Train, then score on the held-out inputs ---")
+    print("\n--- 5. Train, then score the same evaluation cases ---")
     train(model, tokenizer, training, device, STEPS, BATCH_SIZE, LEARNING_RATE,
           MAX_LENGTH, SEED)
     tuned_answers = generate(model, tokenizer, evaluation, device, MAX_NEW_TOKENS)
     tuned_schema, tuned_exact = score(evaluation, tuned_answers, "Adapted model, after training:")
 
     print(f"\n{'setting':>40} {'schema':>8} {'exact':>8}")
+    print(f"{f'always TIER {majority}':>40} {'':>8} {majority_share:>7.1%}")
     print(f"{'base, instruction only':>40} {base_schema:>7.1%} {base_exact:>7.1%}")
     print(f"{'base, rule written into the prompt':>40} "
           f"{prompted_schema:>7.1%} {prompted_exact:>7.1%}")
     print(f"{'adapter, rule learned from examples':>40} "
           f"{tuned_schema:>7.1%} {tuned_exact:>7.1%}")
-    print("The middle row is the part of the gain that costs nothing to obtain:")
-    print("the rule is three lines, so a prompt can carry it. What the adapter adds")
-    print("on top is the part prompting did not reach, and it is the honest figure")
-    print("for what the training bought.")
+    print(f"With the rule in the prompt, the base model answered TIER A {prompted_tiers['A']}, "
+          f"B {prompted_tiers['B']} and C {prompted_tiers['C']} times.")
+    print(f"Always answering TIER {majority} scores {majority_share:.1%}, so compare "
+          f"each row with that line, not with zero.")
+    if prompted_tiers[majority] == len(evaluation):
+        print(f"Written into the prompt, the rule turned every answer into TIER {majority},")
+        print(f"which scores the same as always answering {majority}.")
+    if tuned_exact > majority_share and prompted_exact <= majority_share:
+        print("The adapter is the only setting that uses the rule.")
 
-    print("\n--- 7. Save, reload, and merge the adapter ---")
+    print("\n--- 6. Save, reload, and merge the adapter ---")
     save_reload_merge(model, tokenizer, evaluation, device, ADAPTER_DIR, dtype,
                       MAX_NEW_TOKENS)
 

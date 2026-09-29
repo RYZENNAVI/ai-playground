@@ -1,15 +1,17 @@
-"""Control how long a reasoning model thinks at inference time, without touching its weights.
+"""Thinking budget control: cap or extend how long a reasoning model thinks, with no training.
 
-Demonstrates test-time compute control on a local reasoning checkpoint:
-    1. Locate the thinking delimiters in the vocabulary and confirm their ids.
-    2. Decode one token at a time so the thinking phase can be interrupted.
-    3. Cut thinking short by writing the closing delimiter into the stream.
-    4. Extend thinking by banning that delimiter and appending a nudge word.
-    5. Answer a set of checkable questions under several thinking budgets.
-    6. Report accuracy against thinking tokens spent for every budget.
-    7. Compare the two directions of control on the same questions.
+This is test-time compute control. The script decodes one token at a time, so it can act in
+the middle of the thinking phase. To cap thinking, it writes </think> into the stream once
+the budget is spent. To extend it, it bans </think> and appends a nudge, "Wait, let me check
+that again.", each time the model is about to stop.
 
-Module 05: Fine-Tuning - Thinking Budget Control.
+The run prints four parts:
+    1. The ids of <think> and </think>. Each is one token, so </think> can be banned in the logits.
+    2. Eight questions with one numeric answer, under caps of 24, 64, 160 and 400 thinking
+       tokens and under the 400 cap with two nudges: accuracy, mean thinking tokens, and how
+       many answers stopped on their own.
+    3. The first question (raspberry) under every setting.
+    4. Accuracy and thinking tokens from the tightest cap to the widest, a summary of part 2.
 """
 
 import os
@@ -31,7 +33,7 @@ OPEN_DELIMITER = "<think>"
 CLOSE_DELIMITER = "</think>"
 NUDGE = "\nWait, let me check that again.\n"
 CLOSING_HINT = "\nFinal answer: "
-BUDGETS = (24, 64, 160)
+BUDGETS = (24, 64, 160, 400)
 EXTENSIONS = 2
 ANSWER_TOKENS = 48
 TEMPERATURE = 0.0
@@ -82,13 +84,9 @@ def load_model(model_id, cache_dir):
 
 
 def find_delimiters(tokenizer):
-    """Step 1. Resolve both thinking delimiters to token ids.
+    """Resolve both thinking delimiters to token ids.
 
-    Whether the closing delimiter is one token or several decides how it can be
-    controlled. A single id can be banned outright through the logits, which is
-    how thinking gets extended in step 4. If a checkpoint spelled it across
-    several tokens, banning the first of them would be the equivalent move, so
-    the count is printed rather than assumed.
+    A single id can be banned in the logits; if </think> spans several tokens, the script bans the first.
     """
     ids = {}
     for name in (OPEN_DELIMITER, CLOSE_DELIMITER):
@@ -103,11 +101,9 @@ def find_delimiters(tokenizer):
 
 
 def build_prefix(tokenizer, prompt, device):
-    """Render the question and open the thinking phase explicitly.
+    """Render the question so the thinking phase starts right after the prompt.
 
-    The opening delimiter is appended by hand rather than left to the template.
-    Starting the thinking phase from a known position is what makes the tokens
-    that follow countable, and the count is the budget being controlled.
+    This template already ends with <think>; the delimiter is added by hand only if it did not.
     """
     text = tokenizer.apply_chat_template(
         [{"role": "user", "content": prompt}], tokenize=False,
@@ -128,19 +124,9 @@ def pick_token(logits, temperature):
 
 def run_with_budget(model, tokenizer, prompt, device, budget, extensions,
                     close_ids, answer_tokens, temperature):
-    """Steps 2-4. Decode token by token, then either cut thinking off or stretch it.
+    """Decode one token at a time, banning </think> while nudges remain and forcing it at the budget.
 
-    The loop keeps the cache and feeds one token at a time, which is what makes
-    intervention possible: nothing here is decided in advance, so the closing
-    delimiter can be banned while the budget is unspent and written in by hand
-    the moment it runs out. A single call to a generate helper would have
-    finished the whole sequence before any of that could be applied.
-
-    Two interventions share this one loop. While extensions remain, the closing
-    delimiter is banned and a nudge is appended each time the model reaches for
-    it, so thinking continues past where the model wanted to stop. When the
-    budget is exhausted the opposite happens: the delimiter is written into the
-    stream regardless of what the model preferred, and the answer phase begins.
+    A single generate() call would finish the sequence before either intervention could apply.
     """
     inputs = build_prefix(tokenizer, prompt, device)
     ids = inputs["input_ids"]
@@ -218,14 +204,20 @@ def run_with_budget(model, tokenizer, prompt, device, budget, extensions,
 
 
 def first_number(text):
-    """Extract the first integer from the answer text."""
+    """Read the integer in \\boxed{} if there is one, otherwise the first integer.
+
+    The model often writes the working first, as in 4 kilograms + 36 kilograms = \\boxed{40}.
+    """
+    boxed = re.findall(r"\\boxed\{(-?\d+)\}", text)
+    if boxed:
+        return boxed[0]
     found = re.findall(r"-?\d+", text)
     return found[0] if found else None
 
 
 def sweep(model, tokenizer, questions, device, budgets, extensions, close_ids,
           answer_tokens, temperature):
-    """Steps 5-7. Answer every question under every budget and tabulate the result."""
+    """Answer every question under every setting and print one row per setting."""
     settings = [(f"cap {budget}", budget, 0) for budget in budgets]
     settings.append((f"cap {budgets[-1]} + {extensions} nudges", budgets[-1], extensions))
 
@@ -261,8 +253,7 @@ def sweep(model, tokenizer, questions, device, budgets, extensions, close_ids,
 
 
 def show_one_question(results, index=0):
-    """Print the same question under every setting, so the difference is visible."""
-    print("\nOne question under each setting:")
+    """Print one question under every setting."""
     for label, payload in results.items():
         question, outcome, predicted, hit = payload["details"][index]
         thinking = " ".join(outcome["thinking"].split())
@@ -280,22 +271,23 @@ def main():
     model, tokenizer, device = load_model(MODEL_ID, CACHE_DIR)
     print(f"[Device] {torch.cuda.get_device_name(0) if device == 'cuda' else 'CPU'}")
     print(f"[Model] {MODEL_ID}, dtype={model.dtype}")
-    print("\nNo weight is modified anywhere in this script; every parameter stays")
-    print("exactly as it was loaded, and only the decoding procedure changes.")
+    print("\nNo weight changes in this script; only the decoding loop does.")
 
     print("\n--- 1. Locate the thinking delimiters ---")
-    open_ids, close_ids = find_delimiters(tokenizer)
+    _, close_ids = find_delimiters(tokenizer)
 
-    print("\n--- 2-7. Answer every question under each thinking budget ---")
+    print("\n--- 2. Answer every question under each thinking budget ---")
     print(f"Questions: {len(QUESTIONS)}, all with a single decidable numeric answer.")
     results = sweep(model, tokenizer, QUESTIONS, device, BUDGETS, EXTENSIONS,
                     close_ids, ANSWER_TOKENS, TEMPERATURE)
 
+    print("\n--- 3. The first question under each setting ---")
     show_one_question(results)
 
+    print("\n--- 4. From the tightest cap to the widest ---")
     labels = list(results)
     tightest, widest = results[labels[0]], results[labels[-2]]
-    print(f"\nFrom the tightest cap to the widest: accuracy "
+    print(f"Accuracy "
           f"{tightest['accuracy']:.1%} -> {widest['accuracy']:.1%}, "
           f"mean thinking tokens {tightest['tokens']:.1f} -> {widest['tokens']:.1f}")
     if torch.cuda.is_available():

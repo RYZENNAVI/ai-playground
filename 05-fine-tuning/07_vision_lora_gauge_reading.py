@@ -1,15 +1,20 @@
-"""Adapt a small vision-language model to read a rendered instrument panel in a fixed format.
+"""Vision LoRA: fine-tune a small vision-language model to read a rendered instrument panel.
 
-Demonstrates parameter-efficient fine-tuning when an image is part of the input:
-    1. Render instrument panels locally, so every label is known exactly.
-    2. Load a small vision-language checkpoint and inspect its two towers.
-    3. Price the choice of attaching adapters to the language tower or to both.
-    4. Build image and text batches with the prompt masked out of the loss.
-    5. Score the untouched model field by field on held-out panels.
-    6. Train the adapter and score again on the same panels.
-    7. Separate what the adapter learned from what it did not.
+The script draws each panel from its labels (gear, warning lamp, needle zone and a
+six-digit odometer), so every label is exact. It attaches LoRA adapters to the attention
+projections of the language tower only, trains them on 96 panels and scores 16 held-out
+panels field by field, before and after.
 
-Module 05: Fine-Tuning - Vision Adapter on Rendered Panels.
+The run prints six parts:
+    1. The rendered panels and the split.
+    2. The linear layers of each tower, and what an adapter costs on the language tower
+       alone or on both towers.
+    3. The untouched model on the held-out panels, field by field, and how many answers
+       already contain the right odometer digits in some other form.
+    4. The adapter attached by full module path, with a check that none landed in the
+       image encoder.
+    5. Training, with the prompt and its image tokens masked out of the loss.
+    6. The held-out panels again, then each field before and after.
 """
 
 import os
@@ -63,14 +68,7 @@ def load_font(size):
 
 
 def render_panel(record, size):
-    """Step 1. Draw one panel from its labels, so image and label cannot disagree.
-
-    Generating the picture from the answer is what makes this measurable. A folder
-    of photographs would need someone to write down what each one shows, and any
-    mistake in that transcription becomes a permanent error in both the training
-    signal and the score. Here the label is the input to the drawing, so the two
-    are consistent by construction.
-    """
+    """Draw one panel from its labels, so image and label cannot disagree."""
     image = Image.new("RGB", (size, size), (18, 20, 24))
     draw = ImageDraw.Draw(image)
     centre = (size // 2, int(size * 0.42))
@@ -88,8 +86,7 @@ def render_panel(record, size):
                centre[1] - radius * torch.sin(torch.tensor(angle)).item())
         draw.line([start, end], fill=(170, 176, 186), width=3)
 
-    # The needle angle is what the zone label means, so the two are derived from
-    # the same number rather than chosen independently.
+    # The zone label and the needle angle come from the same number.
     fraction = record["needle_fraction"]
     angle = 3.14159 * (1.0 - fraction)
     tip = (centre[0] + radius * 0.92 * torch.cos(torch.tensor(angle)).item(),
@@ -164,14 +161,9 @@ def load_vlm(model_id, cache_dir):
 
 
 def survey_towers(model, rank):
-    """Step 2-3. Split the linear layers into the two towers and price each choice.
+    """Sort the linear layers into vision, language and connector.
 
-    A vision-language model is two networks joined by a projection. The image
-    encoder turns pixels into embeddings, the language model consumes them
-    alongside the text, and the connector maps between the two widths. The choice
-    of which of the three to adapt is a real decision: if the answer depends on
-    reading something the encoder already represents, adapting the language side
-    is enough, and touching the encoder mostly costs memory.
+    Then count the adapter parameters for the language tower alone and for both towers.
     """
     towers = {"vision": [], "language": [], "connector": []}
     for name, module in model.named_modules():
@@ -199,18 +191,14 @@ def survey_towers(model, rank):
                    if name.split(".")[-1] in LANGUAGE_TARGETS]
         params = sum(rank * (m.out_features + m.in_features) for m in matched)
         print(f"  {label:>22}: {len(matched):>4} modules, {params:>10,} parameters "
-              f"({params / total:.3%} of the model)")
+              f"({params / total:.3%} of the base model)")
     return towers
 
 
 def attach_adapter(model, rank, alpha, module_names):
-    """Wrap exactly the named projections and report the trainable share.
+    """Wrap the named projections by full path, then count where adapters actually landed.
 
-    Full module paths are passed rather than name suffixes. A suffix such as
-    `q_proj` matches in both towers, because an attention projection in the image
-    encoder is named the same way as one in the language model, so asking for
-    suffixes silently adapts the encoder as well. Naming the modules is what makes
-    the tower choice in step 3 real instead of nominal.
+    A suffix such as q_proj would also match the image encoder, whose attention layers use the same names.
     """
     from peft import LoraConfig, get_peft_model
 
@@ -240,13 +228,9 @@ def render_prompt(processor, question):
 
 
 def encode_example(processor, record, question, device):
-    """Step 4. Build one training example and mask the prompt tokens.
+    """Encode one training example and mask the prompt, image tokens included, out of the loss.
 
-    The prompt length is measured by encoding the prompt on its own with the same
-    image, because the processor replaces the image placeholder with a block of
-    image tokens whose count depends on the picture. Guessing that number would
-    silently shift the mask and supervise the wrong positions, so the code
-    verifies that the full sequence really does begin with the prompt sequence.
+    The prompt is encoded alone to measure its length, since the image token count depends on the image size.
     """
     prompt = render_prompt(processor, question)
     prompt_batch = processor(text=prompt, images=[record["image"]],
@@ -268,13 +252,7 @@ def encode_example(processor, record, question, device):
 
 
 def train(model, processor, records, device, steps, batch_size, learning_rate, seed):
-    """Step 6. Update the adapter on rendered panels and report loss and cost.
-
-    Examples are accumulated one at a time rather than padded into a real batch.
-    Image token counts differ between pictures, so a naive stack would need
-    padding rules for both the text and the pixel tensors; accumulating gradients
-    over single examples reaches the same update with none of that machinery.
-    """
+    """Train the adapter, adding up the gradients of batch_size single examples per step."""
     rng = random.Random(seed)
     trainable = [p for p in model.parameters() if p.requires_grad]
     optimiser = torch.optim.AdamW(trainable, lr=learning_rate)
@@ -326,18 +304,13 @@ def parse_fields(text):
 
 
 def evaluate(model, processor, records, device, max_new_tokens, label, show=3):
-    """Steps 5 and 7. Score each field separately instead of one accuracy number.
-
-    Four fields differ in what they demand: three are choices among a handful of
-    options that the encoder can plausibly separate, and the fourth asks the model
-    to read six digits off a small picture. Reporting one combined figure would
-    let the easy fields carry the hard one, and the interesting result here is
-    precisely which of the four moved.
-    """
+    """Score each field separately, so a field that fails is not hidden by the others."""
     model.eval()
     fields = ("gear", "lamp", "needle", "odo")
     hits = {field: 0 for field in fields}
     shaped = 0
+    anywhere = 0
+    needle_misses = []
     samples = []
     for record in records:
         prompt = render_prompt(processor, QUESTION)
@@ -350,11 +323,15 @@ def evaluate(model, processor, records, device, max_new_tokens, label, show=3):
             output[:, batch["input_ids"].shape[1]:], skip_special_tokens=True)[0]
         parsed = parse_fields(completion)
         shaped += int(parsed is not None)
+        anywhere += int(record["odo"] in completion)
         is_correct = parsed is not None and all(
             parsed[field] == record[field] for field in fields)
         if parsed:
             for field in fields:
                 hits[field] += int(parsed[field] == record[field])
+            if parsed["needle"] != record["needle"]:
+                needle_misses.append(f"{record['needle_fraction']:.3f} {record['needle']} "
+                                     f"read as {parsed['needle']}")
         samples.append((record, completion.strip(), is_correct))
 
     count = len(records)
@@ -363,10 +340,10 @@ def evaluate(model, processor, records, device, max_new_tokens, label, show=3):
     for field in fields:
         print(f"  {field:>7} correct: {hits[field]:>3}/{count} "
               f"({hits[field] / count:.1%})")
-    # Pick one fully-correct and up to show-1 wrong records rather than the
-    # first `show` by position: a fixed positional slice can land on the same
-    # records every call, and if those happen to be unaffected by training the
-    # printed excerpt would show no change even when the headline numbers do.
+    print(f"  right odometer digits anywhere in the text: {anywhere}/{count}")
+    if needle_misses:
+        print(f"  needle misses (zones split at 0.34 and 0.67): {', '.join(needle_misses)}")
+    # Show one right answer and the first wrong ones, so the excerpt changes when the scores do.
     right = [item for item in samples if item[2]]
     wrong = [item for item in samples if not item[2]]
     picked = (right[:1] + wrong[:show - 1]) if right and wrong else samples[:show]
@@ -388,22 +365,22 @@ def main():
     model, processor, device = load_vlm(MODEL_ID, CACHE_DIR)
     print(f"[Device] {torch.cuda.get_device_name(0) if device == 'cuda' else 'CPU'}")
 
-    print("\n--- 2-3. Split the towers and price the adapter choices ---")
+    print("\n--- 2. Split the towers and price the adapter choices ---")
     towers = survey_towers(model, RANK)
     language_modules = [name for name, _ in towers["language"]
                         if name.split(".")[-1] in LANGUAGE_TARGETS]
 
-    print("\n--- 5. Score the untouched model on the held-out panels ---")
+    print("\n--- 3. Score the untouched model on the held-out panels ---")
     base_shape, base_fields = evaluate(model, processor, evaluation, device,
                                        MAX_NEW_TOKENS, "Before training:")
 
     print("\n--- 4. Attach the adapter to the language tower ---")
     model = attach_adapter(model, RANK, ALPHA, language_modules)
 
-    print("\n--- 6. Train on the rendered panels ---")
+    print("\n--- 5. Train on the rendered panels ---")
     train(model, processor, training, device, STEPS, BATCH_SIZE, LEARNING_RATE, SEED)
 
-    print("\n--- 7. Score again and separate what moved from what did not ---")
+    print("\n--- 6. Score again and separate what moved from what did not ---")
     tuned_shape, tuned_fields = evaluate(model, processor, evaluation, device,
                                          MAX_NEW_TOKENS, "After training:")
 
