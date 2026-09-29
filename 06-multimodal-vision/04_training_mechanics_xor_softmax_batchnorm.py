@@ -1,15 +1,22 @@
-"""Train small networks by hand and account for what a hidden layer, a softmax and a mode switch do.
+"""Backpropagation, softmax cross-entropy, batch normalisation and dropout, worked through on small networks.
 
-Demonstrates the mechanics underneath every image classifier:
-    1. Show that no single linear boundary separates XOR, and print a network's outputs at random weights.
-    2. Train a two-layer network on XOR by matrix backpropagation, across seeds, widths and initial scales.
+A two-layer network learns XOR by backpropagation written as matrix products. The
+softmax cross-entropy gradient is checked against a numerical one. A numpy MLP and a
+PyTorch CNN with batch normalisation and dropout then train on digit images, and the
+trained CNN is run in training and evaluation mode to show what each layer changes.
+
+The run prints seven parts:
+    1. Train one sigmoid unit on XOR from 100 seeds and show why it gets at most three of four;
+       print a two-unit network's outputs at random weights. Both are drawn in part 2's figure.
+    2. Train a two-layer network on XOR by backpropagation, across seeds, widths and initial scales.
     3. Derive the softmax cross-entropy gradient, check it numerically, and keep the softmax finite.
     4. Train a 784-256-10 network in numpy on digit images, one mini-batch at a time.
     5. Build a CNN with padding, stride, pooling, batch normalisation and dropout, and trace its shapes.
-    6. Train and test the CNN.
-    7. Take the trained CNN through training mode and evaluation mode and account for every difference.
+    6. Train and test the CNN, and plot both networks' curves and mistakes side by side.
+    7. Run the trained CNN in training and evaluation mode, check dropout and batch normalisation
+       against their formulas, and switch each layer type separately on single images.
 
-Module 06: Multimodal Vision - Training Mechanics.
+Digits are rendered unless --mnist-root points at MNIST.
 """
 
 import argparse
@@ -79,11 +86,7 @@ def xor_forward(p):
 def train_xor(seeds, hidden, scale, epochs=XOR_EPOCHS, learning_rate=XOR_LEARNING_RATE):
     """Full-batch gradient descent on mean squared error, backpropagated as matrix products.
 
-    With E = mean((a2 - y)^2), the output layer's error signal is
-    d2 = 2 (a2 - y) / N * a2 (1 - a2). The weights into it get a1^T d2. The signal
-    carried back to the hidden layer is d1 = (d2 W2^T) * a1 (1 - a1), and the weights
-    into the hidden layer get X^T d1. Every seed is a separate network; the leading
-    axis of each array holds them side by side.
+    Every seed is a separate network, held side by side on the leading axis of each array.
     """
     rng = np.random.default_rng(SEED)
     p = init_xor(seeds, hidden, scale, rng)
@@ -121,8 +124,7 @@ def softmax(z):
 def cross_entropy(z, y_onehot):
     """Mean of -log p[true class], computed from logits as logsumexp(z) - z[true class].
 
-    Working in log space needs no epsilon inside a log, so the function differentiated
-    numerically below is exactly the one whose gradient is softmax minus one-hot.
+    No epsilon inside a log, so the numerical check differentiates exactly this function.
     """
     shifted = z - z.max(axis=-1, keepdims=True)
     log_probs = shifted - np.log(np.exp(shifted).sum(axis=-1, keepdims=True))
@@ -136,12 +138,9 @@ FONTS = (cv2.FONT_HERSHEY_SIMPLEX, cv2.FONT_HERSHEY_DUPLEX, cv2.FONT_HERSHEY_COM
 
 
 def render_digit(digit, rng):
-    """A 28x28 digit in a random font, size, stroke, offset, tilt and shear, with a stray stroke.
+    """A noisy 28x28 digit in a random font, size, stroke, offset, tilt and shear; half get a stray line.
 
-    The digit is drawn at twice the size and shrunk, so strokes are anti-aliased
-    the way a scanned pen stroke is. A random affine map tilts, scales and shears
-    it, a short line through a random part of the frame stands in for a stray mark,
-    and noise is added last.
+    Drawn at twice the size and shrunk, so strokes are anti-aliased the way a scanned pen stroke is.
     """
     img = np.zeros((56, 56), np.uint8)
     font = FONTS[rng.integers(len(FONTS))]
@@ -286,8 +285,6 @@ def predictions(model, x, batch=1000):
         return torch.cat([model(x[s:s + batch]).argmax(1) for s in range(0, len(x), batch)])
 
 
-# Main
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--mnist-root", help="MNIST folder holding the uncompressed IDX files (or raw/)")
@@ -301,7 +298,7 @@ def main():
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    # 1. XOR is not linearly separable
+    # 1. XOR, a straight line, and a network at random weights
     print("--- 1. XOR, a straight line, and a network at random weights ---")
     linear_accuracy, logistic_w, logistic_b = train_logistic(XOR_SEEDS)
     print(f"  one sigmoid unit, {XOR_SEEDS} seeds, {XOR_EPOCHS} epochs: best accuracy {linear_accuracy.max():.0%}, "
@@ -317,7 +314,7 @@ def main():
     for x, target, value in zip(XOR_X, XOR_Y[:, 0], out[0, :, 0]):
         print(f"    input {x.astype(int).tolist()}  output {value:.4f}  target {int(target)}")
 
-    # 2. Backpropagation on XOR
+    # 2. Backpropagation on XOR, across seeds, widths and initial scales
     print("\n--- 2. Backpropagation on XOR, across seeds, widths and initial scales ---")
     print(f"  learning rate {XOR_LEARNING_RATE}, full batch, solved when every output is within "
           f"{XOR_TOLERANCE} of its target")
@@ -334,12 +331,13 @@ def main():
                           "unsolved": history[:, np.flatnonzero(solved_at < 0)[:3]]}
                 stuck = history[-1, solved_at < 0]
                 two_unit = (solved_at, trained)
-    print("  Two hidden units are the fewest that can represent XOR, and some starting points")
-    print("  lead gradient descent to a flat region where both units compute nearly the same")
-    print(f"  thing; those runs end with a loss of about {np.median(stuck):.3f}. Extra units give")
-    print("  more than one way to split the plane, and almost every start finds one. Weights")
-    print("  that start near zero make the two hidden units almost identical, and the")
-    print("  gradient needs many epochs to push them apart.")
+    print("  Two hidden units are the fewest that can represent XOR. In the stuck runs the hidden")
+    print("  units saturate so that two inputs with different targets get the same hidden values,")
+    print("  and the output can only sit between the two targets: those runs end with a loss of")
+    print(f"  about {np.median(stuck):.3f}. Saturated units pass back almost no gradient, so the runs stay there.")
+    print("  Extra units give more ways to split the plane, and more starts find one. Weights")
+    print("  that start near zero make the hidden units almost identical, and the gradient")
+    print("  needs many epochs to push them apart.")
     plt.figure(figsize=(8, 4.5))
     for label, block in curves.items():
         for column in range(block.shape[1]):
@@ -388,7 +386,7 @@ def main():
     print("  xor_boundaries.png: the best single unit, the network at random weights, a trained seed")
     print("  that solves XOR and one that gets stuck; xor_loss.png: loss curves of three of each")
 
-    # 3. Softmax and cross-entropy
+    # 3. Softmax cross-entropy: the gradient and the overflow
     print("\n--- 3. Softmax cross-entropy: the gradient and the overflow ---")
     z = rng.normal(0, 2, (4, 10))
     y = np.eye(10)[rng.integers(0, 10, 4)]
@@ -401,8 +399,8 @@ def main():
         numeric[index] = (cross_entropy(up, y) - cross_entropy(down, y)) / 2e-6
     print(f"  4 samples x 10 classes: largest gap between (softmax - onehot) / N and a central "
           f"difference {np.abs(analytic - numeric).max():.2e}")
-    print("  With p = softmax(z) and loss -log p_k, d(-log p_k)/dz_j = p_j - [j = k]: the exponent")
-    print("  in the softmax and the log in the loss cancel, leaving no derivative of either.")
+    print("  With p = softmax(z) and loss -log p_k, d(-log p_k)/dz_j = p_j - [j = k]: the log")
+    print("  undoes the exponent, so the gradient is a plain difference.")
     big = np.array([[1000.0, 1001.0, 1002.0]])
     with np.errstate(over="ignore", invalid="ignore"):
         naive = softmax_naive(big)
@@ -431,7 +429,7 @@ def main():
     plt.close(fig)
     print("  softmax_gradient.png: the two gradients side by side, and the stable softmax of large logits")
 
-    # 4. Numpy MLP on digits
+    # 4. A 784-256-10 network in numpy
     print("\n--- 4. A 784-256-10 network in numpy ---")
     if args.mnist_root:
         train_images, train_labels, test_images, test_labels = load_mnist(args.mnist_root)
@@ -462,7 +460,7 @@ def main():
     print(f"  {parameters} parameters, all updated from the gradient written out above; "
           f"test error rate {test_error:.2%}")
 
-    # 5. CNN architecture
+    # 5. A convolutional network and the shape at every layer
     import torch
     import torch.nn as nn
     import torch.nn.functional as F
@@ -486,7 +484,7 @@ def main():
         hook.remove()
     layers = list(model.features) + list(model.classifier)
     print(f"  {'layer':<28}{'output':>16}{'parameters':>12}")
-    for (index, shape), layer in zip(shapes, layers):
+    for (_, shape), layer in zip(shapes, layers):
         count = sum(p.numel() for p in layer.parameters())
         print(f"  {describe(layer):<28}{str(shape):>16}{count:>12}")
     print(f"  total {sum(p.numel() for p in model.parameters())} parameters")
@@ -494,7 +492,7 @@ def main():
           f"{output_size(28, 3, 1, 1)}, pool 2 s2 halves it to {output_size(28, 2, 2, 0)}, "
           f"and the stride-2 conv takes 7 -> {output_size(7, 3, 2, 1)}")
 
-    # 6. Train and test
+    # 6. Training and testing the CNN
     print("\n--- 6. Training and testing the CNN ---")
     xt = torch.from_numpy(x_train.reshape(-1, 1, 28, 28)).to(device)
     yt = torch.from_numpy(y_train).to(device)
@@ -524,7 +522,7 @@ def main():
         print(f"  {epoch:>5}{cnn_history[-1][0]:>14.4f}{cnn_history[-1][1]:>13.2%}"
               f"{cnn_history[-1][2]:>10.2%}{time.perf_counter() - started:>7.1f}s")
     print("  The running figures are averaged over the epoch while the weights are still moving,")
-    print("  in training mode; the test figure is measured once, at the end, in evaluation mode.")
+    print("  in training mode; the test figure is measured after each epoch, in evaluation mode.")
     print("  Test accuracy is printed every epoch in both networks only to show the curve: no")
     print("  epoch, setting or stopping point is chosen from it. A project that tunes anything")
     print("  would watch a validation split carved from the training data and test once.")
@@ -584,7 +582,7 @@ def main():
     print("  misclassified.png: the first wrong test images of each; cnn_feature_maps.png: one image")
     print("  through the three convolution blocks, 28 -> 14 -> 7 -> 4 pixels per side")
 
-    # 7. Modes
+    # 7. Training mode against evaluation mode
     print("\n--- 7. Training mode against evaluation mode, on the trained network ---")
     subset = slice(0, 5000)
     probe = copy.deepcopy(model)
@@ -628,8 +626,8 @@ def main():
           f"* gamma + beta {(stats_eval - by_hand_eval).abs().max().item():.2e}")
     print(f"  first BatchNorm, training mode: largest gap to the same formula with this batch's mean and "
           f"variance {(stats_train - by_hand_train).abs().max().item():.2e}")
-    print(f"  running variance after that one training-mode batch, against 0.9 * old + 0.1 * unbiased batch "
-          f"variance: largest gap {(batch_bn.running_var - expected_running).abs().max().item():.2e}")
+    print(f"  running variance after that one training-mode batch, against {1 - bn.momentum:g} * old + {bn.momentum:g} "
+          f"* unbiased batch variance: largest gap {(batch_bn.running_var - expected_running).abs().max().item():.2e}")
     print(f"  batch mean against running mean, per channel: largest gap "
           f"{(mu - bn.running_mean).abs().max().item():.4f}")
 

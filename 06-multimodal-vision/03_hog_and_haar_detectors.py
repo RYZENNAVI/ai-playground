@@ -1,18 +1,26 @@
-"""Describe a window by its gradients or by rectangle contrasts, and detect with each description.
+"""HOG descriptors and Viola-Jones Haar features: describe a window by its gradients or by rectangle contrasts.
 
-Demonstrates the two hand-built descriptions that preceded learned features: HOG, built
-and compared by distance here without a trained classifier, and Haar rectangle features,
-turned into a trained classifier by AdaBoost:
-    1. Render person windows, clutter windows, a star, and small face and non-face windows.
-    2. Take Sobel gradients and draw direction with opacity set by magnitude.
-    3. Vote gradients into 8x8 cell histograms three ways and measure what a 5-degree turn changes.
-    4. Normalise overlapping blocks into a HOG descriptor and compare people with unknown windows.
-    5. Enumerate every two-rectangle Haar feature in a window and count them in closed form.
-    6. Build the integral image and check rectangle sums against brute force and OpenCV.
-    7. Train a 20-round AdaBoost classifier over every feature of a 16x16 window.
-    8. Score the strong classifier at several thresholds and draw the features it chose first.
+HOG (histograms of oriented gradients) counts gradient directions in small cells. Here it
+is built and compared by distance only, with no classifier trained on it. Haar features
+compare the sums of neighbouring rectangles, read from an integral image, and AdaBoost
+picks a few of them to make a face classifier, as in the Viola-Jones detector.
 
-Module 06: Multimodal Vision - HOG and Haar Detectors.
+The run prints eight parts:
+    1. Render person, car and clutter windows, a star, and 16x16 face and non-face windows.
+    2. Take Sobel gradients and draw direction with opacity set by magnitude. This part is
+       for looking only; later parts compute their own gradients.
+    3. Vote gradients into 8x8 cell histograms three ways and measure what a 5-degree turn
+       changes. Part 4 uses the third way, split between bins and between cells.
+    4. Normalise overlapping blocks into a HOG descriptor and compare an unknown person and
+       car, then 40 new windows of each kind, with the reference people.
+    5. Enumerate every two-rectangle Haar feature and count them in closed form. The 24x24
+       count is for comparison; part 7 uses the 16x16 set.
+    6. Build the integral image, check it against OpenCV, and time rectangle sums against
+       slicing.
+    7. Train a 20-round AdaBoost classifier over every feature of a 16x16 window and score
+       it at several thresholds on held-out windows.
+    8. Draw the three features it chose first, and repeat the training on TinyFace faces
+       against CIFAR-10 images when both folders are given.
 """
 
 import argparse
@@ -46,7 +54,7 @@ STRONG_THRESHOLDS = (0.3, 0.4, 0.5, 0.6, 0.7)
 # 1. Synthetic windows
 
 def clutter(rng, h, w):
-    """Blurred texture with a few random strokes, the background every window starts from."""
+    """Blurred texture with a few random strokes, the background of every person and car window."""
     noise = cv2.GaussianBlur(rng.normal(0, 1, (h, w)).astype(np.float32), (0, 0), 2.5)
     img = 0.5 + 0.08 * noise / noise.std()
     for _ in range(rng.integers(3, 7)):
@@ -98,7 +106,7 @@ def rotate(img, degrees):
 
 
 def face_window(rng):
-    """A 16x16 face: a bright oval, a dark eye band with two eyes, a nose bridge and a mouth."""
+    """A 16x16 face: an oval of fixed tone on a random background, a dark eye band with two eyes, a nose bridge and a mouth."""
     yy, xx = np.mgrid[0:FACE, 0:FACE].astype(np.float32)
     img = np.full((FACE, FACE), rng.uniform(0.2, 0.8), np.float32)
     oval = ((xx - 7.5) / 7.0) ** 2 + ((yy - 8.0) / 8.0) ** 2 <= 1
@@ -159,13 +167,7 @@ def direction_overlay(img, magnitude, direction):
 def cell_histograms(img, mode):
     """Vote every pixel's gradient magnitude into (cells_y, cells_x, BINS) histograms.
 
-    nearest: the whole vote goes to the one bin the direction falls in.
-    orientation: the vote is split between the two bins whose centres bracket the
-    direction, in proportion to how close it is to each, so a direction near a bin
-    boundary no longer jumps from one bin to the other when it moves slightly.
-    orientation+spatial: the vote is additionally split between the four cells
-    whose centres surround the pixel, so a gradient near a cell border does not
-    jump between cells when the image shifts or turns slightly.
+    mode: the nearest bin, split between the two nearest bins, or also between the four nearest cells.
     """
     magnitude, direction = gradients(img)
     h, w = img.shape
@@ -206,11 +208,7 @@ def cell_histograms(img, mode):
 def hog_descriptor(img):
     """Concatenate L2-Hys normalised 2x2-cell blocks, stride one cell, then normalise the whole.
 
-    Each block vector is divided by its length, clipped at HYS_CLIP so that no
-    single strong edge dominates, and divided by its length again. Neighbouring
-    blocks share cells, so every cell appears in up to four blocks, each time
-    normalised against a different neighbourhood. The finished descriptor is
-    normalised once more so that windows of different overall contrast compare.
+    Clipping at HYS_CLIP keeps a single strong edge from dominating its block.
     """
     hist = cell_histograms(img, "orientation+spatial")
     blocks = []
@@ -229,8 +227,7 @@ def hog_descriptor(img):
 def enumerate_two_rect(size):
     """Every horizontal and vertical two-rectangle feature as (vertical, x, y, w, h).
 
-    (x, y) is the top-left corner and (w, h) the size of one of the two equal
-    rectangles. A horizontal pair spans 2w by h; a vertical pair spans w by 2h.
+    (x, y, w, h) is the first of the two equal rectangles; the second sits right of it or below it.
     """
     rows = []
     for vertical in (0, 1):
@@ -246,13 +243,7 @@ def enumerate_two_rect(size):
 
 
 def closed_form_count(size):
-    """Placements of a doubled side times placements of a plain side, for both orientations.
-
-    A pair whose doubled side is 2a fits in size - 2a + 1 positions along that
-    axis, for a = 1 .. size // 2; the other side b fits in size - b + 1 positions
-    for b = 1 .. size. The two axes are independent, and vertical pairs mirror
-    horizontal ones.
-    """
+    """Placements of a doubled side times placements of a plain side, for both orientations."""
     doubled = sum(size - 2 * a + 1 for a in range(1, size // 2 + 1))
     plain = sum(size - b + 1 for b in range(1, size + 1))
     return 2 * doubled * plain
@@ -274,9 +265,7 @@ def rect_sum(ii, x, y, w, h):
 def feature_values(ii, features, chunk=4000):
     """Second rectangle minus first, for every window (rows) and feature (columns).
 
-    The second rectangle sits to the right of the first for a horizontal pair and
-    below it for a vertical one. Features are evaluated in chunks so that the
-    four float64 lookups per feature never exist for the whole set at once.
+    Chunks keep the four float64 lookups from being built for all features at once.
     """
     values = np.empty((ii.shape[0], len(features)), np.float32)
     for start in range(0, len(features), chunk):
@@ -290,7 +279,7 @@ def feature_values(ii, features, chunk=4000):
 
 
 def normalise_windows(windows):
-    """Subtract each window's mean and divide by its standard deviation, as before scanning."""
+    """Subtract each window's mean and divide by its standard deviation."""
     flat = windows.reshape(len(windows), -1)
     mean, std = flat.mean(1), flat.std(1) + 1e-6
     return ((windows - mean[:, None, None]) / std[:, None, None]).astype(np.float32)
@@ -301,16 +290,7 @@ def normalise_windows(windows):
 def best_stumps(values, order, sorted_values, weights, labels, chunk=2000):
     """For every feature, the threshold and polarity with the lowest weighted error.
 
-    Sorting a feature's values once turns the search into two cumulative sums.
-    Putting the threshold after the i-th smallest value and calling everything at
-    or below it a face costs the weight of the non-faces at or below it plus the
-    faces above it; the opposite polarity costs the complement. Both are read off
-    for every i at once, and the order of values never changes between rounds.
-    A threshold equal to a value applies to every copy of that value, so a position
-    inside a run of equal values is not a real threshold and is excluded; only the
-    last position of each run is scored. The threshold returned lies halfway to the
-    next distinct value (one above the largest for the last position), so no training
-    value sits on it and both polarities split the examples exactly as scored.
+    Values are sorted once, so each error is a cumulative sum; thresholds fall halfway between distinct values.
     """
     positive = np.where(labels == 1, weights, 0).astype(np.float64)
     negative = np.where(labels == 0, weights, 0).astype(np.float64)
@@ -342,14 +322,8 @@ def stump_predict(values, threshold, polarity):
 
 
 def train_adaboost(values, labels, rounds=ROUNDS):
-    """Discrete AdaBoost with the initial weights and update of the face-detection formulation.
-
-    Faces and non-faces each start with half the total weight, however many of
-    each there are. Each round normalises the weights, takes the single feature
-    stump with the lowest weighted error epsilon, and multiplies the weight of every
-    example that stump got right by beta = epsilon / (1 - epsilon), so the next round
-    concentrates on the examples still being misclassified. The stump's say in the
-    final vote is alpha = log(1 / beta).
+    """Discrete AdaBoost as in Viola-Jones: each class starts with half the weight, and each round keeps
+    the best stump and multiplies the weights it got right by beta = epsilon / (1 - epsilon).
     """
     order = np.argsort(values, axis=0, kind="stable").astype(np.int32)
     sorted_values = np.take_along_axis(values, order, axis=0)
@@ -386,7 +360,7 @@ def report_thresholds(scores, labels):
 
 
 def run_adaboost(name, train_windows, train_labels, test_windows, test_labels, features):
-    """Compute features, train, and report one dataset; return the stumps."""
+    """Compute features, train, and report one dataset; return the stumps and the test scores."""
     started = time.perf_counter()
     train_values = feature_values(integral_image(normalise_windows(train_windows)), features)
     stumps = train_adaboost(train_values, train_labels)
@@ -405,10 +379,9 @@ def run_adaboost(name, train_windows, train_labels, test_windows, test_labels, f
 
 
 def load_tinyface(root, count, rng):
-    """Greyscale 16x16 faces from the TinyFace recognition training set.
+    """Greyscale 16x16 faces resized from the TinyFace recognition training crops (about 32x32).
 
-    That set ships each face already cropped (about 32x32 pixels), so the images are
-    only resized here; no bounding box is read and no scene image is scanned.
+    No bounding box is read and no scene image is scanned.
     """
     paths = sorted(Path(root).glob("Training_Set/**/*.jpg"))
     picked = rng.choice(len(paths), size=min(count, len(paths)), replace=False)
@@ -483,10 +456,9 @@ def enlarge(img, scale):
 
 
 def hog_glyphs(img, scale):
-    """Each cell's orientation histogram drawn as lines along the edge directions it counts.
+    """Each cell's orientation histogram drawn as lines across its gradients, along the edges.
 
-    A gradient points across an edge, so each bin is drawn perpendicular to its
-    direction, with a length set by its share of the strongest bin in the window.
+    Lengths are relative to the strongest bin in the window.
     """
     hist = cell_histograms(img, "orientation+spatial")
     canvas = (enlarge(img, scale) * 0.45).astype(np.uint8)
@@ -564,8 +536,6 @@ def score_histogram(scores, labels, name, height=260, width=640):
     return labelled(canvas, f"{name}: green faces, red non-faces; at 0.5, {found:.1%} found, {alarms:.1%} false alarms")
 
 
-# Main
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--tinyface-root", help="TinyFace folder containing Training_Set/")
@@ -574,7 +544,7 @@ def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(SEED)
 
-    # 1. Windows
+    # 1. Synthetic windows
     print("--- 1. Synthetic windows ---")
     people = [person_window(rng) for _ in range(3)]
     unknown_person, unknown_car = person_window(rng), car_window(rng)
@@ -597,24 +567,25 @@ def main():
     print("  windows.png: the three reference people, the unknown person and car, and clutter;")
     print("  face_windows.png: eight rendered faces above eight non-faces")
 
-    # 2. Gradients
+    # 2. Gradient direction
     print("\n--- 2. Gradient direction, drawn with opacity proportional to magnitude ---")
     overlays = []
-    for img in people:
+    for number, img in enumerate(people, 1):
         magnitude, direction = gradients(img)
         strong = magnitude > 0.25 * magnitude.max()
         overlays.append(direction_overlay(img, magnitude, direction))
-        print(f"  person window: {strong.mean():.1%} of pixels above a quarter of the peak magnitude; "
+        print(f"  person {number}: {strong.mean():.1%} of pixels above a quarter of the peak magnitude; "
               f"their directions, histogram of 4 bins: "
               f"{np.histogram(direction[strong], bins=4, range=(0, 180))[0].tolist()}")
     cv2.imwrite(str(OUT_DIR / "gradient_direction.png"), side_by_side([
         labelled(cv2.resize(overlay, (WINDOW_W * 2, WINDOW_H * 2), interpolation=cv2.INTER_NEAREST), f"person {i + 1}")
         for i, overlay in enumerate(overlays)]))
     print("  Near-vertical limbs and torso sides have horizontal gradients, the 0-45 and 135-180")
-    print("  bins; head and shoulders fill the middle. Weak gradients carry little shape, so they")
-    print("  are drawn nearly transparent and, in the histograms below, vote with little weight.")
+    print("  bins. The head and the top and bottom of the torso fill much of the middle, and the")
+    print("  random strokes add the rest. Weak gradients carry little shape, so they are drawn")
+    print("  nearly transparent and, in the histograms below, vote with little weight.")
 
-    # 3. Cell histograms under rotation
+    # 3. Cell histograms and a 5-degree turn
     print("\n--- 3. Cell histograms and a 5-degree turn ---")
     turned = rotate(star, -5)
     print(f"  {BINS} unsigned bins of {180 // BINS} deg, {CELL}x{CELL} cells")
@@ -624,7 +595,8 @@ def main():
         hist_a, hist_b = cell_histograms(star, mode), cell_histograms(turned, mode)
         a, b = hist_a.ravel(), hist_b.ravel()
         distance = np.linalg.norm(a - b)
-        print(f"  {mode:<22}{distance:>26.3f}{distance / np.linalg.norm(a):>18.3f}")
+        relative = distance / np.linalg.norm(a)
+        print(f"  {mode:<22}{distance:>26.3f}{relative:>18.3f}")
         star_changes[mode] = (np.abs(hist_a - hist_b).sum(-1), distance)
     ceiling = max(change.max() for change, _ in star_changes.values())
     change_tiles = [labelled(cv2.applyColorMap(cv2.resize(np.rint(255 * change / ceiling).astype(np.uint8), (256, 256),
@@ -634,15 +606,15 @@ def main():
         [labelled(hog_glyphs(star, 2), "star, cell histograms"), labelled(hog_glyphs(turned, 2), "turned 5 deg")]
         + change_tiles))
     print("  cell_histograms.png: both stars with their cell histograms drawn in, then how much each")
-    print("  cell changed under each voting rule, on one colour scale, with the total distance")
+    print("  cell changed under each voting rule, on one colour scale, with the total distance.")
     print("  A 5-degree turn moves a direction a quarter of a bin. With the whole vote in one")
     print("  bin, every direction that crosses a boundary moves all of its weight; split")
     print("  between the two nearest bins, it moves a quarter. The same holds for pixels that")
     print("  the turn carries across a cell border. Interpolation makes the change smaller")
     print("  and smoother; it does not make HOG rotation invariant, and the turned star still")
-    print("  differs by 0.6 of its own norm.")
+    print(f"  differs by {relative:.2f} of its own norm.")
 
-    # 4. HOG descriptor
+    # 4. Block-normalised HOG descriptor
     print("\n--- 4. Block-normalised HOG descriptor ---")
     reference = [hog_descriptor(p) for p in people]
     blocks_y, blocks_x = WINDOW_H // CELL - BLOCK + 1, WINDOW_W // CELL - BLOCK + 1
@@ -677,7 +649,7 @@ def main():
     print("  This compares descriptors by distance; no classifier or decision threshold is")
     print("  trained on them here. A HOG detector would put a linear SVM on top.")
 
-    # 5. Haar features
+    # 5. Two-rectangle Haar features
     print("\n--- 5. Two-rectangle Haar features ---")
     for size in (PAPER_WINDOW, FACE):
         enumerated = enumerate_two_rect(size)
@@ -689,7 +661,7 @@ def main():
     cv2.imwrite(str(OUT_DIR / "haar_feature_types.png"), side_by_side(haar_examples(paper_counts)))
     print("  haar_feature_types.png: one pair of each orientation on a 24x24 grid")
 
-    # 6. Integral image
+    # 6. The integral image
     print("\n--- 6. The integral image ---")
     sample = np.clip(np.rint(faces[0] * 255), 0, 255).astype(np.uint8)
     ours = integral_image(sample.astype(np.float64))
@@ -698,17 +670,25 @@ def main():
     big_ii = integral_image(big)
     rects = np.stack([rng.integers(0, 400, 2000), rng.integers(0, 300, 2000),
                       rng.integers(1, 240, 2000), rng.integers(1, 180, 2000)], 1)
-    started = time.perf_counter()
     brute = np.array([big[y:y + h, x:x + w].sum() for x, y, w, h in rects])
-    brute_time = time.perf_counter() - started
-    started = time.perf_counter()
     fast = rect_sum(big_ii, rects[:, 0], rects[:, 1], rects[:, 2], rects[:, 3])
-    fast_time = time.perf_counter() - started
-    print(f"  2000 random rectangles on a 640x480 image: largest difference {np.abs(brute - fast).max():.2e}; "
-          f"slicing {brute_time * 1000:.1f} ms, four lookups each {fast_time * 1000:.2f} ms")
+    print(f"  2000 random rectangles on a 640x480 image: largest difference {np.abs(brute - fast).max():.2e}")
+    timings = []
+    for w, h in ((1, 1), (239, 179)):
+        started = time.perf_counter()
+        for x, y in rects[:, :2]:
+            big[y:y + h, x:x + w].sum()
+        slicing = time.perf_counter() - started
+        started = time.perf_counter()
+        for x, y in rects[:, :2]:
+            rect_sum(big_ii, x, y, w, h)
+        lookups = time.perf_counter() - started
+        timings.append(f"{w}x{h}: slicing {slicing * 1000:.1f} ms, four lookups {lookups * 1000:.1f} ms")
+    print("  the same 2000 positions at two sizes, both timed in one Python loop:")
+    print("  " + "; ".join(timings))
     print("  ii[y, x] holds the sum above and to the left, so any rectangle is D - B - C + A:")
-    print("  the cost is four reads whether the rectangle is 2 pixels or 200,000.")
-    print("  The timings are one pass each, not a benchmark; the point is the gap in kind.")
+    print("  four reads whether it covers 1 pixel or 42,781, while slicing grows with the area.")
+    print("  The timings are one pass each, not a benchmark.")
     rx, ry, rw, rh, scale = 3, 5, 10, 3, 15        # the eye band, the first feature AdaBoost picks
     window_tile = np.zeros(((FACE + 1) * scale, FACE * scale, 3), np.uint8)
     window_tile[:FACE * scale] = enlarge(sample / 255.0, scale)
@@ -725,7 +705,7 @@ def main():
     print("  integral_image.png: a face window with one box, and its integral image with the four")
     print("  corners whose combination gives the same sum")
 
-    # 7. AdaBoost
+    # 7. AdaBoost over every feature
     print("\n--- 7. AdaBoost over every feature ---")
     train_w, train_l, test_w, test_l = split(faces, others, TRAIN_PER_CLASS, rng)
     stumps, scores = run_adaboost("synthetic faces", train_w, train_l, test_w, test_l, features)
@@ -733,7 +713,7 @@ def main():
     print("  adaboost_scores.png: how the test faces and non-faces spread over the strong score,")
     print("  with the thresholds of the table marked")
 
-    # 8. Chosen features and real data
+    # 8. Chosen features and real images
     print("\n--- 8. What the classifier looks at, and the same training on real images ---")
     cv2.imwrite(str(OUT_DIR / "haar_features.png"),
                 labelled(draw_features(faces.mean(axis=0), features, stumps), "features 1-3: red green blue",

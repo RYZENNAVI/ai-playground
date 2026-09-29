@@ -1,22 +1,21 @@
-"""Measure a training loss spike and test what causes it, on the detector from script 05.
+"""Diagnose a loss spike in Adam training with per-step instrumentation and controlled reruns.
 
-That detector's loss falls smoothly for twenty-odd epochs, then every term rises together
-for a couple of epochs and falls back. This script treats that as a question to answer with
-measurements rather than a story to tell:
+The detector from script 05 has a loss that falls smoothly for twenty-odd epochs, then every
+term rises together for a couple of epochs and falls back. Each explanation that comes to mind
+is tested with a measurement:
     1. Reproduce the training run exactly, recording every optimiser step.
     2. Draw the anatomy of the rise: loss, gradient norm, step size, Adam's moments.
     3. Ask whether one unlucky batch is responsible.
     4. Ask which loss terms rise, and which layers move.
-    5. Control: keep everything and change only the batch order.
+    5. Control: change only the batch order, and run 10 epochs past 30 so a late break-up is seen whole.
     6. Control: halve the learning rate, and run long enough to reach the same loss.
-    7. Control: train four times longer, and count how often the break-up happens.
+    7. Control: train four times longer by default, and count how often the break-up happens.
+Parts 2 to 4 read the steps recorded in part 1. The run ends with what the measurements support.
 
 The detector, its loss and its data come from script 05 unchanged, so the trajectory here is
 the one that script reports; the instrumentation only reads, and never draws a random number
-of its own. Expect roughly 40 minutes on a laptop GPU: the long run in step 7 is four times
-the original training, and steps 1 to 4 pay for a parameter snapshot at every step.
-
-Module 06: Multimodal Vision - Grid Detection and Pose Assembly, a supplement to script 05.
+of its own. Expect roughly 40 minutes on a laptop GPU: the long run in part 7 is four times
+the original training, and the recorded run in part 1 clones the parameters at every step.
 """
 
 import argparse
@@ -58,11 +57,9 @@ def build_dataset(s05):
 
 
 def train_detector(s05, data, epochs, learning_rate, shuffle_seed, record=False, label=""):
-    """Train exactly as script 05 does, optionally recording every optimiser step.
+    """Train exactly as script 05 does; with record set, also return one row of measurements per optimiser step.
 
-    Returns the per-epoch totals and, when record is set, a structured array with one row per
-    step. Recording clones the parameters around each step to measure how far they moved, and
-    keeps the previous gradient to measure whether successive gradients agree.
+    Recording clones the parameters around each step and keeps the previous gradient for the cosine.
     """
     import torch
 
@@ -136,11 +133,7 @@ def train_detector(s05, data, epochs, learning_rate, shuffle_seed, record=False,
 
 
 def rolling_median(values, window=51):
-    """A median over the last window steps, to read a trend out of very noisy per-step numbers.
-
-    The first recorded gradient cosine has no previous step to compare against, so this skips
-    missing values rather than letting one of them empty the first window.
-    """
+    """A median over the last window steps, skipping missing values such as the first step's cosine."""
     windows = [values[max(0, i - window + 1):i + 1] for i in range(len(values))]
     return np.array([np.nanmedian(w) if np.isfinite(w).any() else np.nan for w in windows])
 
@@ -152,11 +145,9 @@ def break_ups(totals, threshold=RISE, after=10):
 
 
 def episodes(totals, threshold=RISE, after=10):
-    """Group the rising epochs into events, since one break-up keeps rising for a while.
+    """Group consecutive rising epochs into events: the start epoch, the loss it left and the highest loss reached.
 
-    Returns, for each event, the epoch it started from, the loss it left, and the highest
-    loss it reached before coming back down. Counting rising epochs instead would count a
-    single event as two or three.
+    Counting rising epochs instead would count one event two or three times.
     """
     found = []
     for epoch, before, after_value in break_ups(totals, threshold, after):
@@ -180,6 +171,7 @@ def main():
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    # 1. The same training run as script 05, with every step recorded
     s05 = load_detector_module()
     print("--- 1. The same training run as script 05, with every step recorded ---")
     print(f"  detector from {DETECTOR_SOURCE.name}: Adam {s05.LEARNING_RATE}, batch {s05.BATCH}, "
@@ -194,7 +186,7 @@ def main():
     for epoch, before, after in break_ups(totals):
         print(f"  epoch {epoch}: {before:.4f} -> {after:.4f}, x{after / before:.2f}")
 
-    # 2. Anatomy
+    # 2. What moves during the rise
     print("\n--- 2. What moves during the rise ---")
     quiet = rows[(rows["epoch"] >= QUIET_FROM) & (rows["epoch"] <= QUIET_TO)]
     loud = rows[(rows["epoch"] >= peak - 1) & (rows["epoch"] <= peak)]
@@ -208,7 +200,8 @@ def main():
                     / np.nanmedian(quiet["update_norm"] / quiet["grad_norm"]))
     print(f"  Adam's distance per unit of gradient changes by x{per_gradient:.2f}, so the larger steps "
           f"are not only larger gradients")
-    print("  the second moment does not dip, so the steps do not grow because Adam's denominator shrank")
+    print("  the second moment only drifts down slowly (ratio above), so a shrinking denominator explains")
+    print("  little of the larger steps")
 
     arrivals = []
     for key in ("update_norm", "abs_m", "grad_norm", "total"):
@@ -253,7 +246,7 @@ def main():
     print("  spike_anatomy.png: loss, gradient norm, update norm, gradient cosine and Adam's two")
     print("  moments for every step, with the rise shaded")
 
-    # 3. One unlucky batch?
+    # 3. Is one batch responsible?
     print("\n--- 3. Is one batch responsible? ---")
     print(f"  {'epoch':>6}{'median':>10}{'largest':>10}{'largest/median':>16}{'boxes in it':>13}")
     for epoch in range(QUIET_FROM, min(peak + 2, s05.EPOCHS) + 1):
@@ -261,8 +254,8 @@ def main():
         worst = int(np.argmax(s["total"]))
         print(f"  {epoch:>6}{np.median(s['total']):>10.4f}{s['total'].max():>10.4f}"
               f"{s['total'].max() / np.median(s['total']):>16.2f}{s['boxes'][worst]:>13}")
-    print("  the heaviest batch of a rising epoch stands out no further than in a quiet one, and the")
-    print("  rise takes hundreds of steps, so no single batch explains it")
+    print("  the heaviest batch of a rising epoch is no outlier either (compare the quiet epochs above),")
+    print("  and the rise takes hundreds of steps, so no single batch explains it")
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.6))
     quiet_mask = (rows["epoch"] >= QUIET_FROM) & (rows["epoch"] <= QUIET_TO)
@@ -289,14 +282,14 @@ def main():
     print("  spike_batch_content.png: batch loss against how many boxes the batch holds, and the")
     print("  worst-to-median ratio of every epoch")
 
-    # 4. Which terms, which layers
+    # 4. Which terms rise, and which layers move
     print("\n--- 4. Which terms rise, and which layers move ---")
     early, late = rows[rows["epoch"] == QUIET_TO - 1], rows[rows["epoch"] == peak]
     print(f"  {'term':>8}{f'epoch {QUIET_TO - 1}':>12}{f'epoch {peak}':>12}{'ratio':>8}")
     for name in ("xy", "wh", "obj", "noobj", "class"):
         a, b = np.median(early[name]), np.median(late[name])
         print(f"  {name:>8}{a:>12.4f}{b:>12.4f}{b / a:>8.1f}")
-    print("  the unbounded confidence terms degrade far more than the bounded coordinate terms")
+    print("  class and obj, both cross-entropies, rise far more than xy, which sits behind a sigmoid")
 
     relative = [f"rel {n}" for n in layers]
     growth = [(np.median(late[c]) / max(np.median(early[c]), 1e-12), c[4:]) for c in relative]
@@ -305,7 +298,7 @@ def main():
     print(f"  relative movement per step grows by x{min(g for g, _ in growth):.1f} to "
           f"x{max(g for g, _ in growth):.1f} across the tensors; the prediction head, layer {head}, "
           f"grows by x{min(head_growth):.1f} to x{max(head_growth):.1f}")
-    print("  so the whole network moves further, the body at least as much as the head")
+    print("  so the whole network moves further, not only the head")
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
     for name in ("xy", "wh", "obj", "noobj", "class"):
@@ -331,8 +324,8 @@ def main():
     print("  spike_terms_and_layers.png: each loss term over training, and how much further every")
     print("  parameter tensor moves per step during the rise")
 
-    # 5, 6, 7. Controls
-    print("\n--- 5. Control: the same everything, a different batch order ---")
+    # 5. Control: a different batch order
+    print("\n--- 5. Control: the same settings, a different batch order ---")
     # A few epochs past the script's own thirty, so that a late break-up is seen whole.
     other, _, _ = train_detector(s05, data, s05.EPOCHS + 10, s05.LEARNING_RATE, OTHER_SHUFFLE,
                                  label="other batch order")
@@ -344,6 +337,7 @@ def main():
               f"{episodes(totals)[0][1]:.4f} with the original order")
     print("  the break-up survives the change and moves, so it does not belong to particular batches")
 
+    # 6. Control: half the learning rate
     print("\n--- 6. Control: half the learning rate, run long enough to reach the same loss ---")
     half, _, _ = train_detector(s05, data, HALF_RATE_EPOCHS, s05.LEARNING_RATE / 2, s05.SEED,
                                 label="half the rate")
@@ -355,9 +349,10 @@ def main():
               f"{episodes(totals)[0][1]:.4f} at the full rate")
         print("  so halving the step does not remove it; it buys a lower loss before the same thing happens")
 
+    # 7. Control: a longer run
     print(f"\n--- 7. Control: {args.long_epochs} epochs at the original settings ---")
     long_run, _, _ = train_detector(s05, data, args.long_epochs, s05.LEARNING_RATE, s05.SEED,
-                                    label="four times longer")
+                                    label=f"{args.long_epochs} epochs")
     long_episodes = episodes(long_run)
     print(f"  {'starts at':>10}{'leaving':>10}{'peaking at':>12}{'ratio':>8}")
     for epoch, before, top in long_episodes:
@@ -403,13 +398,12 @@ def main():
     print("  run with every break-up marked")
 
     print("\n--- What the measurements support ---")
-    print("  The rise is not one bad batch, and not Adam's denominator shrinking: no outlier step")
-    print("  exists and the second moment holds steady through it. It survives a change of batch")
+    print("  The rise is not one bad batch, and not Adam's denominator shrinking: no batch is an outlier")
+    print("  and the second moment only drifts down slowly through it. It survives a change of batch")
     print("  order, and halving the step size only postpones it to a lower loss. Training four times")
-    print("  longer brings it back at a regular spacing, each time from a lower loss. That is the")
-    print("  behaviour of a step size meeting a loss surface that keeps sharpening as the loss falls:")
-    print("  the run oscillates out of the narrow region, the surface flattens, and it settles again.")
-    print("  Measuring curvature directly would be needed to close the case; these runs do not do that.")
+    print("  longer brings it back at a regular spacing, each time from a lower loss. That points at")
+    print("  the step size rather than the data. What the step size meets is not measured here;")
+    print("  05c_curvature_and_stability.py measures the curvature of the loss surface directly.")
     print(f"\n  images written to {OUT_DIR}")
 
 

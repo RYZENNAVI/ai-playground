@@ -1,19 +1,26 @@
-"""Follow one object through a clip by its colour, then measure motion from the pixels alone.
+"""Colour tracking and optical flow: follow a coloured object through a clip, then measure motion.
 
-Demonstrates the classical tracking pipeline, each stage scored against a drawn ground truth:
-    1. Render a clip of a coloured ellipse that travels a known path, grows, turns and dims.
-    2. Threshold the object's colour in BGR and in HSV, before and after the light drops.
-    3. Clean the mask with erosion and dilation.
-    4. Label connected components two ways by hand and reconcile them with OpenCV.
-    5. Track the largest component's centroid through the clip.
-    6. Build a hue histogram of the object and back-project it onto every frame.
-    7. Follow the back-projection with a fixed-size mean shift window.
-    8. Let CAMSHIFT resize and orient the window from the image moments.
-    9. Find corners from the structure tensor and read what its eigenvalues say.
-    10. Match blocks between two frames whose true displacement is known.
-    11. Solve Lucas-Kanade at the corners, on one level and on a pyramid.
+The script renders a clip of a blue ellipse that moves, grows, turns and dims halfway, so
+every frame has a true mask. It segments the object by colour and tracks it with mean shift
+and CAMSHIFT on a hue back-projection. The motion parts use still images shifted by a known
+amount, and compare block matching with Lucas-Kanade optical flow.
 
-Module 06: Multimodal Vision - Colour Tracking and Optical Flow.
+The run prints eleven parts:
+    1. The clip: 90 frames with their true masks, dimmed to 0.45 from frame 45.
+    2. Colour thresholds in BGR and in HSV, scored by IoU before and after the dimming.
+    3. Erosion and dilation on the HSV mask.
+    4. Connected components labelled by hand, two-pass and flood fill, checked against OpenCV.
+    5. The centroid of the largest component in every frame.
+    6. A hue histogram of the object back-projected onto every frame, with and without a
+       saturation gate. The table over bin counts is for comparison only.
+    7. Mean shift with a window of fixed size, on the 16-bin gated back-projection.
+    8. CAMSHIFT, which resizes the window and estimates the object's size and angle from
+       the second moments. Parts 7 and 8 start from a box taken off the first frame's
+       true mask.
+    9. Harris corners from the structure tensor, on a separate scene of shapes.
+    10. Block matching on a texture shifted by a small and a large known amount.
+    11. Lucas-Kanade at Harris corners of that texture, on one level and on a pyramid,
+        then at the corners and side middles of the part 9 scene (the aperture problem).
 """
 
 import sys
@@ -82,13 +89,9 @@ def draw_ellipse_mask(cx, cy, a, b, angle):
 
 
 def render_clip(rng):
-    """Render every frame together with the object's true mask and parameters.
+    """Render every frame with the object's true mask and parameters.
 
-    The background is grey texture with a little independent noise per channel,
-    which gives it a low saturation and a hue that jumps about from pixel to pixel.
-    The object is shaded towards its rim by scaling all three channels together,
-    which changes brightness and leaves hue alone. Halfway through, the whole frame
-    is multiplied by DIM_FACTOR, the same thing a camera sees when the light fades.
+    The rim shading and the dimming scale B, G and R together, which leaves hue alone.
     """
     yy, xx = np.mgrid[0:HEIGHT, 0:WIDTH].astype(np.float32)
     texture = cv2.GaussianBlur(rng.normal(0, 1, (HEIGHT, WIDTH)).astype(np.float32), (0, 0), 3)
@@ -137,12 +140,7 @@ def iou(a, b):
 # 2-3. Colour thresholds and morphology
 
 def bgr_box_mask(frame):
-    """Keep pixels whose B, G and R each fall inside a fixed box in the colour cube.
-
-    frame[..., 0] is blue, frame[..., 1] green and frame[..., 2] red: OpenCV's order.
-    Which corner of the cube the axes are named after does not change the rule, but
-    reading the channels in the wrong order does.
-    """
+    """Keep pixels whose B, G and R each fall inside a fixed box; OpenCV stores the channels as B, G, R."""
     b, g, r = (frame[..., i].astype(int) for i in range(3))
     return ((BGR_BOX["b"][0] <= b) & (b <= BGR_BOX["b"][1])
             & (BGR_BOX["g"][0] <= g) & (g <= BGR_BOX["g"][1])
@@ -150,11 +148,9 @@ def bgr_box_mask(frame):
 
 
 def hsv_mask(frame):
-    """Keep pixels whose hue is in range, that are saturated, and that are not black.
+    """Keep pixels with hue in range, enough saturation and some brightness.
 
-    Scaling B, G and R by the same factor leaves the ratios between them unchanged,
-    and hue and saturation are functions of those ratios only. Value is the one
-    channel that follows the light, so the rule puts only a floor under it.
+    Hue and saturation depend only on the ratios between B, G and R, so dimming leaves them alone.
     """
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
@@ -162,13 +158,7 @@ def hsv_mask(frame):
 
 
 def clean(mask):
-    """Opening removes specks smaller than the element; closing then fills pinholes.
-
-    Erosion keeps a pixel only if the whole 3x3 neighbourhood is foreground, which
-    deletes anything thinner than three pixels and shaves one pixel off every rim.
-    Dilation afterwards grows the survivors back by the same pixel. Running the pair
-    the other way round, dilation then erosion, fills holes instead of removing dots.
-    """
+    """Open (erode, then dilate) to remove specks, then close (dilate, then erode) to fill pinholes."""
     kernel = np.ones((3, 3), np.uint8)
     as_u8 = mask.astype(np.uint8)
     eroded = cv2.erode(as_u8, kernel)
@@ -194,14 +184,9 @@ def neighbour_offsets(connectivity, causal):
 
 
 def two_pass_label(mask, connectivity):
-    """Label components with a provisional pass and an equivalence-resolving pass.
+    """Label components in two raster passes, joining touching labels in a union-find table.
 
-    Pass one walks the image in raster order. A foreground pixel with no labelled
-    neighbour above or to the left opens a new provisional label; one with labelled
-    neighbours takes the smallest, and every other label it touched is recorded as
-    equivalent in a union-find table. A U shape is the case that needs this: its two
-    arms get different labels until the scan reaches the row that joins them.
-    Pass two replaces every provisional label by its root and renumbers the roots.
+    A U shape needs the table: its arms get different labels until the scan reaches the bar that joins them.
     """
     h, w = mask.shape
     grid = mask.tolist()
@@ -245,12 +230,7 @@ def two_pass_label(mask, connectivity):
 
 
 def flood_fill_label(mask, connectivity):
-    """Label components one at a time by growing each from its first pixel.
-
-    Every foreground pixel that is still unlabelled seeds a breadth-first search
-    that claims its whole component before the scan moves on, so no equivalence
-    table is needed. Area and bounding box are accumulated while the search runs.
-    """
+    """Label one component at a time by breadth-first search, recording area and bounding box."""
     h, w = mask.shape
     grid = mask.tolist()
     labels = np.zeros((h, w), np.int32)
@@ -343,15 +323,9 @@ def mean_shift(prob, window, max_iter=20):
 
 
 def cam_shift(prob, window, max_iter=20):
-    """Mean shift whose window is resized and oriented from second-order moments.
+    """Mean shift whose window is resized from the second moments of the probability inside it.
 
-    Inside the window the probability is treated as a mass distribution. Its
-    centroid gives the position, and its central second moments mu20, mu02, mu11
-    form a 2x2 covariance matrix. The eigenvector of the larger eigenvalue is the
-    long axis, at 0.5 * atan2(2 mu11, mu20 - mu02). For a uniformly filled ellipse
-    the variance along an axis is a squared over four, so each semi-axis is twice
-    the square root of its eigenvalue. The next window is the bounding box of that
-    ellipse, enlarged by CAMSHIFT_MARGIN so a growing object still fits.
+    The moments give an ellipse: centre, semi-axes (twice the square root of each eigenvalue) and angle.
     """
     x, y, w, h = window
     estimate = None
@@ -467,11 +441,9 @@ def shift_image(img, dx, dy):
 
 
 def block_matching(first, second, block=BLOCK, radius=SEARCH_RADIUS):
-    """For each block of the first frame, the integer shift that minimises SSD in the second.
+    """For each block, the integer shift within radius pixels with the smallest SSD.
 
-    Every candidate position within radius pixels is compared, so the answer is
-    the best integer displacement inside a (2 * radius + 1) square and nothing else:
-    a motion longer than radius is not in the set being searched.
+    A motion longer than radius is not among the candidates.
     """
     margin = radius + block
     vectors, centres = [], []
@@ -488,16 +460,9 @@ def block_matching(first, second, block=BLOCK, radius=SEARCH_RADIUS):
 
 
 def lucas_kanade(prev, nxt, points, levels=1, window=LK_WINDOW, iterations=20):
-    """Estimate each point's displacement by linearising brightness constancy in a window.
+    """Solve G d = b in a window around each point, iterated, and coarse to fine on a pyramid.
 
-    Assuming I(x, y) = J(x + u, y + v) and expanding J to first order gives one
-    equation per pixel, Ix u + Iy v = -It. Stacking the window's pixels and taking
-    least squares yields G d = b with G the structure tensor of the window, the same
-    matrix Harris scores. The expansion is only valid for small d, so the step is
-    iterated, re-sampling J at the current estimate each time. On a pyramid the
-    estimate starts at the coarsest level, where every displacement is 2^(L-1)
-    times shorter, and is doubled on the way down. G is inverted with a relative
-    cut-off, so a window whose G has rank one gets the component it can observe.
+    G is inverted with a relative cut-off, so a window whose G has rank one gets the component it can observe.
     """
     prev_pyramid, next_pyramid = [prev], [nxt]
     for _ in range(levels - 1):
@@ -538,8 +503,6 @@ def flow_error(flow, truth):
     return np.linalg.norm(flow - np.array(truth, np.float32), axis=1)
 
 
-# Main
-
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(SEED)
@@ -556,8 +519,7 @@ def main():
     print(f"  frame {FRAMES - 1}: centre ({last_state[0]:.1f}, {last_state[1]:.1f}), semi-axes "
           f"{last_state[2]:.1f} x {last_state[3]:.1f}, angle {last_state[4]:.0f} deg, "
           f"{masks[-1].sum()} pixels")
-    # The whole clip as one video, plus the frames either side of the light change,
-    # rather than ninety separate images.
+    # The whole clip as one video, plus the frames either side of the light change.
     video = cv2.VideoWriter(str(OUT_DIR / "synthetic_tracking.mp4"), cv2.VideoWriter_fourcc(*"mp4v"),
                             15, (WIDTH, HEIGHT))
     if video.isOpened():
@@ -698,7 +660,11 @@ def main():
     cv_hist *= 255.0 / cv_hist.max()
     cv_back = cv2.calcBackProject([hsv0], [0], cv_hist, [0, 180], 1)
     print(f"  ROI {roi}, {HIST_BINS} bins of 180/{HIST_BINS} = {180 / HIST_BINS:.2f} hue units each")
-    print(f"  bins holding the object: {[i for i, v in enumerate(hist) if v > 0]}, "
+    roi_hsv = hsv0[roi[1]:roi[1] + roi[3], roi[0]:roi[0] + roi[2]]
+    hues, counts = np.unique(roi_hsv[..., 0][saturation_gate(roi_hsv)], return_counts=True)
+    print("  gated hues in the ROI: "
+          + ", ".join(f"{h} x{c}" for c, h in sorted(zip(counts, hues), reverse=True)))
+    print(f"  bins filled from the ROI: {[i for i, v in enumerate(hist) if v > 0]}, "
           f"peak at bin {int(np.argmax(hist))}")
     print(f"  largest gap to cv2.calcHist {np.abs(hist - cv_hist).max():.4f}, "
           f"to cv2.calcBackProject {int(np.abs(back_project(frames[0], hist, gated=False).astype(int) - cv_back).max())}")
@@ -721,7 +687,7 @@ def main():
     print("  backprojection.png: the last frame, its back-projection without the gate, and with it")
 
     whole = (0, 0, WIDTH, HEIGHT)
-    print(f"\n  {'bins':>5}{'object bins in ROI':>20}{'mass on object':>16}"
+    print(f"\n  {'bins':>5}{'bins filled in ROI':>20}{'mass on object':>16}"
           f"{'whole frame, ungated: mass on object':>38}")
     for bins in (4, 16, 64, 180):
         roi_hist = hue_histogram(frames[0], roi, bins)
@@ -730,10 +696,11 @@ def main():
                                   gated=False).astype(float)
         print(f"  {bins:>5}{int((roi_hist > 0).sum()):>20}{prob[masks[-1]].sum() / prob.sum():>16.3f}"
               f"{whole_prob[masks[-1]].sum() / whole_prob.sum():>38.3f}")
-    print("  Shading scales all three channels together, so the object's hue takes two values")
-    print("  and stays in two bins at every bin count; bin width only starts to matter once")
-    print("  an object's hue spreads across a bin boundary. The histogram taken over the whole")
-    print("  frame without the gate is dominated by the background and misses the object.")
+    print("  The object has one hue, because shading scales all three channels together; the")
+    print("  second bin is one grey pixel in the ROI that passed the gate. Bin width only starts")
+    print("  to matter once an object's hue spreads across a bin boundary. The histogram taken")
+    print("  over the whole frame without the gate is dominated by the background and misses")
+    print("  the object.")
     probs = [back_project(frame, hist) for frame in frames]
 
     # 7. Mean shift
@@ -777,7 +744,7 @@ def main():
         cs_rows[t] = (np.hypot(estimate[0] - truth_centre[0], estimate[1] - truth_centre[1]),
                       abs(estimate[2] - state[2]), abs(estimate[3] - state[3]),
                       angle_gap(estimate[4], state[4]), coverage(mask, window))
-    print(f"  window resized and turned every frame from the second moments; "
+    print(f"  window resized every frame from the second moments; "
           f"frames where the window held no probability at all: {int(np.isnan(cs_rows[:, 0]).sum())} of {FRAMES}")
     print(f"  {'':<22}{'first third':>12}{'last third':>12}")
     for column, name, unit in ((0, "centre error", "px"), (1, "long semi-axis error", "px"),
@@ -839,8 +806,8 @@ def main():
     cv2.putText(key, "yellow: mean shift window (fixed size)   magenta: CAMSHIFT ellipse",
                 (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
     cv2.imwrite(str(OUT_DIR / "tracker_windows.png"), np.vstack([np.hstack(window_tiles), key]))
-    print("  tracker_windows.png: frames 0, 30, 60 and 89 with the true outline, the fixed mean")
-    print("  shift window and the CAMSHIFT ellipse")
+    print("  tracker_windows.png: frames 0, 30, 60 and 89 with the fixed mean shift window and")
+    print("  the CAMSHIFT ellipse")
 
     # 9. Harris
     print("\n--- 9. Corners from the structure tensor ---")

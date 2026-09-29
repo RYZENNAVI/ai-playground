@@ -1,31 +1,29 @@
-"""Measure the curvature of the detector's loss surface, epoch by epoch, through the break-up.
+"""Measure the loss surface's curvature through a training break-up, with Hessian-vector products and power iteration.
 
-Script 05b established what the rise near epoch 25 is not: not one unlucky batch, not Adam's
+Script 05b showed what the rise near epoch 25 is not: not one unlucky batch, not Adam's
 denominator shrinking, not particular batches at all, and not something a smaller step removes.
-It ended on an inference - that a fixed step is meeting a loss surface which keeps sharpening -
-that its own measurements could not check, because it never measured curvature. This script does:
+It pointed at the step size but did not measure what the step size meets. This script measures
+the curvature of the loss surface directly:
     1. Reproduce the training run of script 05 exactly, and fix one probe set to measure on.
-    2. After every epoch, estimate the sharpest curvature of the loss there, without ever
-       building the Hessian: Hessian-vector products driven by power iteration.
-    3. Measure two curvatures beside it - along the direction the parameters actually moved,
-       and after Adam's own preconditioner, which is the one its step size answers to.
-    4. Sample the same curvatures every few steps through the break-up, where epoch
-       boundaries are too coarse to see what happens.
+    2. Train, and after every epoch measure three curvatures on the probe set: the sharpest one,
+       estimated without building the Hessian; the one along the direction the parameters
+       actually moved; and the sharpest one after Adam's preconditioner, which its step size
+       answers to. Epochs 22 to 27 are also measured every 25 steps.
+    3. Compare the three curvatures before the break-up and at it.
+    4. Show the 25-step measurements from inside the break-up.
     5. Measure the same run at half the step size, which breaks up much later.
-    6. Train four times longer, where the break-up repeats, and compare every event.
+    6. Train four times longer by default, where the break-up repeats, and compare every event.
     7. Let a run act on its own measurement, halving its rate when the proxy first climbs,
        and see whether the break-up still arrives.
     8. Report what the numbers do and do not support.
 
-Nothing here trains differently from script 05. The measurement takes gradients but never a
-step, restores the batch-norm statistics its forward passes would otherwise move, and draws its
-random vectors from a generator of its own, so the trajectory is the one 05 and 05b report. The
-one run that does change is the intervention of step 7, and it is a separate run.
+The full-rate runs train as script 05 does. The measurement takes gradients but never a step,
+restores the batch-norm statistics its forward passes would otherwise move, and draws its random
+vectors from a generator of its own, so the trajectory is the one 05 and 05b report. The
+half-rate run of part 5 and the intervention of part 7 train differently, as separate runs.
 
-Expect about 45 minutes: 245 curvature estimates across four trainings. Pass --long-epochs 0,
+Expect about 45 minutes: 275 curvature estimates across four trainings. Pass --long-epochs 0,
 --intervene 0 or --half-rate-epochs 0 to drop an arm.
-
-Module 06: Multimodal Vision - Grid Detection and Pose Assembly, a supplement to script 05.
 """
 
 import argparse
@@ -91,11 +89,9 @@ def restore_buffers(model, saved):
 
 
 def probe_gradient(model, loss_of, parameters, create_graph=False):
-    """The gradient of the probe loss, summed over the probe's batches.
+    """The gradient of the probe loss, averaged over the probe's batches of the training batch size.
 
-    The probe is split into the same batch size the detector trains with, both to keep the
-    memory of a double backward pass reasonable and so that batch normalisation sees batches
-    of the size it saw in training.
+    That size keeps a double backward pass in memory and shows batch normalisation batches like those in training.
     """
     import torch
 
@@ -108,11 +104,7 @@ def probe_gradient(model, loss_of, parameters, create_graph=False):
 
 
 def hessian_vector_product(model, loss_of, parameters, vector):
-    """H times a vector, by differentiating the gradient's projection onto it.
-
-    Never forms the Hessian. The first backward pass is taken with the graph kept, so the
-    second one can differentiate through it; each probe batch is released before the next.
-    """
+    """H times a vector, averaged over the probe's batches, by differentiating the gradient's projection onto it."""
     import torch
 
     total = None
@@ -127,13 +119,9 @@ def hessian_vector_product(model, loss_of, parameters, vector):
 
 
 def power_iteration(model, loss_of, parameters, iterations, generator, scale=None):
-    """The largest eigenvalue of H, or of a symmetrically scaled version of it.
+    """The largest-magnitude eigenvalue of H, with its sign from the Rayleigh quotient.
 
-    Power iteration converges to the eigenvalue of largest magnitude; the Rayleigh quotient of
-    the final vector gives it with its sign, so a negative return would mean the sharpest
-    direction here curves downward. With scale set to a per-parameter vector s, this measures
-    diag(s) H diag(s) instead, which is symmetric and has the eigenvalues of the preconditioned
-    operator diag(s^2) H.
+    With scale s, it measures diag(s) H diag(s), which has the eigenvalues of the preconditioned diag(s^2) H.
     """
     import torch
 
@@ -228,6 +216,7 @@ def main():
     import matplotlib.pyplot as plt
     import torch
 
+    # 1. The training run of script 05, and one fixed probe set
     s05 = load_detector_module()
     epochs = args.epochs or s05.EPOCHS
     print("--- 1. The training run of script 05, and one fixed probe set ---")
@@ -263,12 +252,9 @@ def main():
           f"{width ** 2 / 1e12:.1f} trillion entries")
 
     def run(epochs, learning_rate, fine_window, label, watch=False):
-        """Train as script 05 does, measuring curvature at every epoch and inside a window.
+        """Train as script 05 does, measuring curvature after every epoch and inside a window.
 
-        With watch set, the run acts on its own measurements: it halves the learning rate the
-        first time the stability proxy rises past WARNING_FACTOR times its median over the
-        baseline epochs. That rule is fixed before the run and reads only early epochs, so it
-        cannot have been fitted to where the break-up turns out to be.
+        With watch set, halve the rate the first time the proxy passes WARNING_FACTOR times its baseline median.
         """
         torch.manual_seed(s05.SEED)
         model = s05.build_detector().to(device)
@@ -343,10 +329,11 @@ def main():
                           f"the rate is halved to {rate:g} from here")
         return rows, fine_rows, fired
 
+    # 2. Training, measuring curvature after every epoch
     print(f"\n--- 2. Training, measuring curvature after every epoch ---")
     rows, fine_rows, _ = run(epochs, s05.LEARNING_RATE, args.fine_window, "full rate")
 
-    # 3. What the numbers say
+    # 3. Curvature against the break-up
     print("\n--- 3. Curvature against the break-up ---")
     column = lambda key: np.array([row[key] for row in rows])
     train_loss, lam = column("train loss"), column("lambda max")
@@ -407,6 +394,7 @@ def main():
     print("  curvature_over_training.png: loss, sharpest curvature, curvature along the step taken,")
     print("  and curvature after Adam's scaling, epoch by epoch")
 
+    # 4. Inside the break-up
     if fine_rows:
         print(f"\n--- 4. Inside the break-up, every {args.fine_every} steps ---")
         fine = lambda key: np.array([row[key] for row in fine_rows])
@@ -474,6 +462,7 @@ def main():
         print(f"  curvature_inside_the_break_up.png: loss, how far the parameters move per step and "
               f"the three curvatures, at {args.fine_every}-step resolution through the break-up")
 
+    # 5. The same measurement at half the step size
     if args.half_rate_epochs:
         print(f"\n--- 5. The same measurement at half the step size ---")
         print("  Script 05b found that halving the rate does not remove the break-up but postpones")
@@ -549,16 +538,17 @@ def main():
         fig.tight_layout()
         fig.savefig(OUT_DIR / "curvature_lr_control.png", dpi=110)
         plt.close(fig)
-        print("  curvature_lr_control.png: loss and sharpest curvature for both step sizes, with")
-        print("  each run's break-up marked")
+        print("  curvature_lr_control.png: loss, sharpest curvature, Adam-scaled curvature and the proxy")
+        print("  for both step sizes, with each run's break-up marked")
 
+    # 6. A longer run, where the break-up repeats
     long_events = []
     if args.long_epochs:
-        print(f"\n--- 6. Four times longer, where script 05b found the break-up repeating ---")
+        print(f"\n--- 6. {args.long_epochs} epochs, where script 05b found the break-up repeating ---")
         print("  Two step sizes give two break-ups. This run gives several at one step size, which")
         print("  is the repeat the boundary reading needs: if it holds, every event should leave")
         print("  from a similar proxy however far the loss has fallen by then.")
-        long_rows, _, _ = run(args.long_epochs, s05.LEARNING_RATE, (1, 0), "four times longer")
+        long_rows, _, _ = run(args.long_epochs, s05.LEARNING_RATE, (1, 0), f"{args.long_epochs} epochs")
         get = lambda key: np.array([row[key] for row in long_rows])
         long_loss = get("train loss")
         starts, previous = [], -9
@@ -615,6 +605,7 @@ def main():
         print("  curvature_repeated_breakups.png: the long run's loss and proxy with every break-up")
         print("  marked, and all of them lined up on the epoch they left from")
 
+    # 7. Acting on the warning
     if args.intervene:
         print(f"\n--- 7. Acting on the warning ---")
         print(f"  The same run again, except that it halves its own rate the first time the proxy")
@@ -642,14 +633,17 @@ def main():
         print("  rate helping whenever it is applied, since a rate cut at any time raises the")
         print("  curvature the run can take.")
 
-    print(f"\n--- What the curvature measurements support ---")
+    # 8. What the curvature measurements support
+    print("\n--- 8. What the curvature measurements support ---")
     if first:
         quiet_level, before_it, at_it = np.median(lam[quiet]), lam[first - 2], lam[first - 1]
         print(f"  The sharpest curvature sits near {quiet_level:.0f} over the quiet epochs, is "
               f"{before_it:.0f} by the epoch before the break-up and {at_it:.0f} at it, so it does "
               f"{'rise' if before_it > quiet_level else 'not rise'} into the event, and the finer")
-        print("  sampling says the same from inside it. A version of the explanation in which the")
-        print("  sharpest curvature climbs until the step no longer fits is not what happens.")
+        print("  sampling says the same from inside it.")
+        if before_it <= quiet_level:
+            print("  A version of the explanation in which the sharpest curvature climbs until the step")
+            print("  no longer fits is not what happens.")
     print("  What holds instead is a boundary on the curvature Adam's own step size answers to.")
     if args.half_rate_epochs:
         print("  Two step sizes break up at losses a factor of two apart, and the product of step")

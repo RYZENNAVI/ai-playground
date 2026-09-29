@@ -1,17 +1,23 @@
-"""Find edges with Canny, then let the edge pixels vote for lines, circles and a template.
+"""Canny edge detection and the Hough transform: find edges, then let edge pixels vote for shapes.
 
-Demonstrates the path from pixels to parametrised shapes, each stage scored against a drawn truth:
-    1. Render a scene of lines and disks whose parameters are known, then add noise.
-    2. Build Gaussian kernels of several sizes and widths and measure what each keeps.
-    3. Take Sobel gradients and threshold them, with and without smoothing first.
-    4. Quantise gradient directions and thin the edges with non-maximum suppression.
-    5. Trace edges between two thresholds, for three threshold pairs, and compare with OpenCV.
-    6. Vote for straight lines in Hesse normal form, over all angles and over a restricted range.
-    7. Vote for circles, sampling every direction or only along the gradient.
-    8. Build an R-table from a colour-segmented template and locate the template by voting.
-    9. Extend the vote over scale and rotation and recover both.
+The script draws lines and disks with known parameters, adds noise, and scores every stage
+against the true boundary. Canny is built stage by stage: Gaussian smoothing, Sobel gradients,
+non-maximum suppression and hysteresis. The edges then vote for lines and circles, and a
+generalised Hough transform finds a template shape by its R-table.
 
-Module 06: Multimodal Vision - Edges and Hough Voting.
+The run prints nine parts:
+    1. The scene: four lines and three disks at known parameters, under Gaussian noise.
+    2. Gaussian kernels of three sizes and three widths, with the noise and edge strength
+       each leaves. This part is for comparison only; Canny below uses 7x7, sigma 1.4.
+    3. One threshold on the Sobel magnitude, with and without smoothing, for comparison.
+    4. Gradient directions quantised to four, and non-maximum suppression.
+    5. Hysteresis with three threshold pairs and with the high threshold alone, checked
+       against cv2.Canny. Parts 6 and 7 use the edges of the 40/250 pair.
+    6. Hough voting for lines in Hesse normal form, over all angles and over a restricted range.
+    7. Hough voting for circles, sampling every direction or only along the gradient.
+    8. A generalised Hough transform: an R-table from a colour-segmented template, then a
+       vote for the template's position in a scene.
+    9. The same vote over 6 scales and 19 rotations, which recovers both.
 """
 
 import sys
@@ -53,12 +59,7 @@ ANGLE_BIN = 5    # degrees per R-table bin, equal to the rotation step so a turn
 # 1. The scene
 
 def hesse_endpoints(rho, theta_deg, width=WIDTH, height=HEIGHT):
-    """Two far-apart points on the line rho = x cos(theta) + y sin(theta).
-
-    The foot of the perpendicular from the origin is rho * (cos, sin); the line runs
-    through it along the direction (-sin, cos). Stepping far along that direction in
-    both senses gives endpoints that cv2.line clips to the image.
-    """
+    """Two far-apart points on the line rho = x cos(theta) + y sin(theta), for cv2.line to clip."""
     theta = np.radians(theta_deg)
     foot = rho * np.array([np.cos(theta), np.sin(theta)])
     along = np.array([-np.sin(theta), np.cos(theta)])
@@ -100,11 +101,7 @@ def gaussian_kernel(size, sigma):
 
 
 def captured_mass(size, sigma):
-    """Share of a Gaussian's weight that falls inside a size x size window.
-
-    The full Gaussian is approximated by a discrete kernel at least 8 sigma wide, which
-    holds all but a negligible part of the weight, and the central window is summed.
-    """
+    """Share of a Gaussian's weight inside a size x size window, measured on a kernel at least 8 sigma wide."""
     wide = gaussian_kernel(8 * int(np.ceil(sigma)) + 1, sigma)
     centre, half = wide.shape[0] // 2, size // 2
     return float(wide[centre - half:centre + half + 1, centre - half:centre + half + 1].sum())
@@ -115,12 +112,9 @@ SOBEL_Y = SOBEL_X.T
 
 
 def filter_image(image, kernel):
-    """Correlate image with kernel, reflecting at the border.
+    """Correlate image with kernel, reflecting at the border; script 12 writes the sliding window out by hand.
 
-    The sliding-window arithmetic itself is written out and checked against
-    nn.Conv2d in script 12; here it is delegated to cv2.filter2D. filter2D does
-    not flip the kernel, so SOBEL_X responds positively where brightness rises
-    to the right, which is the sign the direction formulas below assume.
+    filter2D does not flip the kernel, so SOBEL_X is positive where brightness rises to the right.
     """
     return cv2.filter2D(image, cv2.CV_32F, kernel, borderType=cv2.BORDER_REFLECT101)
 
@@ -134,23 +128,14 @@ def sobel_gradients(image):
 
 
 def quantise_direction(direction):
-    """Round each direction to the nearest of 0, 45, 90 and 135 degrees.
-
-    A pixel has eight neighbours, lying along four lines through it. The gradient
-    direction is snapped to whichever of those four lines is closest, so that the
-    two neighbours it is compared against actually lie across the edge.
-    """
+    """Round each direction to the nearest of 0, 45, 90 and 135 degrees, the four lines through a pixel's neighbours."""
     return (np.rint(direction / 45).astype(int) % 4) * 45
 
 
 def non_maximum_suppression(magnitude, sector):
     """Keep a pixel only if it is at least as strong as both neighbours across the edge.
 
-    An edge blurred by smoothing produces a ridge of large magnitude several pixels
-    wide. Comparing each pixel with its two neighbours along the gradient keeps the
-    crest of that ridge and drops its flanks, leaving a line one pixel thick. The
-    comparison is strict on one side and not the other, so a flat-topped crest two
-    pixels wide keeps exactly one of them.
+    One side is compared strictly, so a flat crest two pixels wide keeps exactly one of them.
     """
     h, w = magnitude.shape
     padded = np.pad(magnitude, 1)
@@ -166,10 +151,7 @@ def non_maximum_suppression(magnitude, sector):
 def hysteresis(thin, low, high):
     """Keep strong pixels, plus weak pixels connected to a strong one through other weak ones.
 
-    Pixels at or above high are edges outright. Pixels between low and high are
-    kept only if their 8-connected group of above-low pixels contains at least one
-    strong pixel, so a faint stretch of a real contour survives while an isolated
-    faint response from noise does not.
+    Strong means at or above high, weak means between low and high; groups are 8-connected.
     """
     candidate = thin >= low
     count, labels = cv2.connectedComponents(candidate.astype(np.uint8), connectivity=8)
@@ -232,10 +214,7 @@ def scene_u8(image):
 def hough_lines(edges, thetas_deg):
     """Accumulate votes in (rho, theta) space; every edge pixel votes once per angle.
 
-    A pixel (x, y) lies on every line whose normal form satisfies
-    rho = x cos(theta) + y sin(theta), which traces a sinusoid across the
-    (theta, rho) plane. Pixels that are collinear trace sinusoids through one
-    common point, and the accumulator cell at that point collects their votes.
+    Each pixel traces a sinusoid over (theta, rho), and the sinusoids of collinear pixels meet in one cell.
     """
     diagonal = int(np.ceil(np.hypot(HEIGHT, WIDTH)))
     ys, xs = np.nonzero(edges)
@@ -270,12 +249,9 @@ def match_line(truth, found, rho_tol=4.0, theta_tol=3.0):
 
 
 def hough_circles(edges, gx, gy, radii, along_gradient):
-    """Accumulate votes in (y, x, radius) space.
+    """Accumulate votes in (y, x, radius): at every sampled angle, or twice along the gradient.
 
-    Without direction information, an edge pixel could lie on a circle of radius r
-    centred anywhere on the circle of radius r around it, so it votes at every
-    sampled angle. With the gradient known, the centre can only lie along the
-    gradient line, at distance r in one sense or the other, so two votes suffice.
+    Along the gradient, the centre can only lie at distance r on one side of the pixel or the other.
     """
     ys, xs = np.nonzero(edges)
     accumulator = np.zeros((HEIGHT, WIDTH, len(radii)), np.int32)
@@ -298,13 +274,9 @@ def hough_circles(edges, gx, gy, radii, along_gradient):
 
 
 def strongest_circles(accumulator, radii, count=10, centre_gap=10):
-    """The count strongest (x, y, r) after pooling neighbouring cells and normalising.
+    """The count strongest (x, y, r) after pooling neighbouring radii, dividing by circumference and blurring.
 
-    An edge pixel sits about half a pixel outside or inside the drawn rim, and each
-    vote is rounded to a whole cell, so the votes for one circle land on a small
-    cluster of centres and radii rather than a single cell. Summing each radius with
-    its two neighbours and blurring the centre plane gathers the cluster back.
-    Dividing by the circumference then keeps a large circle from winning on length.
+    Rounding spreads one circle's votes over a small cluster of cells; the pooling gathers it back.
     """
     counts = accumulator.astype(np.float64)
     pooled = counts.copy()
@@ -322,14 +294,10 @@ def strongest_circles(accumulator, radii, count=10, centre_gap=10):
     return found
 
 
-# 8-9. Generalised Hough transform
-
 def match_circles(truths, found, centre_tol=3.0, radius_tol=2):
-    """Pair each true circle with at most one detection, and each detection with at most one truth.
+    """Pair true circles with detections one to one, cheapest centre distance plus radius gap first.
 
-    Every (truth, detection) pair is costed by centre distance plus radius gap, and
-    pairs are taken cheapest first, skipping any whose truth or detection is already
-    used. A pair counts as a hit only within both tolerances.
+    A pair counts as a hit only within both tolerances.
     """
     pairs = sorted((np.hypot(c[0] - x, c[1] - y) + abs(c[2] - r), i, j)
                    for i, (x, y, r) in enumerate(truths) for j, c in enumerate(found))
@@ -343,6 +311,8 @@ def match_circles(truths, found, centre_tol=3.0, radius_tol=2):
     return matched, hits
 
 
+# 8-9. Generalised Hough transform
+
 def polygon_points(scale=1.0, rotation=0.0, position=(0.0, 0.0)):
     """Template polygon vertices after scaling, rotating (degrees) and translating."""
     turn = np.radians(rotation)
@@ -352,7 +322,7 @@ def polygon_points(scale=1.0, rotation=0.0, position=(0.0, 0.0)):
 
 
 def render_template():
-    """A yellow shape on a blue ground, as a colour image, the way a map region is marked."""
+    """A yellow shape on a blue ground, as a colour image."""
     template = np.full((120, 120, 3), (150, 60, 20), np.uint8)
     cv2.fillPoly(template, [polygon_points(position=TEMPLATE_CENTRE)], (0, 220, 240))
     return template
@@ -378,12 +348,9 @@ def oriented_edges(image, low, high):
 
 
 def build_r_table(template_mask):
-    """Index every template edge point's offset to the reference point by gradient angle.
+    """File each template edge point's vector to the mask centroid under its gradient angle bin.
 
-    The reference point is the mask's centroid. For each edge point the table stores
-    the vector from the point to the reference, filed under the point's gradient
-    angle. At detection time an edge pixel with the same gradient angle looks up
-    those vectors and votes at the positions they point to.
+    At detection an edge pixel looks up the vectors of its angle bin and votes where they point.
     """
     ys, xs = np.nonzero(template_mask)
     reference = np.array([xs.mean(), ys.mean()])
@@ -405,10 +372,7 @@ def place_offset(offset, scale, rotation):
 def ght_vote(table, points, angles, scale, rotation):
     """Accumulate reference-point votes for one (scale, rotation) hypothesis.
 
-    Rotating a shape by phi rotates every gradient by phi as well, so a scene pixel
-    with gradient angle alpha corresponds to template entries filed under
-    alpha - phi. Their offset vectors are rotated by phi and multiplied by the scale
-    before voting.
+    A turn by phi turns every gradient by phi, so a scene angle alpha reads the bin of alpha - phi.
     """
     turn = np.radians(rotation)
     rotate = np.array([[np.cos(turn), -np.sin(turn)], [np.sin(turn), np.cos(turn)]])
@@ -426,8 +390,6 @@ def ght_vote(table, points, angles, scale, rotation):
     return cv2.GaussianBlur(accumulator, (0, 0), 1.5)
 
 
-# Main
-
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(SEED)
@@ -435,13 +397,13 @@ def main():
     # 1. Scene
     print("--- 1. A scene whose edges are known before any detector runs ---")
     clean, boundary, noisy = render_scene(rng)
-    print(f"  {WIDTH}x{HEIGHT}, {len(TRUE_LINES)} lines 3 px wide and {len(TRUE_CIRCLES)} filled disks, "
+    print(f"  {WIDTH}x{HEIGHT}, {len(TRUE_LINES)} lines 5 px wide and {len(TRUE_CIRCLES)} filled disks, "
           f"Gaussian noise sigma {NOISE_SIGMA}")
     for rho, theta in TRUE_LINES:
         print(f"    line  rho {rho:>6.1f}, theta {theta:>5.1f} deg")
     for x, y, r in TRUE_CIRCLES:
         print(f"    disk  centre ({x}, {y}), radius {r}")
-    print(f"  true boundary pixels: {int(boundary.sum())} (a 2 px band on each side of every step)")
+    print(f"  true boundary pixels: {int(boundary.sum())} (a band 2 px wide along every step, one pixel on each side)")
     save_grid("scene.png", [tile(scene_u8(clean), "clean"), tile(scene_u8(noisy), f"noise sigma {NOISE_SIGMA:.0f}"),
                             tile(boundary, "true boundary")], 3)
 
@@ -483,7 +445,7 @@ def main():
         sobel_rows.append(tile(edges, f"{name}: precision {precision:.2f}, recall {recall:.2f}"))
     save_grid("sobel_threshold.png", sobel_rows, 2)
     print("  Differentiation amplifies pixel-to-pixel noise. Smoothing first removes most of")
-    print("  it, but a single threshold still leaves bands several pixels thick along each edge.")
+    print("  it, but a single threshold still leaves bands about two pixels thick along each edge.")
 
     # 4. Direction quantisation and non-maximum suppression
     print("\n--- 4. Direction quantisation and non-maximum suppression ---")
@@ -564,9 +526,9 @@ def main():
     lanes = [t for t in TRUE_LINES if any(a <= t[1] <= b for a, b in LANE_THETAS)]
     print(f"  lane lines among the top {len(lane_found)}: {sum(match_line(t, lane_found) is not None for t in lanes)} "
           f"of {len(lanes)}; the other two lines are outside the range and cannot be voted for")
-    print("  The four true lines take the top four ranks. The peaks below them are weaker")
-    print("  echoes: the far side of a 3 px stroke lies a few rho away at a slightly different")
-    print("  theta, and short runs of disk rim are collinear enough to collect some votes.")
+    print("  The four true lines take the top four ranks. The peaks below them are the same lines")
+    print("  tilted by 2 to 4 degrees, which still run along part of a 5 px stroke. The far side of")
+    print("  each stroke lies inside the 8 rho by 4 degree window cleared around every peak.")
     def draw_lines(lines, label):
         """Detected lines on the noisy scene: green where one matches a true line, red otherwise."""
         canvas = scene_u8(noisy)
@@ -590,7 +552,7 @@ def main():
     print(f"  radii {RADII[0]}-{RADII[1]} px; scores are votes divided by circumference, "
           f"so a large circle does not win by length alone")
     print(f"  {'voting':<30}{'votes cast':>12}{'time':>9}{'true disks in top 10':>22}")
-    circle_results = {}
+    circle_results, cast_counts = {}, []
     for name, along in ((f"every {CIRCLE_ANGLE_STEP} deg around each pixel", False), ("along the gradient only", True)):
         started = time.perf_counter()
         accumulator, cast = hough_circles(edges, gx, gy, radii, along)
@@ -599,6 +561,7 @@ def main():
         matched, hits = match_circles(TRUE_CIRCLES, top)
         print(f"  {name:<30}{cast:>12}{elapsed * 1000:>7.0f}ms{hits:>22}")
         circle_results[name] = (top, matched, accumulator, hits)
+        cast_counts.append(cast)
     top, matched, _, _ = circle_results["along the gradient only"]
     print("  gradient-directed vote, the ten strongest circles:")
     for rank, (x, y, r, score) in enumerate(top, 1):
@@ -606,14 +569,17 @@ def main():
                  if np.hypot(x - tx, y - ty) <= 3 and abs(r - tr) <= 2]
         print(f"    {rank:>2}  centre ({x:>3}, {y:>3})  r {r:>2}  score {score:.3f}  {truth[0] if truth else '-'}")
     print("  one-to-one match for each true disk (no detection is counted twice):")
-    for (x, y, r), j in zip(TRUE_CIRCLES, matched):
-        found_text = "none" if j is None else f"({top[j][0]}, {top[j][1]}) r {top[j][2]}, rank {j + 1}"
-        print(f"    true ({x}, {y}) r {r}  ->  found {found_text}")
+    for name, (circles, pairs, _, _) in circle_results.items():
+        print(f"    {name}:")
+        for (x, y, r), j in zip(TRUE_CIRCLES, pairs):
+            c = None if j is None else circles[j]
+            hit = c is not None and np.hypot(c[0] - x, c[1] - y) <= 3 and abs(c[2] - r) <= 2
+            found_text = "none" if c is None else f"({c[0]}, {c[1]}) r {c[2]}, rank {j + 1}" + ("" if hit else ", not a hit")
+            print(f"      true ({x}, {y}) r {r}  ->  found {found_text}")
     print("  The gradient at a disk's rim points along the radius, so it names the centre's")
-    print("  direction. Sampling every angle casts its votes around a whole ring instead,")
-    print("  and only the ring through the true centre lines up across pixels. The saving")
-    print("  rests on that gradient being reliable: on a blurred or textured rim a wrong")
-    print("  direction sends both votes to the wrong place.")
+    print(f"  direction. Sampling every angle casts {cast_counts[0] / cast_counts[1]:.0f} times as many votes, and here")
+    print("  8 of its top 10 are radius 13 or 14 circles that sit on no disk. The saving rests")
+    print("  on that gradient being reliable.")
     circle_tiles = []
     for name, (circles, pairs, votes_cube, hits) in circle_results.items():
         short = "every 6 deg" if name.startswith("every") else "along the gradient"
@@ -634,7 +600,7 @@ def main():
     hsv = cv2.cvtColor(template, cv2.COLOR_BGR2HSV)
     template_mask = (hsv[..., 0] >= 20) & (hsv[..., 0] <= 35) & (hsv[..., 1] >= 100)
     table, template_points, offset = build_r_table(template_mask)
-    print(f"  template: yellow polygon on blue, binarised by a hue lookup ({int(template_mask.sum())} pixels)")
+    print(f"  template: yellow polygon on blue, binarised by a hue and saturation threshold ({int(template_mask.sum())} pixels)")
     print(f"  R-table: {template_points} edge points in {len(table)} of {360 // ANGLE_BIN} "
           f"gradient-angle bins of {ANGLE_BIN} deg; reference point is the mask centroid")
     placed = (90.0, 125.0)
@@ -643,7 +609,7 @@ def main():
     votes = ght_vote(table, points, angles, 1.0, 0.0)
     y, x = np.unravel_index(int(np.argmax(votes)), votes.shape)
     expected = np.array(placed) + place_offset(offset, 1.0, 0.0)
-    print(f"  scene with the shape unscaled and unturned among three distractors;")
+    print("  scene with the shape unscaled and unturned among three distractors;")
     print(f"  its reference point is at ({expected[0]:.1f}, {expected[1]:.1f})")
     print(f"  peak at ({x}, {y}), error {np.hypot(x - expected[0], y - expected[1]):.2f} px, "
           f"peak height {votes[y, x]:.1f}")
@@ -676,9 +642,9 @@ def main():
     best = results[0]
     print(f"  recovered scale {best[1]:.1f}, rotation {best[2]:.0f} deg, position error "
           f"{np.hypot(best[3] - expected[0], best[4] - expected[1]):.2f} px")
-    print("  A turn by phi shifts every gradient angle by phi, which is a whole number of")
-    print("  R-table bins when the rotation step equals the bin width, and scales every")
-    print("  offset vector by the same factor as the shape. The true 25 deg lies on that")
+    print("  Turning the shape by phi shifts every gradient angle by phi, a whole number of")
+    print("  R-table bins because the rotation step equals the bin width. Scaling the shape")
+    print("  scales every offset vector by the same factor. The true 25 deg lies on that")
     print("  grid; a turn between grid steps would be recovered only to the nearest step.")
     found = scene_u8(scene)
     origin = np.array([best[3], best[4]]) - place_offset(offset, best[1], best[2])

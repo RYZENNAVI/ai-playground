@@ -54,12 +54,11 @@ asked to point.
 
 `01_color_tracking_and_optical_flow.py`
 
-A clip is rendered frame by frame — a coloured ellipse on a known path that grows,
-turns, and loses more than half its light halfway through — so every stage of the
-classical tracking pipeline can be scored against the mask that drew it. The run saves
-the clip as `synthetic_tracking.mp4` and four key frames — the first, the last bright
-one, the first dimmed one and the last — so the motion and the light change can be
-watched rather than taken on trust.
+A clip is rendered frame by frame: a blue ellipse on a known path that grows, turns,
+and loses more than half its light halfway through. Every stage of the classical
+tracking pipeline is scored against the mask that drew it. The run saves the clip as
+`synthetic_tracking.mp4` and four key frames (the first, the last bright one, the first
+dimmed one and the last), so the motion and the light change can be watched.
 
 ### Colour: which space survives the light
 
@@ -84,7 +83,7 @@ mask is empty and the HSV mask still holds the ellipse.
 
 ### Morphology and connected components
 
-The raw mask of the first frame holds **41 components** — the ellipse plus scattered
+The raw mask of the first frame holds **41 components**: the ellipse plus scattered
 specks. Erosion drops everything thinner than the 3x3 element, dilation restores the
 rim, and a closing fills the pinholes: **1 component, IoU 1.000 against the truth.**
 `morphology_stages.png` lays the four stages beside the true mask, one row for the
@@ -112,8 +111,13 @@ are counted but left unboxed.
 A 16-bin hue histogram of the first frame, back-projected onto every frame, matches
 `cv2.calcHist` and `cv2.calcBackProject` **exactly (largest gap 0.0000 and 0)**. The
 saturation gate is what makes it usable: of the probability mass in the last frame,
-**0.489 lands on the object without the gate and 0.989 with it** — a grey pixel's hue
+**0.489 lands on the object without the gate and 0.989 with it**. A grey pixel's hue
 is set by noise and lands in every bin.
+
+The gated pixels in the first frame's box have two hues, `106 x1285, 82 x1`. The object
+has one hue, because the rim shading scales all three channels together; the second bin
+is a single grey pixel that passed the gate. So the bin count (4, 16, 64 or 180) changes
+the mass on the object only from 0.988 to 0.991.
 
 | | First third | Last third |
 | :--- | ---: | ---: |
@@ -144,9 +148,9 @@ turns with it.
 
 Two things bound what this table says. **Both trackers start from a box taken off the
 first frame's true mask**, so these are the errors of keeping hold of an object, not
-of finding one — the step above does the finding, from scratch, every frame. And the
+of finding one. The centroid step above does the finding, from scratch, every frame. And the
 comparison is between a window that cannot resize and one that can, on a clip where
-the object doubles in size: with an object of fixed size and orientation, the fixed
+the object triples in area: with an object of fixed size and orientation, the fixed
 window is the simpler rule and there is nothing to gain.
 
 ### Corners and motion
@@ -160,13 +164,13 @@ The structure tensor, the same matrix Harris scores and Lucas-Kanade inverts:
 | Corner | 0.9739 | 0.3369 | **+0.24218** |
 
 All **16 true corners** are found, with no detection on the disk that has none.
-`harris_corners.png` shows the response R as a colour map — red at corners, blue along
-edges where R is negative, flat regions in between — with the three sample points of
-the table marked, beside the detections.
+`harris_corners.png` shows the response R as a colour map (red at corners, blue along
+edges where R is negative, green on flat regions) with the three sample points of the
+table marked, beside the detections.
 
 Both motion methods run on one blurred-noise texture and two copies of it shifted by a
-known amount. `motion_pair.png` shows the three frames side by side — before, after
-(3.6, -2.4) and after (11.3, 6.8) — with a red cross at the same pixel in each, so the
+known amount. `motion_pair.png` shows the three frames side by side (before, after
+(3.6, -2.4) and after (11.3, 6.8)) with a red cross at the same pixel in each, so the
 texture can be seen sliding past a fixed point. The result images draw, on the first
 frame, the true shift as a green arrow and each recovered vector as a yellow one, both
 three times longer, so a success shows the two arrows lying together and a failure
@@ -174,14 +178,20 @@ shows them apart. `block_flow.png` has block matching on the small shift and on 
 large one; `lucas_kanade_flow.png` has one level on the small shift, one level on the
 large shift, and the 3-level pyramid on the large shift.
 
-| Method | True shift | Median error |
+| Method | True shift | Error |
 | :--- | :--- | ---: |
-| Block matching, 16x16, search radius 8 | (3.6, -2.4) | 0.58 px (100% within 1 px) |
-| Block matching | (11.3, 6.8) | **8.43 px** — no correct candidate is in the search square |
-| Lucas-Kanade, one level | (3.6, -2.4) | **0.010 px** |
-| Lucas-Kanade, one level | (11.3, 6.8) | **12.816 px** |
-| Lucas-Kanade, 3-level pyramid | (11.3, 6.8) | **0.008 px** |
-| `cv2.calcOpticalFlowPyrLK` | (11.3, 6.8) | 0.008 px |
+| Block matching, 16x16, search radius 8 | (3.6, -2.4) | mean 0.58 px (100% within 1 px) |
+| Block matching | (11.3, 6.8) | mean **8.43 px**: no correct candidate is in the search square |
+| Lucas-Kanade, one level | (3.6, -2.4) | median **0.010 px** |
+| Lucas-Kanade, one level | (11.3, 6.8) | median **12.816 px** |
+| Lucas-Kanade, 3-level pyramid | (11.3, 6.8) | median **0.008 px** |
+| `cv2.calcOpticalFlowPyrLK` | (11.3, 6.8) | median 0.008 px |
+
+Block matching can only answer whole pixels, so on the small shift its floor is the
+distance from (3.6, -2.4) to (4, -2), 0.57 px. Lucas-Kanade solves G d = b in a 21x21
+window, where G is the same structure tensor Harris scores; a 3-level pyramid shrinks the
+13.2 px shift to 3.3 px at the top level, inside the range of the first-order
+expansion.
 
 The last row of the aperture problem, on the rectangle scene shifted by (2.6, 1.7):
 
@@ -202,8 +212,10 @@ middles of the sides the yellow arrow keeps only the part across the edge.
 
 `02_edges_and_hough_voting.py`
 
-Four lines in Hesse normal form and three filled disks, drawn at known parameters
-under Gaussian noise of σ 25, then recovered.
+Four lines in Hesse normal form (drawn 5 px wide) and three filled disks, drawn at
+known parameters under Gaussian noise of σ 25, then recovered. The true boundary is a
+band 2 px wide along every step, one pixel on each side. Parts 2 and 3 are comparisons;
+Canny itself uses a 7x7 kernel with σ 1.4.
 
 ### The Gaussian, and what each window keeps
 
@@ -220,7 +232,8 @@ renormalised and still smooths, but it is no longer the Gaussian σ describes.
 ### Canny, stage by stage
 
 A single threshold on the Sobel magnitude scores **precision 0.600** on the noisy
-image and **1.000** after smoothing. Quantising the direction to the four lines
+image and **1.000** after smoothing, but it leaves bands about two pixels thick along
+each edge. Quantising the direction to the four lines
 through a pixel's neighbours and comparing along the gradient removes **62.2% of the
 total magnitude**, thinning 18830 pixels above the low threshold to 6691.
 
@@ -229,13 +242,12 @@ total magnitude**, thinning 18830 pixels above the low threshold to 6691.
 | Both low | 20 | 50 | 11843 | **0.284** | 1.000 |
 | Both high | 150 | 250 | 3045 | 1.000 | 0.913 |
 | Wide spacing | 40 | 250 | 3161 | 1.000 | **0.947** |
-| High threshold alone, no tracing | – | 250 | 2616 | 1.000 | 0.786 |
+| High threshold alone, no tracing | none | 250 | 2616 | 1.000 | 0.786 |
 
 The wide pair lets the high threshold decide what an edge is and the low one decide
 how far it is followed. Against `cv2.Canny` on the same smoothed image: **3270
-pixels against 3269, 100% of each within 1 px of the other.** The hand-written
-version snaps the gradient to four directions rather than interpolating between
-neighbours, so it is a readable Canny rather than a line-for-line copy of OpenCV's.
+pixels against 3269, 100% of each within 1 px of the other.** The later parts use the
+edges of the 40/250 pair.
 
 Precision and recall here allow **2 px of tolerance**: a precision of 1.000 means every
 detected edge pixel lies within 2 px of a true boundary, not that the two maps are
@@ -251,24 +263,28 @@ two, which is why a tolerance is used at all.
 | Circles, every 6° | 240 x 320 x 34 | 5 865 905 | 409 ms | 2 of 3 disks in the top 10 |
 | Circles, along the gradient | same | **191 801** | **22 ms** | **all 3 disks, ranks 1, 2 and 3** |
 
+Below the four true lines, the next peaks are the same lines tilted by 2 to 4 degrees,
+which still run along part of a 5 px stroke. The far side of each stroke lies inside the
+8 rho by 4 degree window cleared around every peak, so it never shows as a peak.
+
 The gradient at a rim points along the radius, so it names the direction the centre
-lies in; sampling every angle spreads the same evidence around a whole ring. Disks
-are paired with detections one to one, so no detection counts for two disks.
+lies in. Sampling every angle casts 31 times as many votes, and 8 of its top 10 are
+radius 13 or 14 circles on no disk; the r 35 disk is not among them. Disks are paired
+with detections one to one, so no detection counts for two disks.
 
 Both savings rest on a prior being right. The lane restriction cannot find a line
 outside its range, however strong. The gradient-directed circle vote trusts each
-pixel's gradient; the Canny edges of these disks give reliable directions, but on a
-blurred or textured rim a wrong direction sends both votes to the wrong centre.
+pixel's gradient, and the Canny edges of these disks give reliable directions.
 
 ### The generalised Hough transform
 
-The template is a yellow polygon on blue, binarised by a hue lookup, giving **279
+The template is a yellow polygon on blue, binarised by a hue and saturation threshold, giving **279
 edge points filed into 43 of the 72 gradient-angle bins**. Against a scene holding
 the shape among three distractors, the peak lands **0.07 px** from the true reference
-point. Extended over 6 scales and 19 rotations — 114 hypotheses in 0.1 s — the
+point. Extended over 6 scales and 19 rotations (114 hypotheses in 0.1 s), the
 strongest peak is **scale 0.7, rotation 25°, position error 0.33 px**, which is the
 transform that was applied. The runner-up hypotheses are the neighbouring rotations
-at half the peak height. The rotation step equals the 5° R-table bin, so each step is
+and scales at about half the peak height. The rotation step equals the 5° R-table bin, so each step is
 a whole-bin shift, and the true 25° lies on that grid; an angle between steps would
 be recovered only to the nearest one. This is a synthetic template among simple
 distractors, and it shows the mechanism rather than robustness on cluttered images.
@@ -294,8 +310,9 @@ Every panel is labelled with its setting and, where there is one, its score.
 
 `03_hog_and_haar_detectors.py`
 
-The two hand-built descriptors that carried detection before learned features: one
-counts gradient directions, the other compares rectangle sums.
+The two hand-built descriptors that carried detection before learned features: HOG
+counts gradient directions, and the Haar features of the Viola-Jones detector compare
+rectangle sums.
 
 ### Gradient orientation histograms under a small turn
 
@@ -325,8 +342,9 @@ over the whole window.
 | Unknown car | 0.861 | 0.841 | 0.863 | **0.855** |
 
 Over 40 fresh windows of each kind, measured against the mean of the three reference
-people: **people 0.456, clutter 0.675, cars 0.797** — the ordering the descriptor is
-built to produce. This half validates the descriptor on rendered windows by distance
+people: **people 0.456, clutter 0.675, cars 0.797**, and the groups do not overlap. The
+farthest person is at 0.547, the nearest clutter window at 0.619 and the nearest car
+at 0.763. This half validates the descriptor on rendered windows by distance
 alone; no classifier or decision threshold is trained on it, which in a HOG detector
 is the job of a linear SVM. The trained classifier in this script is the Haar one.
 
@@ -338,19 +356,18 @@ is the job of a linear SVM. The trained classifier in this script is the Haar on
 | 16x16 | 17 408 | **17 408** | 8 704 | 8 704 |
 
 The hand-written integral image matches `cv2.integral` exactly (largest difference
-0.0). On 2000 random rectangles over a 640x480 image, summing by slicing takes
-**10.1 ms** and four lookups each take **0.17 ms**, for the same answers to 1.76e-10.
-Those are single passes rather than a benchmark; what they show is that one cost
-grows with the rectangle's area and the other does not.
+0.0). On 2000 random rectangles over a 640x480 image, both ways give the same sums to
+1.76e-10. Timed in the same Python loop over the same 2000 positions, slicing takes
+**2.9 ms** at 1x1 and **27.5 ms** at 239x179, while four lookups take **4.3 ms** and
+**4.7 ms**. These are single passes rather than a benchmark; what they show is that one
+cost grows with the rectangle's area and the other does not.
 
 ### AdaBoost over every feature
 
 Twenty rounds, each choosing one feature, one threshold and one polarity from all
 17 408 of them (each threshold sits halfway between two distinct values, so a run of
-equal values is never split and no training value lies on the threshold under either
-polarity; on 300 random tie-heavy problems the error the search reports equals the
-error the stump then makes, and the brute-force optimum, to 3.33e-16); the first feature found is a **top/bottom pair at (3, 5), each 10x3**,
-which is the eye band against the cheeks below it.
+equal values is never split). The first feature found is a **top/bottom pair at
+(3, 5), each 10x3**, which is the eye band against the cheeks below it.
 
 | Threshold | Faces found | False alarms | Accuracy |
 | ---: | ---: | ---: | ---: |
@@ -358,11 +375,13 @@ which is the eye band against the cheeks below it.
 | 0.5 | 99.9% | **0.4%** | **99.8%** |
 | 0.7 | 93.8% | 0.0% | 96.9% |
 
-On real crops — 3000 TinyFace faces against 3000 CIFAR-10 images, 16x16 and
-variance-normalised — the same twenty rounds reach **87.1% of faces at 13.3% false
+On real crops (3000 TinyFace faces against 3000 CIFAR-10 images, 16x16 and
+variance-normalised), the same twenty rounds reach **87.1% of faces at 13.3% false
 alarms, 86.9% accuracy** at threshold 0.5, against 50.0% for predicting the larger
 class. The first round's weighted error is 0.222 on real faces against 0.037 on the
-rendered ones: **the same procedure, a harder problem.** The TinyFace images come
+rendered ones: **the same procedure, a harder problem.** The first and third features
+chosen there are small left/right pairs in the top row, at the two corners, not the
+eye band. The TinyFace images come
 already cropped to the face, and this is classification of 16x16 windows, not a
 detector scanning whole photographs at every position and scale; 86.9% is not a
 face-detection benchmark score.
@@ -403,9 +422,10 @@ Two-layer networks, full batch, learning rate 2.0, solved when every output is w
 | 4 | 1.0 | **100%** | 505 |
 | 8 | 1.0 | **100%** | **392** |
 
-Two hidden units are the fewest that can represent XOR; the runs that do not solve it
-settle at a loss of about 0.125, where both units compute nearly the same thing.
-Weights that start near zero start the two units nearly identical, and the gradient
+Two hidden units are the fewest that can represent XOR. In the runs that do not solve
+it, the hidden units saturate so that two inputs with different targets get the same
+hidden values; the output sits halfway between them, a loss of 0.125, and saturated
+units pass back almost no gradient. Weights that start near zero start the two units nearly identical, and the gradient
 needs thousands of epochs to separate them.
 
 ### Softmax and cross-entropy
@@ -441,8 +461,8 @@ Both modes, same weights, on MNIST:
 | Test predictions that change with the mode | **56 of 10 000** |
 | Dropout p=0.3 in training mode on a vector of ones | 0.299 zeroed, survivors scaled to 1.4286 = 1/(1-p), mean 1.0011 |
 | BatchNorm in evaluation mode against the running-statistics formula | gap 9.54e-07 |
-| BatchNorm in training mode against this batch's own mean and variance | gap 1.43e-06 |
-| Running variance after one training-mode batch, against 0.9 old + 0.1 unbiased batch | gap 1.49e-08 |
+| BatchNorm in training mode against this batch's own mean and variance | gap 9.54e-07 |
+| Running variance after one training-mode batch, against 0.9 old + 0.1 unbiased batch | gap 1.19e-07 |
 
 The first 1000 test images fed **one at a time**, with each layer type switched
 separately:
@@ -491,8 +511,9 @@ Two dense output tensors, two ways of reading objects out of them.
 ### Anchors and the grid
 
 Clustering over the training shapes with 1 - IoU as the distance and the median shape
-as each centre — the YOLO anchor recipe, k-means in its assign-and-update loop but not
-in its Euclidean distance or its mean:
+as each centre. This is the YOLO anchor recipe: k-means in its assign-and-update loop,
+but not in its Euclidean distance or its mean. Parts 2 on use k = 3; the other two rows
+are for comparison.
 
 | k | Anchors (w, h) | Mean best IoU |
 | ---: | :--- | ---: |
@@ -516,8 +537,8 @@ The xy, wh and noobj columns are already weighted (by 5.0, 5.0 and 0.5), so the 
 is their plain sum.
 
 The hand-written per-class suppression keeps **the same boxes as
-`torchvision.ops.batched_nms` in 500 of 500 test images** — agreement on these
-candidates, not a proof of equivalence on every input — and the detector reaches
+`torchvision.ops.batched_nms` in 500 of 500 test images** (agreement on these
+candidates, not a proof of equivalence on every input), and the detector reaches
 **mAP@0.5 = 0.974** (box 0.978, disk 0.979, triangle 0.967) over 1493 unseen boxes.
 The images are rendered and their objects overlap by at most 0.1 IoU, so that score
 shows the grid, anchor, loss, decode, suppression and mAP chain working end to end,
@@ -535,7 +556,7 @@ nothing about the detector, and its trajectory matches this one epoch for epoch.
 
 **It is not one unlucky batch.** Across the rise the heaviest batch of an epoch costs
 **3.20x and 2.24x** the epoch's median, against **2.16x to 2.44x** in the quiet epochs 21
-to 23 — no outlier step exists. The rise is not a jolt either: the parameter update norm
+to 23. No batch is an outlier. The rise is not a jolt either: the parameter update norm
 and the loss climb together over hundreds of steps and decay the same way, which
 `spike_anatomy.png` shows as a wide smooth hill rather than a spike.
 
@@ -552,16 +573,15 @@ and the loss climb together over hundreds of steps and decay the same way, which
 
 The second moment does not dip during the rise; it declines slowly throughout and is
 slightly higher at the peak than just before it. Successive gradients do not line up
-either — that cosine moves inside its usual band rather than rising. What does change is
+either: that cosine moves inside its usual band rather than rising. What does change is
 how far Adam travels per unit of gradient, **x1.82**, so the larger steps are not only
 larger gradients. Which coordinates produce that is not measured here.
 
 **The whole network moves, not only the head.** Relative movement per step grows by
 **x2.0 to x5.1** across the seventeen parameter tensors; the 1x1 prediction head grows
-least, by **x2.3 to x2.8**. And the terms rise by very different amounts — class **x18.4**
-and objectness **x10.3**, against **x2.9** for the centre offsets — because the unbounded
-cross-entropies answer to the scale of the logits while the coordinate terms sit behind a
-sigmoid.
+least, by **x2.3 to x2.8**. The terms rise by very different amounts: class **x18.4**
+and objectness **x10.3**, against **x2.9** for the centre offsets. The cross-entropies have
+no upper bound, while the centre offsets sit behind a sigmoid.
 
 **Three controls place the cause.** Each trains the same detector from the same seed:
 
@@ -575,7 +595,7 @@ A different batch order moves the break-up instead of removing it, so it does no
 to particular batches. Halving the step does not remove it either: it postpones it and
 buys roughly half the loss first. Stopping that run at 30 epochs would have been
 misleading, since it stands at **0.1326** there, above the level either full-rate run
-broke from, and so looks perfectly clean — which is why it runs to 60.
+broke from, and so looks perfectly clean. That is why it runs to 60.
 
 **It repeats.** Four times the original training, at the original settings:
 
@@ -591,9 +611,8 @@ the trend underneath keeps falling: **0.0188 at epoch 101**, against 0.0857 afte
 epochs this module trains. Script 05 stops at 30, so `loss_terms.png` catches only the
 first.
 
-That pattern — a break-up that survives a change of data order, that a smaller step
-postpones to a lower loss, and that returns at a regular spacing — points at the step size
-rather than at the data. What it does not say is what the step size is colliding with,
+A break-up that survives a change of data order, that a smaller step postpones to a lower
+loss, and that returns at a regular spacing points at the step size rather than at the data. What it does not say is what the step size is colliding with,
 because none of these runs measures the loss surface. The next section does, and it finds
 the obvious reading only half right.
 
@@ -605,8 +624,8 @@ The section above ends on an inference it cannot check. This one measures the cu
 the loss surface directly, epoch by epoch, on the same training run.
 
 **How.** The detector has 248 488 parameters, so its Hessian would hold 0.1 trillion
-entries and is never built. Curvature comes from Hessian-vector products — differentiate
-the gradient's projection onto a vector — driven by 12 power iterations, which leaves at
+entries and is never built. Curvature comes from Hessian-vector products (differentiate
+the gradient's projection onto a vector), driven by 12 power iterations, which leaves at
 most **9.8e-03** relative drift in an estimate. Everything is measured on **one probe set
 fixed before training**: 128 training images in 4 batches of 32, so a change in curvature
 cannot be a change of batch. The measurement takes gradients but never a step, restores the
@@ -621,13 +640,13 @@ Three curvatures, not one:
 | uᵀHu | the curvature along the direction the parameters actually moved |
 | λ_max after Adam's scaling | the same surface seen through diag(1/√v̂), which is the one Adam's step size answers to |
 
-**The obvious version of the story is wrong.** Sharpening over training is real — λ_max
-climbs from **1450** at epoch 1 to a plateau near **3100** — but that plateau is reached
+**The obvious version of the story is wrong.** Sharpening over training is real: λ_max
+climbs from **1450** at epoch 1 to a plateau near **3100**. But that plateau is reached
 around epoch 14, ten epochs before anything happens, and λ_max then *falls* into the
 break-up: **3073** over the quiet epochs, **2837** at epoch 24, **2609** at epoch 25.
-Sampling every 25 steps through epochs 22–27 says the same from inside the event: λ_max
+Sampling every 25 steps through epochs 22 to 27 says the same from inside the event: λ_max
 falls from **2899** at epoch 24.2 to **2285** at epoch 25.2 while the loss climbs. What does
-grow is how far the parameters actually move each step, from **0.019 to 0.075** — the
+grow is how far the parameters actually move each step, from **0.019 to 0.075**. The
 learning rate never changes, but Adam's own scaling lets a step cover four times the ground
 it did while the loss was flat. That growth and the loss both pass a quarter above their
 settled level at the same sample, epoch 24.00, so at this resolution neither leads the
@@ -636,7 +655,7 @@ curvature along the step Adam actually takes stays between **0.4 and 1.0** throu
 three orders of magnitude below λ_max: the sharpest direction is not the one Adam walks in.
 
 **The Adam-scaled curvature behaves completely differently.** It rises through training,
-reaches its highest value of the whole run — **7402** — in the last epoch before the
+reaches its highest value of the whole run (**7402**) in the last epoch before the
 break-up, and collapses to **5479** two epochs later.
 
 **Two step sizes fix the quantity.** Each run is trained to its own first break-up:
@@ -664,8 +683,8 @@ loss:
 | epoch 86 | 0.0359 | 1885.6 | 8004.9 | **8.005** |
 | epoch 117 | 0.0218 | 1418.1 | 8598.1 | **8.598** |
 
-The losses these leave from span **5.7x** and the raw curvature **1.95x** — and it falls
-across the run, from 2772 to 1418, the opposite of sharpening — while the product spans
+The losses these leave from span **5.7x** and the raw curvature **1.95x** (and it falls
+across the run, from 2772 to 1418, the opposite of sharpening), while the product spans
 **1.29x**, from 6.69 to 8.60 around a median of 8.10. Of the three quantities, it is the one
 the events hold fixed, over four of them and with no setting changed between. Traced over
 the whole run it sawtooths: climbing to between 7 and 8.6, collapsing at each break-up,
@@ -673,7 +692,7 @@ climbing again.
 
 **A run that acts on the warning does not break up.** The last experiment trains the same
 detector again and halves its own learning rate the first time that product rises past
-**1.4x its median over epochs 5–10** — a rule fixed beforehand that reads only early
+**1.4x its median over epochs 5 to 10**, a rule fixed beforehand that reads only early
 training and knows nothing about where the break-up falls. It fires at **epoch 21**, four
 epochs before the untouched run breaks up, and over 35 epochs **no break-up happens at
 all**, ending at **0.0626** against the untouched run's 0.0857 after 30. The
@@ -682,7 +701,7 @@ the product stays near 4.9 and never reaches the level the events leave from.
 
 So the reading that survives is not that curvature climbs until a fixed step no longer
 fits. It is that **each step size has a curvature it can tolerate, training pushes the model
-up to that level, and it breaks up there** — at half the rate, twice the tolerance and half
+up to that level, and it breaks up there**: at half the rate, twice the tolerance and half
 the loss; four times over within one run; and not at all if the rate comes down when the
 product gets there.
 
@@ -690,14 +709,14 @@ Three things this does not establish. The Hessian here is of the smooth piece of
 the ignore mask in the YOLO loss is a threshold, so it holds one setting while the Hessian
 is taken and can jump between epochs. A *step size × curvature* boundary is the analysis of
 gradient descent on a quadratic, and Adam on this loss is neither, so that product is a
-diagnostic proxy and not Adam's stability condition — it is reported as a number to compare
+diagnostic proxy and not Adam's stability condition. It is reported as a number to compare
 across these runs, not as a threshold of 2. And the intervention lowers a learning rate,
 which raises the curvature a run can take whenever it is applied; it shows that **acting on
 the warning is enough**, not that the warning names the cause. Separating those would take a
 rate cut matched in size and duration but applied away from the warning, which this script
 does not run.
 
-Cost: about 45 minutes and 245 curvature estimates — 30 epochs at the full rate plus 30
+Cost: about 45 minutes and 275 curvature estimates: 30 epochs at the full rate plus 30
 inside the break-up, 60 at half the rate, 120 for the repeats and 35 for the intervention.
 `--long-epochs 0`, `--intervene 0` and `--half-rate-epochs 0` each drop one arm.
 
@@ -717,8 +736,8 @@ same few slots. A stride-8 level gives small anchors sixteen times as many cells
 
 The maps are drawn from keypoints: a Gaussian per keypoint per channel, and, for each
 of the 19 limbs, a two-channel band carrying the unit vector from one end to the
-other. A candidate connection is scored by the mean of the field projected onto it —
-the line integral — and pairs are matched greedily per limb.
+other. A candidate connection is scored by the mean of the field projected onto it
+(the line integral), and pairs are matched greedily per limb.
 
 Because the maps come from the labels rather than from a network, these runs isolate
 the association step: they show what the field adds when the maps are right, not how
@@ -737,10 +756,12 @@ as a missed pairing.
 | | Shortest distance | **77.8%** | 75.7% |
 
 Where people stand apart the nearest candidate is usually the right one, and distance
-is nearly as good. **The field earns its cost exactly where the two rules disagree**:
-it rejects a pairing whose band carries no direction, and distance never rejects
-anything, which is why its recall is the higher of the two and its precision the
-lower.
+is nearly as good. **Where people overlap, distance falls to 77.8% precision and the
+field keeps 97.4%.** The field rejects a pairing whose band carries no direction, and
+distance never rejects anything. So on the rendered scenes and on people standing
+apart, distance has the higher recall and the lower precision; on overlapping COCO
+people its recall falls below the field's as well, 75.7% against 83.2%. On the rendered
+scenes 16.5% of its connections join two different people.
 
 ### What the images show
 
@@ -773,7 +794,7 @@ From `05c_curvature_and_stability.py`, into the same folder:
 | Image | Panels |
 | :--- | :--- |
 | `curvature_over_training.png` | loss, sharpest curvature, curvature along the step taken and curvature after Adam's scaling, epoch by epoch, with the quiet stretch and the break-up shaded |
-| `curvature_inside_the_break_up.png` | the same three curvatures at 25-step resolution through epochs 22–27, where the loss leaves and returns |
+| `curvature_inside_the_break_up.png` | the same three curvatures at 25-step resolution through epochs 22 to 27, where the loss leaves and returns |
 | `curvature_lr_control.png` | loss, raw curvature, Adam-scaled curvature and the step-size × curvature proxy for both step sizes, with each run's break-up marked |
 | `curvature_repeated_breakups.png` | the 120-epoch run's loss and proxy with all four break-ups marked, and the four lined up on the epoch each left from |
 

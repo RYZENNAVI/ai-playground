@@ -1,17 +1,24 @@
-"""Turn dense output maps into objects: a grid detector's boxes, and people assembled from part maps.
+"""Single-shot grid detection in the style of YOLO, and bottom-up pose assembly with part affinity fields.
 
-Demonstrates how single-shot detection and bottom-up pose estimation read structure out of tensors:
+A small one-scale detector writes each box into the grid cell that holds its centre and the
+anchor that fits its shape best. It trains on rendered shapes, and its predictions are decoded,
+filtered by per-class non-maximum suppression and scored by mAP. For pose, confidence maps and
+affinity fields are drawn from keypoints, and limbs are paired by a line integral over the field
+or by distance alone.
+
+The run prints nine parts:
     1. Render a detection dataset whose every box is recorded, and cluster anchor shapes by IoU.
+       Parts 2 on use k = 3; k = 1 and 5 are for comparison.
     2. Encode each box onto its grid cell and best anchor, and decode it back.
     3. Build a one-scale YOLO detector and the loss terms that train it.
     4. Train the detector and follow each loss term.
     5. Decode predictions, suppress overlaps per class by hand, and check against torchvision.
     6. Score mean average precision on unseen images and draw detections.
-    7. Prepare COCO annotations as grid targets and count what one scale and three scales can hold.
+    7. Encode COCO val2017 boxes as grid targets and count the boxes one scale and three scales lose.
     8. Render part confidence maps and part affinity fields from keypoints.
-    9. Pair keypoints into limbs by line integrals over the affinity fields, and by distance alone.
+    9. Pair keypoints into limbs by the affinity field and by distance, on rendered scenes and on COCO.
 
-Module 06: Multimodal Vision - Grid Detection and Pose Assembly.
+Part 7 and the COCO half of part 9 need --coco-root.
 """
 
 import argparse
@@ -65,7 +72,7 @@ def box_iou(a, b):
 
 
 def render_detection(rng):
-    """One image with 1-5 non-overlapping shapes, each box measured from the pixels it painted."""
+    """One image with 1 to 5 shapes overlapping by at most 0.1 IoU, each box measured from the pixels it painted."""
     noise = cv2.GaussianBlur(rng.normal(0, 1, (IMG, IMG, 3)).astype(np.float32), (0, 0), 3)
     img = np.clip(110 + 35 * noise / noise.std(), 0, 255)
     boxes, labels = [], []
@@ -96,15 +103,9 @@ def render_detection(rng):
 
 
 def kmeans_anchors(wh, k, rng, iterations=100):
-    """Cluster box shapes with 1 - IoU as the distance, as if every box were centred at one point.
+    """Cluster box shapes, all centred at one point, with 1 - IoU as the distance and the median as each centre.
 
-    This is the anchor clustering used for YOLO: k-means in its alternation of
-    assigning and updating, but not k-means in the strict sense, which uses squared
-    Euclidean distance and the arithmetic mean. Euclidean distance on (w, h) would
-    let large boxes dominate the clusters; IoU between two shapes aligned at a corner
-    measures what an anchor is for, how much of a box it already covers. Each centre
-    moves to the per-dimension median shape of its members, and the result is sorted
-    by area.
+    Euclidean distance on (w, h) would let large boxes dominate. Returns anchors sorted by area and the mean best IoU.
     """
     centres = wh[rng.choice(len(wh), k, replace=False)].astype(np.float64)
     for _ in range(iterations):
@@ -131,14 +132,9 @@ def shape_iou(wh, anchors):
 # 2. Encoding and decoding
 
 def encode(boxes, labels, anchors, stride=STRIDE, grid=GRID):
-    """Write each box into the (anchor, row, column) slot that is responsible for it.
+    """Write each box into the slot of the cell holding its centre and the anchor that fits its shape best.
 
-    The responsible cell is the one containing the box centre, and the responsible
-    anchor is the one whose shape overlaps the box best. The slot stores the centre
-    as an offset inside the cell, (cx / stride - column, cy / stride - row), which
-    the network reaches through a sigmoid, and the size as log(w / anchor_w),
-    log(h / anchor_h), which it reaches through an exponential. A second box that
-    lands in an occupied slot cannot be represented and is counted as a collision.
+    A second box landing in a taken slot is dropped and counted as a collision.
     """
     target = np.zeros((len(anchors), grid, grid, 5 + len(CLASSES)), np.float32)
     collisions = 0
@@ -203,12 +199,7 @@ def decode_head(p, anchors_t, stride=STRIDE):
 def yolo_loss(p, target, gt_boxes, anchors_t):
     """Coordinate, objectness and class terms, each summed over its slots and averaged over the batch.
 
-    Coordinates are regressed only in slots that hold a box: the sigmoid of the
-    first two outputs against the stored cell offset, the raw next two against the
-    stored log ratio. Objectness is a binary cross-entropy, pushed to one in those
-    slots and to zero in every other slot, except slots whose predicted box already
-    overlaps some real box by more than IGNORE_IOU: those are not asked to say no to
-    an object they have nearly found. Classes are a cross-entropy in the box slots.
+    Slots whose predicted box already overlaps a real box by more than IGNORE_IOU are left out of noobj.
     """
     import torch
     import torch.nn.functional as F
@@ -275,10 +266,7 @@ def detections(model, images, anchors_t, score_threshold, device):
 def mean_average_precision(results, truth, iou_threshold=0.5):
     """Per-class average precision with 101-point interpolation, and their mean.
 
-    Detections are taken in descending score, and each is matched to the highest-IoU
-    ground-truth box of its class that no earlier detection has claimed, as COCO's
-    evaluation does. (The VOC devkit instead takes the highest-IoU box outright and
-    counts a false positive if it is already claimed.)
+    Detections by falling score each take the best-overlapping true box not yet claimed, as COCO's evaluation does.
     """
     per_class, curves = {}, {}
     for cls, name in enumerate(CLASSES):
@@ -350,12 +338,7 @@ def synthetic_person(rng, x, y, height):
 def render_maps(people, visible, shape):
     """Part confidence maps (17 + background) and part affinity fields (2 per limb) at map scale.
 
-    A confidence map puts a Gaussian at every person's keypoint of that type and
-    keeps the maximum where two overlap, so nearby people stay separate peaks. An
-    affinity field paints, inside a thin band along each limb, the unit vector that
-    points from the limb's first keypoint to its second, and averages where two
-    people's bands overlap. The field is what records which keypoint belongs to
-    which: a band carries a direction, and only the right pairing runs along it.
+    Overlapping Gaussians keep the maximum so nearby people stay separate peaks; overlapping bands of one limb are averaged.
     """
     h, w = shape
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
@@ -389,10 +372,7 @@ def render_maps(people, visible, shape):
 def find_peaks(pcm, merge_within=1.5):
     """Local maxima above PEAK_THRESHOLD in each keypoint channel, as (x, y) arrays.
 
-    A keypoint that falls exactly between two pixels gives them the same value, and
-    both pass the local-maximum test, so candidates are taken strongest first and a
-    candidate within merge_within pixels of one already kept is dropped as part of
-    the same peak.
+    A keypoint between two pixels makes both local maxima, so peaks within merge_within merge, strongest first.
     """
     peaks = []
     for channel in pcm[:-1]:
@@ -409,13 +389,9 @@ def find_peaks(pcm, merge_within=1.5):
 
 
 def paf_score(paf_x, paf_y, a, b, map_height, samples=10):
-    """Mean of the field projected onto the candidate limb, sampled along the segment.
+    """Mean of the field projected onto the candidate limb along the segment, the line integral.
 
-    The line integral of the affinity field along a candidate connection is large
-    only when the field runs parallel to it all the way, which a true limb does and
-    a connection between two different people's joints mostly does not. A candidate
-    also needs most samples positive, and is penalised when it is longer than half
-    the map height.
+    Rejected unless 80% of samples exceed 0.05; penalised when longer than half the map height.
     """
     d = b - a
     length = np.linalg.norm(d)
@@ -452,13 +428,9 @@ def connect(peaks, paf, map_height, use_field):
 
 
 def assembly_scores(people, visible, peaks, connections, radius=2.0):
-    """Limb precision and recall against the people the maps were drawn from.
+    """Limb precision and recall: a connection is correct when the true keypoints nearest its two peaks are one person's.
 
-    Every true keypoint claims the nearest detected peak of its type within radius
-    map pixels, which gives each peak an owner. A connection is correct when both of
-    its peaks have the same owner. Recall is taken over every true limb whose two
-    keypoints are labelled visible, whether or not a peak was found for them, so it
-    counts a missed peak and a missed pairing alike.
+    Recall covers every true limb with both keypoints visible, so a missed peak counts like a missed pairing.
     """
     owner = [dict() for _ in KEYPOINTS]
     for person, (joints, seen) in enumerate(zip(people, visible)):
@@ -553,8 +525,6 @@ def print_assembly(totals):
         print(f"  {name:<28}{made:>12}{correct:>9}{correct / max(made, 1):>11.1%}{correct / max(visible_limbs, 1):>9.1%}")
 
 
-# Main
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--coco-root", help="COCO folder with annotations/ and, optionally, val2017/")
@@ -566,7 +536,7 @@ def main():
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    # 1. Dataset and anchors
+    # 1. A detection dataset and anchors fitted to it
     print("--- 1. A detection dataset and anchors fitted to it ---")
     train = [render_detection(rng) for _ in range(TRAIN_IMAGES)]
     test = [render_detection(rng) for _ in range(TEST_IMAGES)]
@@ -598,7 +568,7 @@ def main():
     plt.close(fig)
     print("  anchors.png: box shapes and the anchors clustered from them, for k = 1, 3 and 5")
 
-    # 2. Encoding
+    # 2. Encoding boxes onto the grid and back
     print("\n--- 2. Encoding boxes onto the grid and back ---")
     targets, collisions, worst = [], 0, 0.0
     for img, boxes, labels in train:
@@ -617,7 +587,7 @@ def main():
     t, _ = encode(train[0][1][:1], train[0][2][:1], anchors)
     a, row, col = (int(v[0]) for v in np.nonzero(t[..., 4]))
     print(f"  example: box ({x1:.0f}, {y1:.0f}, {x2:.0f}, {y2:.0f}) -> anchor {a}, row {row}, column {col}, "
-          f"stored {np.round(t[a, row, col, :4], 3).tolist()}")
+          f"stored {[round(float(v), 3) for v in t[a, row, col, :4]]}")
     zoom = 3
     example_img, example_boxes, example_labels = next(item for item in train if len(item[1]) >= 3)
     canvas = cv2.resize(example_img, (IMG * zoom, IMG * zoom), interpolation=cv2.INTER_NEAREST)
@@ -646,7 +616,7 @@ def main():
     print("  grid_encoding.png: one training image on its 10x10 grid, each box with its centre, the")
     print("  cell and anchor responsible for it, and the slot it is written to")
 
-    # 3. Model and loss
+    # 3. A one-scale detector and its loss
     import torch
     torch.manual_seed(SEED)
     # cuDNN chooses a convolution algorithm per shape and some of them accumulate in a
@@ -661,12 +631,11 @@ def main():
         out = model(torch.zeros(1, 3, IMG, IMG, device=device))
     print(f"  output {tuple(out.shape)} -> reshaped to (batch, anchors, rows, columns, {5 + len(CLASSES)}); "
           f"{sum(p.numel() for p in model.parameters())} parameters")
-    print(f"  loss = xy + wh + obj + noobj + class, where xy and wh already carry the weight {LAMBDA_COORD} "
-          f"and noobj the weight {LAMBDA_NOOBJ}")
-    print(f"  (the table below prints the weighted terms); slots whose prediction overlaps a real box by "
-          f"more than {IGNORE_IOU} are left out of noobj")
+    print(f"  loss = xy + wh + obj + noobj + class; the table below prints each term already weighted, "
+          f"xy and wh by {LAMBDA_COORD} and noobj by {LAMBDA_NOOBJ}")
+    print(f"  slots whose prediction overlaps a real box by more than {IGNORE_IOU} are left out of noobj")
 
-    # 4. Training
+    # 4. Training, term by term
     print("\n--- 4. Training, term by term ---")
     images_t = torch.from_numpy(np.stack([img for img, _, _ in train])).permute(0, 3, 1, 2).contiguous()
     targets_t = torch.from_numpy(np.stack(targets))
@@ -713,7 +682,7 @@ def main():
     plt.close(fig)
     print("  loss_terms.png: every loss term and the total for all epochs, on a log scale")
 
-    # 5. Decoding and NMS
+    # 5. Decoding and per-class non-maximum suppression
     print("\n--- 5. Decoding and per-class non-maximum suppression ---")
     test_images = np.stack([img for img, _, _ in test])
     truth = [(boxes, labels) for _, boxes, labels in test]
@@ -747,7 +716,7 @@ def main():
     print(f"  nms_before_after.png: three test images with every box above {SCORE_FOR_DRAWING} (top) and what")
     print("  suppression keeps (bottom)")
 
-    # 6. mAP and drawings
+    # 6. Mean average precision on unseen images
     print("\n--- 6. Mean average precision on unseen images ---")
     ap, pr = mean_average_precision(results, truth)
     for name, value in ap.items():
@@ -780,9 +749,9 @@ def main():
         drawn.append(canvas)
     cv2.imwrite(str(OUT_DIR / "detections.png"), with_header(
         np.hstack(drawn), f"green: true boxes   red: detections above {SCORE_FOR_DRAWING}, with class and score"))
-    print(f"  four unseen images drawn with true boxes in green and detections above {SCORE_FOR_DRAWING} in red")
+    print(f"  detections.png: four unseen images, true boxes in green and detections above {SCORE_FOR_DRAWING} in red")
 
-    # 7. COCO targets
+    # 7. COCO boxes as grid targets
     print("\n--- 7. COCO boxes as grid targets ---")
     if args.coco_root:
         root = Path(args.coco_root)
@@ -841,7 +810,7 @@ def main():
         print("  coco_slots.png: COCO box shapes with both anchor sets, and the share of boxes that")
         print("  lose their slot at one scale and at three")
         print("  Small objects crowd together: a stride-32 cell covers 32x32 input pixels, and every")
-        print("  person in a crowd within it competes for the same few slots. A stride-8 level gives")
+        print("  object whose centre falls in it competes for the same three slots. A stride-8 level gives")
         print("  small anchors sixteen times as many cells.")
         first = next(i for i in images if len(per_image[i]) >= 4)
         boxes, scale, (pad_x, pad_y) = letterboxed[first]
@@ -860,10 +829,11 @@ def main():
                             0.5, (0, 0, 255), 1)
             cv2.imwrite(str(OUT_DIR / "coco_boxes.png"), with_header(
                 picture, f"{images[first]['file_name']}: every non-crowd box with its category"))
+            print("  coco_boxes.png: this image with every non-crowd box and its category")
     else:
         print("  pass --coco-root to encode the COCO val2017 boxes and compare one scale with three")
 
-    # 8. Maps
+    # 8. Part confidence maps and part affinity fields
     print("\n--- 8. Part confidence maps and part affinity fields ---")
     scene_rng = np.random.default_rng(SEED + 1)
     scenes = []
@@ -889,7 +859,7 @@ def main():
     print(f"  first scene, left upper arm: {int((field > 0).sum())} pixels carry a direction, "
           f"magnitude {field[field > 0].min():.2f}-{field.max():.2f}")
     print(f"  over 20 scenes, {shortened / painted:.2%} of the painted pixels have a magnitude below 1, "
-          f"which is where two people's bands cross and two directions are averaged")
+          f"which is where two people's bands of the same limb cross and two directions are averaged")
     canvas = np.zeros((shape[0] * MAP_STRIDE, shape[1] * MAP_STRIDE, 3), np.uint8)
     for joints in people:
         for a, b in SKELETON:
@@ -920,14 +890,14 @@ def main():
     print("  pose_maps_synthetic.png: the drawn skeletons and both maps; paf_vectors.png: the peaks")
     print("  found in the confidence maps and the field as arrows")
 
-    # 9. Assembly
+    # 9. Pairing keypoints into limbs from the maps
     print("\n--- 9. Pairing keypoints into limbs from the maps ---")
     print("  Each limb type is matched on its own; grouping the limbs into whole skeletons, one")
     print("  per person, is the step after this and is not done here. Recall counts every limb")
     print("  whose two keypoints are labelled visible, so it includes peaks that were missed.")
     print(f"  {POSE_SCENES} synthetic scenes, two people each, the second 0.2-0.55 body heights to the right:")
-    print_assembly(evaluate_scenes(scenes))
-    peaks = find_peaks(pcm)
+    synthetic_totals = evaluate_scenes(scenes)
+    print_assembly(synthetic_totals)
     field_links, distance_links = connect(peaks, paf, shape[0], True), connect(peaks, paf, shape[0], False)
     field_correct, field_made, _ = assembly_scores(people, visible, peaks, field_links)
     distance_correct, distance_made, _ = assembly_scores(people, visible, peaks, distance_links)
@@ -940,7 +910,8 @@ def main():
                                                                  by_distance]]))
     print("  Distance alone joins each wrist to whichever elbow is closest, which is often the other")
     print("  person's once two people stand within an arm's length; it never rejects a pairing, so it")
-    print("  reaches a higher recall while one connection in six joins two different people.")
+    wrong = 1 - synthetic_totals[False][0] / max(synthetic_totals[False][1], 1)
+    print(f"  reaches a higher recall while {wrong:.1%} of its connections join two different people.")
     print("  The field is a direction painted along each true limb, so a pairing scores well only")
     print("  when the limb is actually there, and a candidate with too few positive samples is")
     print("  dropped rather than guessed at.")
@@ -970,14 +941,18 @@ def main():
                               (int(np.ceil(img["height"] / MAP_STRIDE)), int(np.ceil(img["width"] / MAP_STRIDE)))))
             return built
 
-        print(f"\n  COCO val2017, maps drawn from the labels, people at least 80 px tall and carrying 8 or")
-        print(f"  more labelled keypoints. {len(separated[:150])} images where no two people's keypoint boxes")
-        print(f"  overlap by more than 0.2 IoU:")
+        print("\n  COCO val2017, maps drawn from the labels, people whose keypoints span at least 80 px in")
+        print(f"  height and carry 8 or more labels. {len(separated[:150])} images where no two people's keypoint")
+        print("  boxes overlap by more than 0.2 IoU:")
         print_assembly(evaluate_scenes(scenes_for(separated[:150])))
         print(f"  {len(overlapping[:150])} images where two of them do:")
-        print_assembly(evaluate_scenes(scenes_for(overlapping[:150])))
+        crowded = evaluate_scenes(scenes_for(overlapping[:150]))
+        print_assembly(crowded)
+        (field_ok, field_n, limbs), (near_ok, near_n, _) = crowded[True], crowded[False]
         print("  Where people stand apart, the nearest candidate is usually the right one and distance")
-        print("  is nearly as good. The field earns its cost exactly where the two rules disagree.")
+        print(f"  is nearly as good. Where they overlap, distance falls to {near_ok / max(near_n, 1):.1%} precision "
+              f"and {near_ok / max(limbs, 1):.1%} recall,")
+        print(f"  and the field keeps {field_ok / max(field_n, 1):.1%} and {field_ok / max(limbs, 1):.1%}.")
         coco_scenes = scenes_for(overlapping[:1])
         example = overlapping[0]
         path = Path(args.coco_root) / "val2017" / images[example]["file_name"]
@@ -991,6 +966,7 @@ def main():
             cv2.imwrite(str(OUT_DIR / "pose_maps_coco.png"), with_header(
                 np.hstack([overlay, assembled]), "image | strongest confidence map | affinity field magnitude | "
                                                  "limbs paired by the field"))
+            print(f"  pose_maps_coco.png: {images[example]['file_name']} with both maps and the limbs paired by the field")
     else:
         print("  pass --coco-root to repeat the assembly on COCO val2017 keypoint labels")
     print(f"\n  images written to {OUT_DIR}")
