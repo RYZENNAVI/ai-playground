@@ -1,7 +1,7 @@
-"""Supervised fine-tuning (SFT) with LoRA: teach a base model a fixed answer line.
-
-Every example is rendered in the Alpaca instruction template, and only the answer
-tokens carry a label. PEFT attaches rank-8 adapters to the four attention
+"""This script teaches a base model to sort policy applications into a tier and an
+action, answered in one fixed line, with supervised fine-tuning (SFT) through
+LoRA. Every example is rendered in the Alpaca instruction template, and only the
+answer tokens carry a label. PEFT attaches rank-8 adapters to the four attention
 projections, so 0.12% of the weights train. The labels come from a three-branch
 rule on age and claims, so every answer can be marked right or wrong.
 vehicle_value takes no part in the rule.

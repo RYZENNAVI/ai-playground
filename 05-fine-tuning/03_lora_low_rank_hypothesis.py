@@ -1,9 +1,8 @@
-"""LoRA's premise, measured: is a full fine-tuning update nearly low rank?
-
-LoRA trains two thin matrices beside a frozen weight instead of the weight
-itself, which only works if the update it stands in for is nearly low rank.
-This script trains two projections per layer with no rank limit, then reads the
-singular values of the update.
+"""This script checks LoRA's premise, that a full fine-tuning update is nearly low
+rank, by training a model's weights with no rank limit and reading the singular
+values of the update. LoRA trains two thin matrices beside a frozen weight
+instead of the weight itself, which only works if the update it stands in for
+is nearly low rank. Here two projections per layer train in full.
 
 The run prints eight parts:
     1. A LoRA layer by hand. It starts as a no-op because `up` starts at zero.

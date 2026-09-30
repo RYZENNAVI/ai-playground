@@ -1,9 +1,8 @@
-"""Vision LoRA: fine-tune a small vision-language model to read a rendered instrument panel.
-
-The script draws each panel from its labels (gear, warning lamp, needle zone and a
-six-digit odometer), so every label is exact. It attaches LoRA adapters to the attention
-projections of the language tower only, trains them on 96 panels and scores 16 held-out
-panels field by field, before and after.
+"""This script fine-tunes a small vision-language model with LoRA to read rendered
+instrument panels: gear, warning lamp, needle zone and a six-digit odometer. The script
+draws each panel from its labels, so every label is exact. It attaches LoRA adapters to
+the attention projections of the language tower only, trains them on 96 panels and
+scores 16 held-out panels field by field, before and after.
 
 The run prints six parts:
     1. The rendered panels and the split.

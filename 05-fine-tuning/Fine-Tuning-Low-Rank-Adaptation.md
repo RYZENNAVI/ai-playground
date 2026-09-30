@@ -56,8 +56,8 @@ singular values fall fast can be stored as a few terms.
     matrix, 3.79 away from A at the worst entry. Negating row 1 of Vᵀ as well restores A. Every
     number in a decomposition can be right and the product still wrong.
 *   Parts 3 and 4 draw a 512 × 512 grayscale test image (a diagonal gradient, a ring, a
-    rectangle, stripes, a triangle, the word RANK and noise) and rebuild it from the top k terms.
-    A rank-k factorisation stores `k × (rows + columns + 1)` numbers:
+    rectangle, stripes, a triangle, the word RANK and noise) and rebuild it from the top k
+    terms. A rank-k factorisation stores `k × (rows + columns + 1)` numbers:
 
     | k | Relative error | Stored | Share of 262,144 |
     | ---: | ---: | ---: | ---: |
@@ -67,7 +67,6 @@ singular values fall fast can be stored as a few terms.
     | 50 | 3.78% | 51,250 | 19.55% |
     | 100 | 2.51% | 102,500 | 39.10% |
 
-*   On a 1000 × 1000 matrix the same count gives 0.60% at k=3, 2.00% at k=10 and 10.01% at k=50.
 *   What comes back first depends on the direction of an edge, not on how fine the detail is.
     SVD splits a matrix into rows and columns, so the stripes and the rectangle are sharp at
     k=2. The ring needs about 10 terms and the word RANK about 20, and the diagonal triangle is
@@ -109,18 +108,17 @@ is a ridge regression with a closed form, solved with one `np.linalg.solve` per 
 roles swap. A mask marks the observed cells, so a missing cell never enters the loss and is
 never read as a zero.
 
-*   The data is 12 users and 9 items in three groups. Each user touched two of the three items
-    in their group, 24 of 108 cells, so a good fit recommends the third.
-*   With every group filled in, the complete matrix has rank 3. The observed matrix is full rank,
+*   Part 1 shows the data: 12 users and 9 items in three groups. Each user touched two of the
+    three items in their group, 24 of 108 cells, so a good fit recommends the third.
+*   Part 2 compares two spectra. With every group filled in, the complete matrix has rank 3.
+    The observed matrix is full rank,
     because the unobserved cells read as zeros, but its singular values drop after the third:
-    2.000 then 1.276. This part checks the data, and nothing later uses it.
-*   Over 20 iterations the objective falls every time, 4.663 to 1.066, while the plain RMSE on
-    the observed cells rises from 0.0085 to 0.0169. The two are different quantities. Split
-    apart, the squared error grows from 0.0017 to 0.0069 while the penalty falls from 4.66 to
-    1.06: the solver trades a little training error for much smaller factors, which is what the
-    penalty asks for.
-*   The loss cannot say when to stop, so the script scores group agreement: whether each user's
-    top unseen item lies in their own group.
+    2.000 then 1.276.
+*   In part 3, over 20 iterations the objective falls every time, 4.663 to 1.066, while the
+    plain RMSE on the observed cells rises from 0.0085 to 0.0169: the solver trades a little
+    training error for much smaller factors, which is what the penalty asks for.
+*   The loss cannot say when to stop, so parts 4 and 5 score group agreement: whether each
+    user's top unseen item lies in their own group, after 20 iterations and after 2.
 
     | Fit | Objective | RMSE | Top item in the right group |
     | :--- | ---: | ---: | ---: |
@@ -141,12 +139,9 @@ never read as a zero.
     | 0.15 | 7 | 18.0 | 0.0244 | 0.0481 | 3% |
     | 0.30 | 22 | 36.1 | 0.0099 | 0.0148 | 1% |
 
-*   At 0.05 the rows with 11 or more observed cells fail as badly as the thinnest (hidden-cell
-    RMSE 1.87 against 1.92), so the whole matrix lacks data, not a few rows. At 0.08 the error
-    falls from 1.74 on rows with 0 to 3 cells to 0.87 on rows with 11 or more.
-*   At density 0.05 a stronger penalty softens the failure without replacing the data: the share
-    goes 164%, 126%, 87% and 64% for penalties 0.05, 0.3, 1 and 3, while the train RMSE ends
-    at 0.54 under the strongest.
+*   At 0.05 even the rows with 11 or more observed cells fail, so the whole matrix lacks data,
+    not a few rows. A stronger penalty softens the failure (64% at penalty 3) but does not
+    replace the data.
 *   A rank is a claim about how much data each row needs. The same holds for an adapter's rank:
     capacity the data cannot support memorises.
 
@@ -157,13 +152,10 @@ LoRA freezes a weight W and trains two thin matrices beside it, so the layer com
 out × r) starts at zero. BA is the update, and its rank can never exceed r. This only works if
 the update a full fine-tuning would make is nearly low rank, and the script measures that.
 
-*   Part 1 writes the layer by hand. With B at zero it answers exactly like the frozen layer
-    (largest difference 0) and its update has rank 0 of 256, so training starts from the
-    original model. Once B has values the difference is 0.0744 and the rank is 8 of 256, the
-    chosen r. The `α/r` scale keeps the added term about the same size when r changes, so a
-    higher rank adds capacity without raising the effective learning rate.
-*   Part 2 counts adapter parameters: `r × (in + out)`. At r=16 an adapter on a 1536 × 1536
-    matrix has 49,152 parameters, 2.08% of the matrix.
+*   Parts 1 and 2 write the layer by hand. With B at zero it answers exactly like the frozen
+    layer, so training starts from the original model; once B has values the update has rank 8,
+    the chosen r. The `α/r` scale keeps the added term about the same size when r changes. An
+    adapter holds `r × (in + out)` parameters: 49,152 at r=16 on a 1536 × 1536 matrix, 2.08%.
 *   Part 3 surveys where adapters can attach. The model has 28 layers of seven projections.
     `k_proj` and `v_proj` are 256 × 1536 instead of 1536 × 1536: grouped-query attention lets
     several query heads share one key and value head. The trainable share of three selections:
@@ -174,15 +166,13 @@ the update a full fine-tuning would make is nearly low rank, and the script meas
     | All four attention projections | 112 | 0.015% | 0.061% | 0.123% | 0.245% |
     | All seven projections | 196 | 0.065% | 0.260% | 0.520% | 1.039% |
 
-    The often quoted "about 1% of the parameters" is the bottom right corner. The last row
-    leaves out lm_head, as PEFT's `all-linear` does; it would add 0.138% at r=16.
+    The often quoted "about 1% of the parameters" is the bottom right corner.
 *   Part 4 trains q_proj and v_proj of the last four layers with no rank limit: 8 matrices,
     11,010,048 parameters (0.620% of the model), AdamW for 40 steps on eight fixed pairs. The
     loss goes from 3.4988 to 0.0466. Turning weight decay off changed none of the direction
     counts below.
-*   The model loads in float32 here. bfloat16 keeps about three significant digits, and the
-    update is far smaller than the weights it is added to, so in bfloat16 part of it would be
-    rounded away. This costs double the memory, 9.75 GB at the peak.
+*   The model loads in float32 here: the update is far smaller than the weights, and bfloat16
+    would round part of it away.
 *   Parts 5 and 6 read the singular values of layer 24's q_proj update against two controls of
     the same shape. The controls make this a measurement: fast decay is not a property of every
     matrix.
@@ -217,9 +207,8 @@ the update a full fine-tuning would make is nearly low rank, and the script meas
 
 *   Seven of the eight matrices need more directions at every tier. At ten kinds, 90% of the
     energy still fits in about 38 of 1536 directions, so the concentration holds, but the count
-    depends on the task. Tier 10 ends at five times the loss of tiers 1 and 3, so part of its
-    rise may be that it is less converged. Training to equal loss would break the equal-step
-    control, so the script keeps equal steps and prints the loss.
+    depends on the task. Tier 10 ends at five times the loss, so part of its rise may be that it
+    is less converged.
 *   What the measurement covers: eight pairs trained to a loss of 0.05, closer to memorisation
     than to a skill, and only q_proj and v_proj in layers 24 to 27. The reading supports "this
     kind of fine-tuning concentrates its update in few directions", not "weight updates are low
@@ -233,22 +222,23 @@ with 3 or more claims, tier A with no claims at 30 or older, tier B otherwise. v
 takes no part in the rule. Because a rule makes every label, each answer is plainly right or
 wrong.
 
-*   There are 540 applications. They are split by (age, claims) pair, so none of the 15 pairs in
-    the 60 evaluation cases appears in the 480 training cases. Evaluation holds 12 of tier A, 8
-    of tier B and 40 of tier C.
-*   An earlier version shuffled the 540 and held out the first 60. Every one of those had its
-    (age, claims) pair in training under another vehicle value, so a memorised pair looked like
-    a learned rule. Three seeds then scored 47, 49 and 56 of 60.
-*   Each example is rendered in the Alpaca instruction template (instruction, input, response).
+*   Part 1 builds 540 applications and splits them by (age, claims) pair, so none of the 15
+    pairs in the 60 evaluation cases appears in the 480 training cases. Evaluation holds 12 of
+    tier A, 8 of tier B and 40 of tier C.
+*   Split at random instead, every evaluation pair also sat in training under another vehicle
+    value, so a memorised pair looked like a learned rule.
+*   Part 2 renders each example in the Alpaca instruction template (instruction, input,
+    response).
     The end-of-sequence token is appended to the answer, or the model never learns to stop.
     Prompt tokens carry the label -100, so the loss counts only the answer. In the printed
     example 9 of 104 tokens carry a label: `TIER: C | ACTION: decline<｜end▁of▁sentence｜>`.
-*   PEFT attaches rank-8 adapters (α 16, dropout 0.05) to the four attention projections:
-    2,179,072 of 1,779,267,072 parameters, 0.1225%. The frozen weights still sit in memory for
-    the forward pass but need no gradients and no optimiser state, which is why training fits in
-    6.13 GB.
-*   The base is scored before training, twice, and the adapter after 120 steps (batch 4,
-    learning rate 2e-4). The loss goes from 1.6322 to 0.0179, the mean of the last ten steps.
+*   In part 4, PEFT attaches rank-8 adapters (α 16, dropout 0.05) to the four attention
+    projections: 2,179,072 of 1,779,267,072 parameters, 0.1225%. The frozen weights still sit in
+    memory for the forward pass but need no gradients and no optimiser state, which is why
+    training fits in 6.13 GB.
+*   Part 3 scores the base twice before training, and part 5 scores the adapter after 120 steps
+    (batch 4, learning rate 2e-4). The loss goes from 1.6322 to 0.0179, the mean of the last ten
+    steps.
 
     | Setting | Answers in the required shape | Exactly correct | By tier (A, B, C) |
     | :--- | ---: | ---: | :--- |
@@ -257,19 +247,16 @@ wrong.
     | Base, rule written into the prompt | 100.0% | 66.7% | 0/12, 0/8, 40/40 |
     | Adapter, rule learned from examples | 100.0% | 93.3% | 12/12, 8/8, 36/40 |
 
-*   Shape and correctness are counted apart. A right tier inside a paragraph is useless to a
-    caller that parses the line, and a well-shaped line can hold the wrong tier.
-*   With the rule in the prompt, the base answers tier C to all 60 cases and scores exactly what
+*   Shape and correctness are counted apart, since a well-shaped line can hold the wrong tier.
+    With the rule in the prompt, the base answers tier C to all 60 cases and scores exactly what
     always answering C scores. The adapter is the only setting that applies the rule. Its four
     misses are all tier C cases; the one printed, age 24 with one claim, came out as tier B.
     Seeds 11 and 42 gave the same 56 of 60.
-*   The first two runs gave 83.3% and 87.5% with the same code. Adapter dropout draws from the
-    global torch generator, which was not seeded; `torch.manual_seed(SEED)` fixed it.
 *   Part 6 checks three things that fail in different ways. The saved directory holds only the
-    adapter, 8.75 MB, and its config names the base, which must be present wherever it is loaded.
-    Reloaded onto a fresh base, it reproduces the trained answers on the first four evaluation
-    cases. Merged, W + BA becomes an ordinary weight: the same four answers, no adapter modules
-    left, no extra cost at inference, and nothing left to swap out.
+    adapter, 8.75 MB, and its config names the base, which must be present wherever it is
+    loaded. Reloaded onto a fresh base, it reproduces the trained answers on the first four
+    evaluation cases. Merged, W + BA becomes an ordinary weight: the same four answers, no
+    adapter modules left, no extra cost at inference, and nothing left to swap out.
 
 ## Script 05: GRPO with rule-based rewards
 
@@ -282,13 +269,13 @@ the four attention projections, and the task is 60 subtraction problems, 12 held
     standard deviation. When every answer in a group scores the same, the advantages are all
     zero and the step changes nothing.
 *   PPO, the usual RLHF algorithm, computes the advantage as reward minus a critic's prediction,
-    so it trains a value network beside the policy. GRPO drops the critic and uses the group
-    as the baseline. Dividing by the standard deviation makes a problem count for how its answers
-    rank: rewards of [0, 1, 2, 3] and [0, 100, 200, 300] both become [-1.16, -0.39, +0.39, +1.16].
-*   PPO also clips the ratio of new to old probability, because it reuses one batch for several
-    updates. Here each of the 24 steps samples fresh answers and updates once, so the ratio is 1
-    and the clip would never act; the script leaves it out.
-*   Five rules score each answer:
+    so it trains a value network beside the policy. GRPO drops the critic and uses the group as
+    the baseline. Dividing by the standard deviation makes a problem count for how its answers
+    rank: rewards of [0, 1, 2, 3] and [0, 100, 200, 300] both become [-1.16, -0.39, +0.39,
+    +1.16].
+*   PPO also clips the probability ratio. Here each step samples fresh answers and updates once,
+    so the ratio is 1 and the script leaves the clip out.
+*   Five rules score each answer, and part 2 tries them on two hand-written samples:
 
     | Reward | Test | Maximum |
     | :--- | :--- | ---: |
@@ -305,12 +292,11 @@ the four attention projections, and the task is 60 subtraction problems, 12 held
     and no gradient existed. The prompt now ends with `<reasoning>\n`. Some samples then beat
     their siblings, which is the one thing a group-relative method needs to start.
 *   A KL penalty keeps the policy near the base. The base's log probabilities come from the same
-    model with `disable_adapter()`, so no second copy is loaded. An earlier version averaged
-    log p minus log p_ref over the sampled tokens, which estimates the drift but has zero
-    expected gradient, and its value went negative on 6 of 24 steps. The script now uses the k3
-    estimator, `p_ref/p - log(p_ref/p) - 1`, which is never negative and pulls toward the base.
-*   Each step samples six answers to each of two problems. On the 12 held-out problems, with
-    greedy decoding:
+    model with `disable_adapter()`, so no second copy is loaded. The penalty is the k3
+    estimator, `p_ref/p - log(p_ref/p) - 1`, which is never negative and pulls toward the base;
+    the plain log ratio has zero expected gradient.
+*   Part 5 trains for 24 steps, each sampling six answers to each of two problems. Parts 4 and 6
+    score the 12 held-out problems before and after, with greedy decoding:
 
     | | Before | After 24 steps |
     | :--- | ---: | ---: |
@@ -322,9 +308,9 @@ the four attention projections, and the task is 60 subtraction problems, 12 held
 *   Before training the base already writes the right number in 7 of 12 answers, for example
     `130 minus 85, which equals 45`, but never opens an answer tag. Most of 0/12 to 10/12 is
     the model learning where to put the answer, not learning to subtract.
-*   The end token has to stay in the loss. This tokenizer pads with its end token, and an earlier
-    mask dropped every padding position, the real stop included, so the trained model kept
-    writing after `</answer>`. Single-change runs:
+*   The end token has to stay in the loss. This tokenizer pads with its end token, and an
+    earlier mask dropped every padding position, the real stop included, so the trained model
+    kept writing after `</answer>`. Single-change runs:
 
     | Run | Tag structure | Right integer | Cut off | Stops after `</answer>` |
     | :--- | ---: | ---: | ---: | :--- |
@@ -335,16 +321,13 @@ the four attention projections, and the task is 60 subtraction problems, 12 held
 
     Keeping the end token is what makes answers stop. The rise to 10/12 came only with both
     fixes, and each row is one run, so it is not credited to either.
-*   The mean reward rose from 0.821 over the first five steps to 1.508 over the last five, but the
-    curve is noisy: step 12 scored 0.812 and step 24 scored 2.323. Twenty-four steps say nothing
-    about convergence.
+*   The mean reward rose from 0.821 over the first five steps to 1.508 over the last five, but
+    the curve is noisy, and 24 steps say nothing about convergence.
 *   Sampling takes almost all of each step: over four groups, 30.9 s against 2.5 s for the log
     probabilities and the backward pass. That is why 24 steps took 400.3 s.
 *   The log probabilities need full logits, 151,936 per position. Backpropagating the group of
-    six in one pass peaked at 11.67 GB allocated, and in chunks of two at 6.56 GB, so chunking is
-    what fits the 12 GB card. Taking the chosen logit minus a logsumexp instead of a full
-    log-softmax saved nothing here: both peaked 579 MB above the logits, because casting the
-    logits to float32 already makes the full-size copy.
+    six in one pass peaked at 11.67 GB allocated, and in chunks of two at 6.56 GB, so chunking
+    is what fits the 12 GB card.
 
 ## Script 06: Thinking budget control
 
@@ -352,16 +335,16 @@ Test-time compute control changes no weights. A reasoning model writes its delib
 `<think>` and `</think>` before it answers. The script decodes one token at a time with the cache
 kept, so it can act in the middle of that phase; a single `generate` call would finish first.
 
-*   `<think>` and `</think>` are single tokens, ids 151648 and 151649, so `</think>` can be
-    banned in the logits.
+*   Part 1 finds that `<think>` and `</think>` are single tokens, ids 151648 and 151649, so
+    `</think>` can be banned in the logits.
 *   To cap the thinking, the script writes `</think>` into the stream once the budget is spent,
     which pushes the model into its answer. To extend it, the script bans `</think>` and appends
     "Wait, let me check that again." each time the model is about to stop. The nudge tokens
     count toward the budget, so the extended setting runs under the widest cap, 400.
-*   Eight questions with one numeric answer (four letter counts, four arithmetic), greedy decoding.
-    The answer is read from `\boxed{}` when the model writes one, otherwise as the first integer.
-    Reading the first integer alone turned `4 kilograms (empty box) + 36 kilograms (12 bags) =
-    \boxed{40}` into 4.
+*   Part 2 asks eight questions with one numeric answer (four letter counts, four arithmetic),
+    with greedy decoding. The answer is read from `\boxed{}` when the model writes one,
+    otherwise as the first integer. Reading the first integer alone turned `4 kilograms (empty
+    box) + 36 kilograms (12 bags) = \boxed{40}` into 4.
 
     | Setting | Correct | Mean thinking tokens | Stopped on its own | Seconds |
     | :--- | ---: | ---: | ---: | ---: |
@@ -372,17 +355,17 @@ kept, so it can act in the middle of that phase; a single `generate` call would 
     | Cap 400 and two nudges | 5/8 | 225.5 | 8/8 | 58.1 |
 
 *   At caps of 24 and 64 no answer stopped on its own, so every answer there was forced, and
-    truncation cost answers. These questions need about 110 thinking tokens: raising the cap from
-    160 to 400 adds 2 tokens on average and no correct answer.
+    truncation cost answers. These questions need about 110 thinking tokens: raising the cap
+    from 160 to 400 adds 2 tokens on average and no correct answer.
 *   Two nudges doubled the thinking and left accuracy at 5/8. Both nudges were used on every
     question and every answer still stopped on its own, so the extension was not cut short.
-*   The four arithmetic questions are right from a cap of 160 up. Three of the four letter counts are wrong in
-    every setting: raspberry reads 2 instead of 3, possessions reads 3 (the model copies the word
-    as "possession") and beekeeper reads 3. With two nudges, raspberry spends 275 thinking tokens
-    and still answers "The letter 'r' appears twice".
+*   The four arithmetic questions are right from a cap of 160 up. Three of the four letter
+    counts are wrong in every setting: raspberry reads 2 instead of 3, possessions reads 3 (the
+    model copies the word as "possession") and beekeeper reads 3. Part 3 follows raspberry
+    through every setting: with two nudges it spends 275 thinking tokens and still answers "The
+    letter 'r' appears twice".
 *   On this 1.5B distilled model "think again" did not recover a wrong answer. Published results
-    come from much larger models; whether this size lacks the ability to re-read a question is a
-    guess, not something measured here.
+    come from much larger models.
 
 ## Script 07: Vision LoRA
 
@@ -391,14 +374,15 @@ encoder turns pixels into embeddings, the connector maps them to the language mo
 the language model reads them alongside the text. The script fine-tunes SmolVLM-256M-Instruct to
 answer one line, `GEAR: R | LAMP: off | NEEDLE: low | ODO: 226355`, about a rendered panel.
 
-*   Each panel is drawn from its labels, so the label cannot disagree with the image and no
+*   Part 1 draws each panel from its labels, so the label cannot disagree with the image and no
     photographs need labelling. The needle angle and its zone come from one number, with zones
     split at 0.34 and 0.67. The four fields differ in kind: gear is one of four, the lamp is on
-    or off, the needle zone is a threshold on a continuous value, and the odometer is six digits.
+    or off, the needle zone is a threshold on a continuous value, and the odometer is six
+    digits.
 *   112 panels at 384 × 384: 96 for training, 16 held out. All 16 held-out combinations of gear,
     lamp and zone also occur in training, but the fields are drawn independently and read from
     different places, and no held-out odometer value appears in training.
-*   The linear layers by tower:
+*   Part 2 counts the linear layers by tower:
 
     | Tower | Linear layers | Parameters | Share |
     | :--- | ---: | ---: | ---: |
@@ -407,20 +391,17 @@ answer one line, `GEAR: R | LAMP: off | NEEDLE: low | ODO: 226355`, about a rend
     | Connector | 1 | 7,077,888 | 2.8% |
 
 *   At rank 16, adapters on the four attention projections of the language tower take 120
-    modules and 1,843,200 parameters, 0.719% of the base model. PEFT prints 0.7135% for the same
-    adapter because it divides by the model with the adapters attached, 258,328,128.
-*   Selecting modules by suffix over-attaches. The vision tower's attention layers also have
-    q_proj, k_proj and v_proj, so asking for those suffixes adds 12 layers × 3 = 36 modules in
-    the encoder: 156 modules, 2,727,936 parameters, 1.064%. The script passes full module paths
-    and then counts where adapters landed: 120, of which 0 in the image encoder.
-*   The processor replaces the image placeholder with a block of image tokens whose count
-    depends on the image size. The script encodes the prompt alone with the same image to find
-    the mask length, and checks that the full sequence starts with that prompt. Every panel is
-    384 × 384, so every prompt is 1189 tokens and every full example 1216.
-*   Training runs 150 steps, each adding up the gradients of two single examples. The loss goes
-    from 1.9049 to 0.0292, the mean of the last ten steps. The end token, `<end_of_utterance>`,
-    stays in the loss; the pad token is a different one.
-*   The 16 held-out panels, field by field:
+    modules and 1,843,200 parameters, 0.719% of the base model.
+*   Part 4 attaches the adapter by full module path, because selecting by suffix over-attaches.
+    The vision tower's attention layers also have q_proj, k_proj and v_proj, so asking for those
+    suffixes adds 12 layers × 3 = 36 modules in the encoder: 156 modules, 2,727,936 parameters,
+    1.064%. Counted after attaching: 120 modules, 0 of them in the image encoder.
+*   Part 5 trains with the prompt masked out of the loss. The image placeholder expands to image
+    tokens, so the script finds the mask length by encoding the prompt alone with the same
+    image: 1189 prompt tokens of 1216. Training runs 150 steps, each adding up the gradients of
+    two single examples. The loss goes from 1.9049 to 0.0292, the mean of the last ten steps.
+    The end token, `<end_of_utterance>`, stays in the loss; the pad token is a different one.
+*   Parts 3 and 6 score the 16 held-out panels field by field, before and after:
 
     | Field | Before | After |
     | :--- | ---: | ---: |
@@ -431,13 +412,11 @@ answer one line, `GEAR: R | LAMP: off | NEEDLE: low | ODO: 226355`, about a rend
     | Odometer | 0/16 | 16/16 |
     | Right odometer digits anywhere in the text | 7/16 | 16/16 |
 
-*   Before training the base already writes the right odometer digits in 7 of 16 answers, as
-    `226355` or `Answer: n,818030`, and one answer copies back the format itself,
-    `Answer: <P|R|N|D>.`. For the odometer, the zero is a format failure, and most of 0/16 to
-    16/16 is the adapter teaching the answer line.
-*   Only the needle zone falls short, and its two misses are not near a boundary: 0.826 (high)
-    and 0.587 (mid) were both read as low. The four panels closest to a boundary (0.286, 0.291,
-    0.636 and 0.651) were all read correctly. The training set has 32 low, 31 mid and 33 high
-    panels, so an imbalance does not explain the misses; with 16 panels they may be chance.
+*   Before training the base already writes the right odometer digits in 7 of 16 answers, so
+    for the odometer the zero is a format failure, and most of 0/16 to 16/16 is the adapter
+    teaching the answer line.
+*   Only the needle zone falls short, and its two misses (0.826 and 0.587, both read as low) are
+    not near a boundary, while the four panels closest to one were read correctly. The training
+    zones are balanced, so with 16 panels the misses may be chance.
 *   Adapting the language tower alone brought three of four fields to 16/16, so in this run the
     encoder did not need adapting for them. The saved adapter is 7.42 MB.

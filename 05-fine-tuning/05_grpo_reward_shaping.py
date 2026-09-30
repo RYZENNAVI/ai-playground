@@ -1,9 +1,8 @@
-"""GRPO (group relative policy optimisation) with rule-based rewards, trained as a LoRA adapter.
-
-This is reinforcement learning with verifiable rewards. The model gets no written answers.
-Five rules score what it writes, and each sample is judged against the other samples drawn
-for the same problem. The model is DeepSeek-R1-Distill-Qwen-1.5B, and the task is a
-subtraction problem whose answer the script computes.
+"""This script trains DeepSeek-R1-Distill-Qwen-1.5B on a subtraction problem with GRPO (group
+relative policy optimisation), using rule-based rewards and a LoRA adapter. This is
+reinforcement learning with verifiable rewards: the script computes the answer, and the
+model gets no written one. Five rules score what it writes, and each sample is judged
+against the other samples drawn for the same problem.
 
 The run prints six parts:
     1. Build 60 subtraction problems and hold out 12 for evaluation.

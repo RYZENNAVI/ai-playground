@@ -1,5 +1,5 @@
-"""Truncated SVD: rebuild a matrix from its largest rank-1 terms, the low-rank shape LoRA assumes.
-
+"""This script compresses a 512x512 grayscale test image with truncated SVD,
+rebuilding it from its largest rank-1 terms, the low-rank shape LoRA assumes.
 SVD writes a matrix as a sum of rank-1 terms, each weighted by a singular value.
 Keeping the k largest terms gives a rank-k matrix. Its error depends only on the
 weights left out, so the spectrum says how small k can be.
@@ -9,6 +9,7 @@ The run prints seven parts:
        the eigenvalues of A_T A, and the two rank-1 terms add back up to A.
     2. Signs flip in pairs. Negating column 1 of U alone changes the product.
        Negating row 1 of V_T as well restores A.
+       The 3x2 matrix is only there to demonstrate these two steps.
     3. A test image. A 512x512 grayscale drawing: a diagonal gradient, a ring, a
        rectangle, stripes, a triangle, the word RANK and noise.
     4. Rebuilds at k = 1 to 200. The relative error and the stored numbers for

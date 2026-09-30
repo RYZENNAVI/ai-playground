@@ -1,12 +1,12 @@
-"""Alternating least squares (ALS): factor a sparse preference matrix into two thin matrices.
+"""This script recommends items to 12 users by factoring their sparse preference
+matrix into two thin matrices with alternating least squares (ALS). ALS models
+every cell as the dot product of a user vector and an item vector, both of length
+3. With the item vectors held fixed, each user vector is a small ridge regression
+on the cells that user observed, and the other way round. The two fits alternate.
+A missing cell still gets a prediction, because each vector is shared by its whole
+row or column.
 
-ALS models every cell as the dot product of a user vector and an item vector, both
-of length 3. With the item vectors held fixed, each user vector is a small ridge
-regression on the cells that user observed, and the other way round. The two fits
-alternate. A missing cell still gets a prediction, because each vector is shared
-by its whole row or column.
-
-The data is 12 users and 9 items in three groups. Each user touched two of the
+The users and items fall into three groups. Each user touched two of the
 three items in their group, so a good fit recommends the third.
 
 The run prints six parts:

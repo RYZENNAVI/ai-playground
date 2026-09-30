@@ -1,9 +1,9 @@
-"""Thinking budget control: cap or extend how long a reasoning model thinks, with no training.
-
-This is test-time compute control. The script decodes one token at a time, so it can act in
-the middle of the thinking phase. To cap thinking, it writes </think> into the stream once
-the budget is spent. To extend it, it bans </think> and appends a nudge, "Wait, let me check
-that again.", each time the model is about to stop.
+"""This script caps or extends how long a reasoning model thinks, with no training, by
+controlling its thinking budget as it decodes. This is test-time compute control. The script
+decodes one token at a time, so it can act in the middle of the thinking phase. To cap
+thinking, it writes </think> into the stream once the budget is spent. To extend it, it bans
+</think> and appends a nudge, "Wait, let me check that again.", each time the model is about
+to stop.
 
 The run prints four parts:
     1. The ids of <think> and </think>. Each is one token, so </think> can be banned in the logits.
