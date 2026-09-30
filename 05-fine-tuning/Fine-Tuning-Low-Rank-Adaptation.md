@@ -173,6 +173,10 @@ the update a full fine-tuning would make is nearly low rank, and the script meas
     counts below.
 *   The model loads in float32 here: the update is far smaller than the weights, and bfloat16
     would round part of it away.
+*   The layer count is set by memory. The float32 weights take 7.11 GB, and each trained layer
+    adds about 0.15 GB at peak: 4 layers reach 9.12 GB allocated in about 12 s for 40 steps,
+    8 reach 9.71 GB and 16 reach 10.92 GB. All 28 would need about 12.7 GB, more than the
+    12 GB card holds.
 *   Parts 5 and 6 read the singular values of layer 24's q_proj update against two controls of
     the same shape. The controls make this a measurement: fast decay is not a property of every
     matrix.

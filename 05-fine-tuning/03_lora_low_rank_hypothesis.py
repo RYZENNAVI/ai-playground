@@ -43,6 +43,8 @@ SIBLING_CACHE = Path(__file__).parent.parent / "01-llm-foundation" / "weights"
 CACHE_DIR = os.getenv("HF_CACHE_DIR", str(SIBLING_CACHE))
 
 TARGET_SUFFIXES = ("q_proj", "v_proj")
+# Each trained layer adds about 0.15 GB at peak on top of 7.11 GB of float32 weights
+# (9.12 GB at 4 layers, 10.92 GB at 16), so all 28 would need about 12.7 GB.
 TRAINED_LAYERS = 4
 STEPS = 40
 LEARNING_RATE = 1e-4
