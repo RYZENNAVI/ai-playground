@@ -250,7 +250,7 @@ See [Machine-Learning-and-Deep-Learning-Foundations.md](07-ml-dl-foundation/Mach
 
 | # | Script | Feature |
 |---|--------|---------|
-| 01 | `01_build_time_series_datasets.py` | Five series drawn from published mechanisms, with every factor and changepoint written to a truth file |
+| 01 | `01_build_time_series_datasets.py` | Five datasets drawn from mechanisms written down in the script, with every factor and changepoint written to a truth file |
 | 02 | `02_decompose_and_stationarity.py` | Decomposition scored at the right period and three wrong ones, and what a strong cycle does to a unit-root test |
 | 03 | `03_arima_grid_search_and_forecast.py` | An AIC grid on a series of known order, and what a truncated candidate list does to the winner |
 | 04 | `04_prophet_trend_seasonality_changepoints.py` | Trend, cycle and events each checked against what was planted, including a component that was not |

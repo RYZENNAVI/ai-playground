@@ -1,14 +1,16 @@
-"""Generate the five series this module forecasts, each from a mechanism written down in advance.
+"""This script generates the five datasets this module forecasts as synthetic data with known
+ground truth: a daily cash-flow table, a long daily index, a short listing history, a monthly
+retail total and an ARMA series. Each one is drawn from a mechanism written down in this file,
+so every later claim about it can be checked.
 
-Demonstrates how to build a series whose every later claim can be checked:
+The run prints 6 parts:
     1. Draw a daily cash-flow table from explicit weekday and day-of-month factors.
-    2. Give inflow a flat level and outflow a rising one, so stationarity tests disagree on them.
+    2. Show that outflow grows and wanders while inflow does neither, so stationarity tests
+       should give the two columns different verdicts.
     3. Draw a long daily index from piecewise drift plus a seasonal cycle of known length.
     4. Draw a short listing history that is too young to contain a yearly cycle at all.
     5. Draw a monthly retail total, and an ARMA series whose order is fixed in advance.
     6. Write every factor, changepoint and coefficient to a truth file the other scripts score against.
-
-Module 08: Time Series Forecasting - Dataset Construction.
 """
 
 import json
@@ -35,7 +37,8 @@ REDEEM_WEEKDAY = np.array([1.22, 1.09, 1.04, 1.01, 0.97, 0.81, 0.84])
 
 PURCHASE_BASE = 3.2e8
 REDEEM_BASE = 2.9e8
-# Outflow grows half a percent a week; inflow does not grow at all.
+# Outflow grows by 0.07% of its starting level a day, about half a percent a week.
+# Inflow does not grow at all.
 REDEEM_DAILY_GROWTH = 0.0007
 # Outflow also carries a level that never returns to where it started. This, and
 # not the growth term above, is what a unit-root test is built to detect.
@@ -45,7 +48,7 @@ REDEEM_RANDOM_WALK_SIGMA = 0.035
 CAMPAIGN_DAYS = ["2013-11-11", "2013-12-12", "2014-06-18", "2014-08-08"]
 CAMPAIGN_LIFT = 1.55
 
-# Long index: thirty years of trading days, in five drift regimes.
+# Long index: about 27 years of trading days, in five drift regimes.
 INDEX_START = "1990-12-19"
 INDEX_DAYS = 7145
 INDEX_CHANGEPOINTS = [900, 2400, 3900, 5600]
@@ -78,13 +81,8 @@ ARMA_SIGMA = 620.0
 
 
 def day_of_month_factor(day: int) -> float:
-    """Return the month-position factor for one calendar day.
-
-    Money moves at the edges of a month and sits still in the middle: the first
-    three days and the last two carry the payroll and settlement peaks, and the
-    middle of the month is the trough. The shape is a fixed lookup rather than a
-    formula so that a fitted factor can be compared against it entry by entry.
-    """
+    """Return the month-position factor for one calendar day, highest at the edges of a month.
+    A lookup table, not a formula, so a fitted factor can be compared with it entry by entry."""
     table = {
         1: 1.34, 2: 1.28, 3: 1.19, 4: 1.08, 5: 1.02, 6: 0.98, 7: 0.95,
         8: 0.93, 9: 0.92, 10: 0.91, 11: 0.90, 12: 0.89, 13: 0.89, 14: 0.90,
@@ -96,16 +94,8 @@ def day_of_month_factor(day: int) -> float:
 
 
 def build_cash_flow(rng: np.random.Generator) -> tuple[pd.DataFrame, dict]:
-    """Build the daily inflow and outflow table from the two published cycles.
-
-    Both columns are a product of the same three ingredients: a base level, a
-    weekday factor and a day-of-month factor. The outflow gets two extra terms
-    on top: a steady growth rate, and a wandering level built by accumulating
-    small shocks. The second of those is the one that makes a unit-root test
-    fail, and separating the two is the point of building them separately. The
-    multiplicative noise is drawn in log space so that a quiet weekend day and a
-    busy month-end day carry the same relative spread.
-    """
+    """Build the daily inflow and outflow table from the weekday and day-of-month factors.
+    Noise is drawn in log space, so quiet and busy days carry the same relative spread."""
     dates = pd.date_range(FLOW_START, FLOW_END, freq="D")
     weekday = dates.dayofweek.to_numpy()
     dom = dates.day.to_numpy()
@@ -156,13 +146,7 @@ def build_cash_flow(rng: np.random.Generator) -> tuple[pd.DataFrame, dict]:
 
 def build_index(rng: np.random.Generator) -> tuple[pd.DataFrame, dict]:
     """Build a long daily index from piecewise drift, one seasonal cycle and AR(1) noise.
-
-    The series is assembled in log space and exponentiated at the end, so the
-    drift regimes read as constant percentage rates rather than constant point
-    moves. The cycle is exactly INDEX_SEASON_PERIOD observations long, which
-    gives the decomposition script a period it is supposed to find. The AR(1)
-    residual is what stops a differenced series from looking like clean noise.
-    """
+    Log space makes each drift regime a constant percentage rate, not a constant point move."""
     dates = pd.bdate_range(INDEX_START, periods=INDEX_DAYS, freq="B")
     steps = np.arange(INDEX_DAYS)
 
@@ -202,14 +186,8 @@ def build_index(rng: np.random.Generator) -> tuple[pd.DataFrame, dict]:
 
 
 def build_listing(rng: np.random.Generator) -> tuple[pd.DataFrame, dict]:
-    """Build a short listing history with a first-day jump and no yearly cycle.
-
-    Nothing in this generator repeats on a yearly period, and the series is
-    under one trading year long, so a model that reports a yearly component on
-    it is reporting something that was never put in. The first day carries a
-    large opening return, which also makes it a leverage point for any fit that
-    is not told to treat it separately.
-    """
+    """Build a short listing history with a first-day jump and nothing that repeats yearly.
+    It is under one trading year long, so a yearly component reported on it was never put in."""
     dates = pd.bdate_range(LISTING_START, periods=LISTING_DAYS, freq="B")
 
     price = np.empty(LISTING_DAYS)
@@ -238,13 +216,8 @@ def build_listing(rng: np.random.Generator) -> tuple[pd.DataFrame, dict]:
 
 
 def build_retail(rng: np.random.Generator) -> tuple[pd.DataFrame, dict]:
-    """Build a monthly retail total with a straight trend and a month-of-year cycle.
-
-    Forty-two monthly points is a realistic amount of history for this kind of
-    table and a very small amount of data for a seasonal model: twelve monthly
-    effects have to be estimated from three and a half observations each. The
-    trend is linear on purpose, so a differenced series should come out flat.
-    """
+    """Build a monthly retail total from a straight trend times a month-of-year cycle.
+    With 42 months, each of the twelve month effects rests on three and a half observations."""
     periods = pd.period_range(RETAIL_START, periods=RETAIL_MONTHS, freq="M")
     steps = np.arange(RETAIL_MONTHS)
     month_pull = RETAIL_MONTH_OF_YEAR[periods.month.to_numpy() - 1]
@@ -269,13 +242,8 @@ def build_retail(rng: np.random.Generator) -> tuple[pd.DataFrame, dict]:
 
 
 def build_arma(rng: np.random.Generator) -> tuple[pd.DataFrame, dict]:
-    """Build a series from an ARMA recursion whose order and coefficients are fixed above.
-
-    The recursion is written out term by term rather than called from a library,
-    so the order that a later search is asked to recover is visible in this file.
-    A burn-in of two hundred points is dropped, because the first values still
-    carry the arbitrary zero state the recursion was started from.
-    """
+    """Build an ARMA series term by term, so the order a later search must recover is visible here.
+    The first 200 points are dropped because they still carry the zero start state."""
     burn = 200
     total = ARMA_POINTS + burn
     eps = rng.normal(0.0, ARMA_SIGMA, size=total)

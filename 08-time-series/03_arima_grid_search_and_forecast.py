@@ -1,6 +1,7 @@
-"""Search a grid of ARIMA orders by information criterion, and check what the search actually searched.
-
-Demonstrates where an autoregressive forecast comes from, end to end:
+"""This script searches a grid of ARIMA and seasonal ARIMA (SARIMAX) orders by AIC, on a series of
+known order and on the monthly retail total, and forecasts from the winner. It then checks what the
+search searched, how the forecast is dated and scored, and what one difference too many costs. The
+run prints 7 parts:
     1. Search for the order of a series whose generating recursion is known, and check what came back.
     2. Resample one daily series to three coarser scales and read what each one can still show.
     3. Search a seasonal grid on the monthly table and forecast past the end of it.
@@ -8,8 +9,6 @@ Demonstrates where an autoregressive forecast comes from, end to end:
     5. Label those forecast values: build the future dates two ways, and audit where they land.
     6. Ask the fitted model for in-sample and out-of-sample values, and keep the two apart.
     7. Price one difference too many on a holdout, then price the cycle none of those models knew.
-
-Module 08: Time Series Forecasting - ARIMA Grid Search.
 """
 
 import json
@@ -30,13 +29,12 @@ from statsmodels.tools.sm_exceptions import ConvergenceWarning
 sys.stdout.reconfigure(encoding="utf-8")
 
 # Two warning classes are silenced, both deliberately and both narrowly.
-# ConvergenceWarning, because every fit now reports its own convergence flag in
+# ConvergenceWarning, because every fit reports its own convergence flag in
 # the table below, which is a stronger record than a message on stderr. And the
 # starting-parameter notices, because enforce_stationarity and
 # enforce_invertibility are switched off on purpose so that the whole grid gets
-# fitted rather than only the well-behaved corner of it. A blanket
-# filterwarnings("ignore") would also have hidden the convergence failures this
-# script exists to count.
+# fitted rather than only the well-behaved corner of it. The filters match
+# these messages only, so any other warning still shows.
 warnings.simplefilter("ignore", ConvergenceWarning)
 warnings.filterwarnings("ignore", message="Non-invertible starting MA parameters")
 warnings.filterwarnings("ignore", message="Non-stationary starting autoregressive")
@@ -47,18 +45,17 @@ TRUNCATED_TO = 20
 FORECAST_MONTHS = 4
 SEASONAL_PERIOD = 12
 
-# The seasonal grid searched in step 3. Named here rather than written inline
-# because step 2 needs the longest memory it can ask for, which is the largest
-# p plus the largest q, and that number should come from the grid rather than
-# from a sentence that has to be kept in step with it.
+# The seasonal grid searched in step 3. Named here because step 2 quotes the
+# largest number of ARMA coefficients in it, the largest p plus the largest q,
+# and that number should come from the grid rather than from a sentence.
 GRID_P = range(5)
 GRID_D = range(2)
 GRID_Q = range(4)
 LONGEST_MEMORY = max(GRID_P) + max(GRID_Q)
 
-# The optimiser's iteration budget. statsmodels defaults to 50, which on this
-# grid leaves most candidates stopped early rather than finished; the search
-# then ranks them on an AIC the optimiser never actually arrived at.
+# The optimiser's iteration budget. statsmodels defaults to 50, at which 34 of
+# the 40 seasonal candidates stop unconverged. At 1000, 17 still stop, all on a
+# failed line search rather than the cap.
 MAX_ITER = 1000
 
 
@@ -83,19 +80,8 @@ def load_inputs() -> tuple[pd.Series, pd.Series, pd.DataFrame, dict]:
 
 def search_orders(series: pd.Series, candidates: list[tuple[int, int, int]],
                   seasonal: tuple[int, int, int, int] | None = None) -> pd.DataFrame:
-    """Fit every candidate order and return the whole table, not only the winner.
-
-    Returning the full table is the point. A search that reports one order and
-    one score cannot be checked: the reader cannot see how many candidates were
-    tried, whether any failed to converge, or how close the runner-up was. All
-    three of those change what the winning order is worth.
-
-    Convergence is read off the optimiser rather than inferred from the absence
-    of an exception. A fit that ran out of iterations raises nothing and still
-    returns an AIC, so a search that only catches exceptions will rank a number
-    the optimiser never arrived at. Those rows stay in the table and are sorted
-    below every converged one, so they can be read but cannot win.
-    """
+    """Fit every candidate order and return the whole table, converged fits sorted first.
+    An unconverged fit still returns an AIC without raising, so the optimiser's flag is read."""
     rows = []
     for order in candidates:
         try:
@@ -110,9 +96,13 @@ def search_orders(series: pd.Series, candidates: list[tuple[int, int, int]],
             rows.append({"order": order, "aic": np.nan, "converged": False,
                          "note": type(exc).__name__})
             continue
-        converged = bool(getattr(fit, "mle_retvals", {}).get("converged", True))
-        rows.append({"order": order, "aic": fit.aic, "converged": converged,
-                     "note": "" if converged else "hit the iteration cap"})
+        retvals = getattr(fit, "mle_retvals", {})
+        converged = bool(retvals.get("converged", True))
+        note = ""
+        if not converged:
+            note = ("hit the iteration cap" if retvals.get("warnflag") == 1
+                    else "line search failed")
+        rows.append({"order": order, "aic": fit.aic, "converged": converged, "note": note})
     table = pd.DataFrame(rows)
     table = (table.sort_values(["converged", "aic"], ascending=[False, True],
                                kind="stable")
@@ -121,15 +111,8 @@ def search_orders(series: pd.Series, candidates: list[tuple[int, int, int]],
 
 
 def month_ends_by_day_count(last: pd.Timestamp, count: int) -> list[pd.Timestamp]:
-    """Step forward by the length of the current month, repeatedly.
-
-    This is the arithmetic that reads as obviously correct and is not. Adding
-    the length of the month the cursor is standing in lands it inside the next
-    month rather than on the same position in it, and the error accumulates:
-    from the end of a thirty-one day month the cursor can step clean over a
-    short month and never produce a label for it. It is kept here so that the
-    damage can be measured rather than argued about.
-    """
+    """Step forward by the length of the month the cursor is in: it looks right and drifts.
+    From January 31 it lands on March 3 and never labels February."""
     out = []
     cursor = last
     for _ in range(count):
@@ -137,6 +120,13 @@ def month_ends_by_day_count(last: pd.Timestamp, count: int) -> list[pd.Timestamp
         cursor = cursor + timedelta(days=days_in_month)
         out.append(cursor)
     return out
+
+
+def acf_gap(series: pd.Series, order: tuple[int, int, int], planted: ArmaProcess) -> float:
+    """Fit one order and return its largest ACF gap to the planted process over lags 1 to 12."""
+    fit = ARIMA(series, order=order).fit(method_kwargs={"maxiter": MAX_ITER})
+    fitted = ArmaProcess(np.r_[1, -fit.arparams], np.r_[1, fit.maparams])
+    return float(np.abs(fitted.acf(13)[1:] - planted.acf(13)[1:]).max())
 
 
 def main() -> None:
@@ -159,38 +149,51 @@ def main() -> None:
           f"labels match: {tuple(winner) == planted_order}")
     within_two = int((table["aic"] <= table.loc[0, "aic"] + 2).sum())
     planted_aic = float(table.loc[table["order"] == planted_order, "aic"].iloc[0])
-    print(f"  {within_two} candidates sit within 2 AIC of the winner, "
+    print(f"  {within_two - 1} other candidates sit within 2 AIC of the winner, "
           f"and the planted order is {planted_aic - table.loc[0, 'aic']:.2f} behind it")
 
     planted_process = ArmaProcess(
         np.r_[1, -np.array(arma_truth["ar_coefficients"])],
         np.r_[1, np.array(arma_truth["ma_coefficients"])])
     print(f"  {'order':>12}  {'AIC':>10}  {'max ACF gap to planted, lags 1-12':>36}")
+    top_gaps = []
     for _, row in table.head(3).iterrows():
-        fit = ARIMA(arma, order=tuple(row["order"])).fit(
-            method_kwargs={"maxiter": MAX_ITER})
-        fitted_process = ArmaProcess(np.r_[1, -fit.arparams], np.r_[1, fit.maparams])
-        gap = np.abs(fitted_process.acf(13)[1:] - planted_process.acf(13)[1:]).max()
+        gap = acf_gap(arma, tuple(row["order"]), planted_process)
+        top_gaps.append(gap)
         print(f"  {str(row['order']):>12}  {row['aic']:>10.2f}  {gap:>36.4f}")
-    print("  the top orders carry almost the same autocorrelation as the planted "
-          "recursion, written with different numbers of terms")
+    own_gap = acf_gap(arma, planted_order, planted_process)
+    print(f"  the top three differ from the planted autocorrelation by at most "
+          f"{max(top_gaps):.3f}; the planted order's own fit differs by {own_gap:.3f}, "
+          f"and the planted lag-1 value is {planted_process.acf(2)[1]:.3f}")
     print("  an information criterion ranks fits, it does not identify a mechanism: "
           "the order label is not the thing that was recovered, the dynamics are")
 
     print("\n--- 2. Read the same daily series at four scales ---")
     index = pd.read_csv(DATA_DIR / "index_daily.csv", parse_dates=["trade_date"])
     index = index.set_index("trade_date")["close"]
-    scales = {"day": index, "month": index.resample("ME").mean(),
-              "quarter": index.resample("QE").mean(), "year": index.resample("YE").mean()}
-    print(f"  {'scale':<9} {'points':>7}  {'sd/mean':>9}  {'largest step':>13}")
-    for name, series in scales.items():
+    index_truth = truth["index"]
+    planted_cycle = pd.Series(
+        index_truth["season_amplitude_log"]
+        * np.sin(2 * np.pi * np.arange(len(index)) / index_truth["season_period"]),
+        index=index.index)
+    rules = {"day": None, "month": "ME", "quarter": "QE", "year": "YE"}
+    scales, kept = {}, {}
+    print(f"  {'scale':<9} {'points':>7}  {'sd/mean':>9}  {'largest step':>13}  "
+          f"{'planted cycle kept':>19}")
+    for name, rule in rules.items():
+        series = index if rule is None else index.resample(rule).mean()
+        cycle = planted_cycle if rule is None else planted_cycle.resample(rule).mean()
+        scales[name] = series
+        kept[name] = cycle.std() / planted_cycle.std()
         rel = series.std() / series.mean()
         step = series.diff().abs().max() / series.mean()
-        print(f"  {name:<9} {len(series):>7}  {rel:>9.3f}  {step:>13.3f}")
+        print(f"  {name:<9} {len(series):>7}  {rel:>9.3f}  {step:>13.3f}  {kept[name]:>19.2f}")
     print(f"  the yearly series has only {len(scales['year'])} points: far too little "
-          f"history to fit anything with a memory of {LONGEST_MEMORY} and trust the result")
-    print("  aggregating is not free smoothing: averaging into a coarser step strongly "
-          "attenuates whatever repeats faster than that step, and can erase it outright")
+          f"history to fit a model with up to {LONGEST_MEMORY} ARMA coefficients and trust "
+          f"the result")
+    print(f"  aggregating is not free smoothing: the planted cycle repeats every "
+          f"{index_truth['season_period']} trading days, close to one year, so the yearly "
+          f"mean keeps {kept['year']:.0%} of it")
 
     print("\n--- 3. Search a seasonal grid on the monthly table and forecast forward ---")
     full_grid = [(p, d, q) for p, d, q in product(GRID_P, GRID_D, GRID_Q)]
@@ -199,13 +202,15 @@ def main() -> None:
     best_order = tuple(retail_table.loc[0, "order"])
     converged_count = int(retail_table["converged"].sum())
     unconverged_best = retail_table[~retail_table["converged"]].sort_values("aic")
+    reasons = ", ".join(f"{count} {note}" for note, count
+                        in unconverged_best["note"].value_counts().items())
     print(f"  {len(full_grid)} candidates, {converged_count} converged, "
           f"best {best_order}, AIC {retail_table.loc[0, 'aic']:.2f}, "
           f"runner-up gap {retail_table.loc[1, 'aic'] - retail_table.loc[0, 'aic']:.2f}")
     if len(unconverged_best):
         top_bad = unconverged_best.iloc[0]
-        print(f"  {len(unconverged_best)} candidates hit the iteration cap; the best AIC "
-              f"among them is {tuple(top_bad['order'])} at {top_bad['aic']:.2f}")
+        print(f"  {len(unconverged_best)} candidates stopped without converging ({reasons}); "
+              f"the best AIC among them is {tuple(top_bad['order'])} at {top_bad['aic']:.2f}")
         print(f"  that number is not a score the optimiser arrived at, so it is sorted "
               f"below every converged fit rather than allowed to win")
     model = sm.tsa.statespace.SARIMAX(
@@ -268,14 +273,13 @@ def main() -> None:
           "number says which orders were never tried: the count of candidates has to "
           "be printed next to the winner or the reader cannot tell these two runs apart")
 
-    # Step 3 asked for four values and got four numbers. It did not get four dates:
-    # get_forecast returns a horizon, and whoever calls it supplies the calendar
-    # those values are filed under. That is still forecast auditing rather than a
-    # detour into date arithmetic - a forecast nobody can line up against the
-    # months it is about is not usable, and the mislabelling raises nothing.
+    # get_forecast dates its values only when the index carries a frequency. Fitted
+    # on a plain array, or on a date index with a gap, it numbers them by position,
+    # and the caller builds the calendar. A wrong label raises nothing.
     print("\n--- 5. Attach dates to those four values, two ways, and audit both ---")
-    print("  the four numbers above carry no calendar of their own; these are the four")
-    print("  labels they would be filed under, built by the two routines people reach for")
+    print("  statsmodels dated the four values above from the month-end frequency on the index.")
+    print("  Fitted on a plain array, or on a date index with a gap, it numbers them by position")
+    print("  instead, and the caller builds the dates. These are the two routines people reach for:")
     last = retail.index[-1]
     by_hand = month_ends_by_day_count(last, FORECAST_MONTHS)
     by_offset = pd.date_range(last, periods=FORECAST_MONTHS + 1, freq="ME")[1:]
@@ -284,31 +288,34 @@ def main() -> None:
     print(f"  month-end offset         {[d.date().isoformat() for d in by_offset]}")
     off_by = [(d - (d + pd.offsets.MonthEnd(0))).days for d in by_hand]
     print(f"  days off the true month end, by hand: {off_by}")
+    print(f"  month-end offset equals the dates statsmodels attached: "
+          f"{bool((by_offset == mean.index).all())}")
 
     # One example is one example. The same routine is run from every start date in
     # the year the forecast lands in, so the failure rate is counted rather than
     # inferred from the four labels above.
     scanned = pd.date_range(f"{last.year}-01-01", f"{last.year}-12-31", freq="D")
-    duplicates = skipped = drifted = 0
+    skipped = drifted = 0
     for start in scanned:
         produced = month_ends_by_day_count(start, 6)
-        months = [(d.year, d.month) for d in produced]
-        duplicates += len(set(produced)) < len(produced)
-        skipped += len(set(months)) < len(months)
+        months = [d.year * 12 + d.month for d in [start, *produced]]
+        skipped += any(b - a > 1 for a, b in zip(months, months[1:]))
         drifted += any(d != d + pd.offsets.MonthEnd(0) for d in produced)
     print(f"  scanned every start date in {last.year} ({len(scanned)} of them), "
           f"six steps each:")
-    print(f"    sequences with a repeated date              {duplicates:>4}")
-    print(f"    sequences that visit one month twice        {skipped:>4}")
-    print(f"    sequences that miss the month end at least once {drifted:>4}")
-    print("  the failure is not repeated dates, it is labels that drift off the "
-          "period they are supposed to name")
+    print(f"    {'sequences that skip a whole month':<48} {skipped:>4}")
+    print(f"    {'sequences that miss the month end at least once':<48} {drifted:>4}")
+    if skipped:
+        print("  once a month is skipped, every later value is filed under the month after "
+              "its own")
 
     assert len(set(by_offset)) == len(by_offset), "forecast dates must be distinct"
     assert all(d == d + pd.offsets.MonthEnd(0) for d in by_offset), \
         "forecast dates must land on month ends"
-    print("  the two assertions above are the guard: forecast values carry no date of "
-          "their own, so a wrong label is attached silently and survives every join")
+    assert (by_offset == mean.index).all(), "forecast dates must match the fitted index"
+    print("  the script asserts that the offset labels are distinct, on month ends and equal "
+          "to the dates statsmodels attached: a wrong label raises nothing and survives "
+          "every join")
 
     print("\n--- 6. In-sample values and out-of-sample values from the same fit ---")
     in_sample = model.get_prediction(start=retail.index[-12])
@@ -320,10 +327,22 @@ def main() -> None:
             disp=False, maxiter=MAX_ITER)
     out_pred = holdout_fit.get_forecast(steps=12).predicted_mean
     out_rmse = float(np.sqrt(((retail.iloc[-12:].to_numpy() - out_pred.to_numpy()) ** 2).mean()))
-    print(f"  last 12 months, fitted by a model that saw them      RMSE {in_rmse:8.2f}")
-    print(f"  last 12 months, forecast by a model that did not     RMSE {out_rmse:8.2f}")
-    print(f"  the second number is {out_rmse / in_rmse:.1f}x the first, and only the "
-          f"second one describes a forecast")
+    # The holdout parameters run one step ahead over the full series, so this row
+    # differs from the first only in whether the parameters saw those months.
+    one_step = holdout_fit.apply(retail).get_prediction(start=retail.index[-12])
+    one_rmse = float(np.sqrt(((retail.iloc[-12:] - one_step.predicted_mean) ** 2).mean()))
+    print(f"  {'last 12 months, one step ahead, parameters that saw them':<64} "
+          f"RMSE {in_rmse:8.2f}")
+    print(f"  {'last 12 months, one step ahead, parameters that did not':<64} "
+          f"RMSE {one_rmse:8.2f}")
+    print(f"  {'last 12 months, forecast 1 to 12 steps by a model that did not':<64} "
+          f"RMSE {out_rmse:8.2f}")
+    print(f"  the first two rows differ only in whether the parameters saw those months "
+          f"({one_rmse / in_rmse:.1f}x)")
+    if one_rmse >= out_rmse:
+        print("  so the gap comes from seeing the data, not from forecasting further ahead")
+    else:
+        print("  part of the gap comes from forecasting further ahead")
 
     print("\n--- 7. Price the extra difference the test could not rule out ---")
     window = flow.loc["2014-03-01":"2014-08-31"]["total_redeem_amt"]
@@ -348,21 +367,21 @@ def main() -> None:
     best_rmse = min(rmse for _, rmse in scores.values())
     for label, (aic, rmse) in scores.items():
         print(f"  {label:>22}  {aic:>10.1f}  {rmse:>14,.0f}  {rmse / best_rmse:>8.2f}x")
-    spread = max(r for _, r in list(scores.values())[:3]) / min(
-        r for _, r in list(scores.values())[:3])
+    d_rmse = [rmse for _, rmse in list(scores.values())[:3]]
+    d_span = max(d_rmse) - min(d_rmse)
+    weekly_cut = scores["(2, 0, 2)"][1] - scores["(2, 0, 2) x (1,0,1,7)"][1]
     print(f"  AIC is printed as fit information only. It is computed on the training "
           f"rows and is")
     print(f"  not comparable across different d in any case, because differencing "
           f"changes the series")
     print(f"  being scored. The criterion used here is the holdout RMSE: 30 days no "
           f"model saw.")
-    print(f"  the three differencing orders land within {spread:.2f}x of each other on "
-          f"that criterion, so on this series the extra difference cost close to nothing")
-    print(f"  adding the weekly cycle moved the error further than every choice of d "
-          f"put together")
-    print("  the order of differencing was the wrong knob to argue over: the largest "
-          "structure in this column repeats every seven days, and none of the first "
-          "three models were told that")
+    print(f"  the three choices of d span {d_span / 1e6:.1f} million on that criterion; "
+          f"adding the weekly cycle to (2, 0, 2) cut it by {weekly_cut / 1e6:.1f} million")
+    if weekly_cut > d_span:
+        print("  the order of differencing was the wrong knob to argue over: the largest "
+              "structure in this column repeats every seven days, and none of the first "
+              "three models were told that")
 
 
 if __name__ == "__main__":

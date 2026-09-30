@@ -1,14 +1,14 @@
-"""Fit an additive model of trend, cycles and events, and check each term against what was planted.
-
-Demonstrates what the three terms of an additive forecaster each pick up:
-    1. Fit the long index and pull the fitted trend, cycle and remainder apart.
+"""This script fits Prophet, an additive model of trend, cycles and events, to the long index, the
+cash-flow table and the short listing history, and checks each term (trend changepoints,
+seasonality, event effects) against what was planted. The run prints 6 parts:
+    1. Fit the long index, pull the trend, cycle and remainder apart, then refit with the
+       planted period.
     2. Match the detected trend changepoints against the dates the drift actually changed.
     3. Turn the changepoint flexibility up and down, and count what each setting finds.
     4. Declare the promotion days as events, and read back the lift the model assigned them.
-    5. Cap the trend and floor it, and watch the forecast bend towards the ceiling it was given.
-    6. Ask a series shorter than a year for a yearly cycle, and check whether the answer means anything.
-
-Module 08: Time Series Forecasting - Additive Decomposable Forecasting.
+    5. Give the trend a ceiling, and see how far the forecast moves with the ceiling alone.
+    6. Ask a series shorter than a year for a yearly cycle, and check whether the answer
+       means anything.
 """
 
 import json
@@ -25,17 +25,15 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 CHANGEPOINT_SCALES = [0.01, 0.05, 0.5]
+CEILING_MULTIPLES = [1.05, 2.0, 5.0]
 MATCH_TOLERANCE_DAYS = 200
 FORECAST_DAYS = 365
 
 
 def fit_quietly(model: Prophet, frame: pd.DataFrame) -> Prophet:
-    """Fit a model without letting the sampler's progress output into the report.
+    """Fit a model with the prophet and cmdstanpy loggers silenced.
 
-    The backend attaches its own log handler lazily, the first time it runs a
-    fit, so clearing handlers once at import is undone a moment later. A filter
-    sits on the logger itself rather than on its handlers, so it keeps holding
-    however many handlers are added underneath it afterwards.
+    The filter sits on the logger, so handlers the backend adds later are covered too.
     """
     for noisy in ("prophet", "cmdstanpy"):
         log = logging.getLogger(noisy)
@@ -52,12 +50,9 @@ def as_prophet_frame(series: pd.Series) -> pd.DataFrame:
 
 
 def nearest_detected(found: pd.Index, target: pd.Timestamp) -> tuple:
-    """Return the gap in days to the closest detected changepoint, and which one it is.
+    """Return the gap in days to the closest detected changepoint, and that changepoint.
 
-    Detecting nothing is a real outcome at a tight enough prior, so it is
-    answered here with an infinite gap and no date. Returning both values from
-    one call is what makes that answer usable: a guard that covers the distance
-    but leaves the caller to index the same empty set separately is not a guard.
+    An empty set gives an infinite gap and None, since a tight prior can detect nothing.
     """
     if len(found) == 0:
         return float("inf"), None
@@ -100,16 +95,32 @@ def main() -> None:
     print(f"  the trend carries the series: once it is subtracted, the cycle holds "
           f"{np.var(fitted['yearly']) / np.var(detrended):.1%} of what is left and the "
           f"remainder holds {np.var(residual) / np.var(detrended):.1%}")
-    print("  a share taken against the raw series would have reported the cycle as "
-          "0.0% and said nothing, because the trend spans four hundred points and "
-          "the cycle spans four")
+    print(f"  a share taken against the raw series would have reported the cycle as "
+          f"{np.var(fitted['yearly']) / np.var(frame['y']):.1%} and said nothing, because "
+          f"the trend spans {fitted['trend'].max() - fitted['trend'].min():.0f} points and "
+          f"the cycle spans {fitted['yearly'].max() - fitted['yearly'].min():.0f}")
     planted_swing = float(
         (np.exp(index_truth["season_amplitude_log"]) - 1) * fitted["trend"].mean())
     print(f"  the planted cycle is worth about {planted_swing:.1f} points either side "
           f"of the trend, and this fit recovered {fitted['yearly'].max():.1f}")
-    print(f"  the cycle repeats every {index_truth['season_period']} rows, and rows "
-          f"here are trading days; the fitted term is indexed by calendar date, so "
-          f"the two run at slightly different rates and the match is partial")
+    period = index_truth["season_period"]
+    period_days = float(np.mean((index.index[period:] - index.index[:-period]).days))
+    years = (index.index[-1] - index.index[0]).days / 365.25
+    print(f"  the cycle repeats every {period} rows, and rows here are trading days, so one "
+          f"cycle is {period_days:.0f} calendar days; the yearly term assumes 365.25, and "
+          f"over {years:.1f} years the planted cycle drifts "
+          f"{years * (365.25 / period_days - 1):.1f} turns against it, so a fixed yearly "
+          f"shape averages most of it away")
+    refit = Prophet(yearly_seasonality=False, weekly_seasonality=False,
+                    daily_seasonality=False)
+    refit.add_seasonality(name="planted", period=period_days, fourier_order=3)
+    refit_fit = fit_quietly(refit, frame).predict(frame)
+    refit_residual = frame["y"].to_numpy() - refit_fit["yhat"].to_numpy()
+    print(f"  refit with a {period_days:.0f}-day seasonality instead: the cycle reaches "
+          f"{refit_fit['planted'].max():.1f} against the planted {planted_swing:.1f}, and "
+          f"the remainder sd falls from {residual.std():.2f} to {refit_residual.std():.2f}, "
+          f"so {1 - np.var(refit_residual) / np.var(residual):.0%} of what the yearly fit "
+          f"called remainder was the cycle")
 
     print("\n--- 2. Match detected changepoints against the planted ones ---")
     deltas = pd.Series(model.params["delta"].mean(axis=0), index=model.changepoints)
@@ -131,11 +142,22 @@ def main() -> None:
           f"a detected one within {MATCH_TOLERANCE_DAYS} days")
     print("  the fitter was never told where to look; it places candidates on a grid "
           "and shrinks the ones the data does not pay for")
+    spacing = model.changepoints.diff().dt.days.mean()
+    first, last = model.changepoints.iloc[0], model.changepoints.iloc[-1]
+    rng = np.random.default_rng(0)
+    random_dates = first + pd.to_timedelta(rng.integers(0, (last - first).days, 2000), unit="D")
+    random_rate = np.mean([nearest_detected(significant.index, d)[0] <= MATCH_TOLERANCE_DAYS
+                           for d in random_dates])
+    print(f"  but the candidates sit {spacing:.0f} days apart, so each gap above is set by "
+          f"the grid, and {random_rate:.0%} of random dates in the same span also have a "
+          f"detected change within {MATCH_TOLERANCE_DAYS} days; "
+          f"{len(index_truth['changepoint_date'])} random dates would all match "
+          f"{random_rate ** len(index_truth['changepoint_date']):.0%} of the time")
 
     print("\n--- 3. Turn the flexibility up and down ---")
     print(f"  {'prior scale':>12}  {'changes > 0.01':>15}  {'planted matched':>16}  "
           f"{'unplanted':>10}  {'in-sample RMSE':>15}")
-    unplanted_by_scale, rmse_by_scale = [], []
+    matched_by_scale, unplanted_by_scale, rmse_by_scale = [], [], []
     for scale in CHANGEPOINT_SCALES:
         alt = fit_quietly(Prophet(changepoint_prior_scale=scale, yearly_seasonality=True,
                                   weekly_seasonality=False, daily_seasonality=False), frame)
@@ -152,21 +174,23 @@ def main() -> None:
             min(abs((cp - pd.Timestamp(d)).days)
                 for d in index_truth["changepoint_date"]) > MATCH_TOLERANCE_DAYS
             for cp in alt_significant.index)
+        matched_by_scale.append(alt_matched)
         unplanted_by_scale.append(unplanted)
         rmse_by_scale.append(rmse)
         print(f"  {scale:>12.2f}  {len(alt_significant):>15}  "
               f"{alt_matched:>10} of {len(index_truth['changepoint_date'])}  "
               f"{unplanted:>10}  {rmse:>15.2f}")
-    print(f"  the four planted changes are found at every setting, so the 'planted "
-          f"matched' column")
-    print(f"  separates none of them. What a looser prior adds is the 'unplanted' "
-          f"column: {unplanted_by_scale}")
-    print(f"  slope changes the generator never made. The last column, the in-sample "
-          f"fit, does not")
-    print(f"  grow at all - it falls, {rmse_by_scale[0]:.2f} -> {rmse_by_scale[-1]:.2f}. "
-          f"That is the trade: a better")
-    print(f"  fit to the history bought with {unplanted_by_scale[-1] - unplanted_by_scale[0]} "
-          f"more changes that were never in it")
+    planted_count = len(index_truth["changepoint_date"])
+    if all(found == planted_count for found in matched_by_scale):
+        print(f"  every setting matches all {planted_count} planted changes, so the 'planted "
+              f"matched' column separates none of them")
+    print(f"  a looser prior adds slope changes the generator never made: 'unplanted' goes "
+          f"{' -> '.join(str(n) for n in unplanted_by_scale)}")
+    if rmse_by_scale[-1] < rmse_by_scale[0] and unplanted_by_scale[-1] > unplanted_by_scale[0]:
+        print(f"  the in-sample RMSE falls {rmse_by_scale[0]:.2f} -> {rmse_by_scale[-1]:.2f}: "
+              f"a better fit to the history, bought with "
+              f"{unplanted_by_scale[-1] - unplanted_by_scale[0]} more changes that were "
+              f"never in it")
 
     print("\n--- 4. Declare the promotion days as events ---")
     inflow = as_prophet_frame(flow["total_purchase_amt"])
@@ -189,6 +213,12 @@ def main() -> None:
               f"{flow_truth['campaign_lift']:>13.2f}")
     print(f"  mean fitted lift {lifts.mean():.2f} against planted "
           f"{flow_truth['campaign_lift']:.2f}")
+    day_factor = np.array(flow_truth["day_of_month_factor"])
+    on_factor = day_factor[pd.to_datetime(flow_truth["campaign_days"]).day - 1].mean()
+    print(f"  the generator also multiplies each day by a day-of-month factor the model "
+          f"does not have; on these four days it averages {on_factor:.2f}, and "
+          f"{flow_truth['campaign_lift']:.2f} x {on_factor:.2f} = "
+          f"{flow_truth['campaign_lift'] * on_factor:.2f}")
     without_events = fit_quietly(
         Prophet(yearly_seasonality=False, weekly_seasonality=True,
                 daily_seasonality=False), inflow)
@@ -202,29 +232,26 @@ def main() -> None:
           "alone: that is what makes them events rather than outliers")
 
     print("\n--- 5. Give the trend a ceiling ---")
-    capped_input = inflow.copy()
-    ceiling = float(inflow["y"].max() * 1.05)
     floor = float(inflow["y"].min() * 0.5)
-    capped_input["cap"] = ceiling
-    capped_input["floor"] = floor
-    capped = fit_quietly(
-        Prophet(growth="logistic", yearly_seasonality=False, weekly_seasonality=True,
-                daily_seasonality=False), capped_input)
-    future = capped.make_future_dataframe(periods=FORECAST_DAYS)
-    future["cap"] = ceiling
-    future["floor"] = floor
-    capped_out = capped.predict(future)
-
-    linear = fit_quietly(Prophet(yearly_seasonality=False, weekly_seasonality=True,
-                                 daily_seasonality=False), inflow)
-    linear_out = linear.predict(linear.make_future_dataframe(periods=FORECAST_DAYS))
-    print(f"  ceiling {ceiling:,.0f}   floor {floor:,.0f}   horizon {FORECAST_DAYS} days")
-    print(f"  {'model':<20} {'trend at the end':>18}  {'share of ceiling':>17}")
-    for label, out in [("logistic", capped_out), ("linear", linear_out)]:
-        end = float(out["trend"].iloc[-1])
-        print(f"  {label:<20} {end:>18,.0f}  {end / ceiling:>16.1%}")
-    print("  the ceiling is an input, not a finding: the logistic curve bends because "
-          "it was handed a number, and a wrong number bends it just as smoothly")
+    print(f"  floor {floor:,.0f}   horizon {FORECAST_DAYS} days   generator trend present = "
+          f"{flow_truth['purchase_has_trend']}")
+    print(f"  {'model':<20} {'ceiling':>14} {'trend at the end':>18}  {'share of ceiling':>17}")
+    ends = []
+    for multiple in CEILING_MULTIPLES:
+        ceiling = float(inflow["y"].max() * multiple)
+        capped = fit_quietly(
+            Prophet(growth="logistic", yearly_seasonality=False, weekly_seasonality=True,
+                    daily_seasonality=False), inflow.assign(cap=ceiling, floor=floor))
+        future = capped.make_future_dataframe(periods=FORECAST_DAYS)
+        end = float(capped.predict(future.assign(cap=ceiling, floor=floor))["trend"].iloc[-1])
+        ends.append(end)
+        print(f"  {f'logistic, max x {multiple:g}':<20} {ceiling:>14,.0f} {end:>18,.0f}  "
+              f"{end / ceiling:>16.1%}")
+    linear_out = without_events.predict(
+        without_events.make_future_dataframe(periods=FORECAST_DAYS))
+    print(f"  {'linear':<20} {'':>14} {float(linear_out['trend'].iloc[-1]):>18,.0f}")
+    print(f"  the ceiling is an input, not a finding: with the data unchanged, the ceiling "
+          f"alone moved the end of the trend by {max(ends) - min(ends):,.0f}")
 
     print("\n--- 6. Ask a series shorter than a year for a yearly cycle ---")
     short = as_prophet_frame(listing)
@@ -234,11 +261,13 @@ def main() -> None:
     span_days = (short["ds"].max() - short["ds"].min()).days
     print(f"  {len(short)} rows spanning {span_days} days, "
           f"{span_days / 365:.2f} of a year")
-    print(f"  the fitter still returned a yearly component, swinging "
-          f"{forced_fit['yearly'].min():.2f} .. {forced_fit['yearly'].max():.2f} "
-          f"against a series that itself has sd {short['y'].std():.2f}")
-    print(f"  that component is larger than the series it was extracted from, which "
-          f"is possible only because another term moves against it")
+    print(f"  the fitter still returned a yearly component with sd "
+          f"{forced_fit['yearly'].std():.2f}, against a series that itself has sd "
+          f"{short['y'].std():.2f}")
+    if forced_fit["yearly"].std() > short["y"].std():
+        print(f"  a component larger than its series is possible only because another term "
+              f"moves against it: the yearly term and the trend correlate at "
+              f"{np.corrcoef(forced_fit['yearly'], forced_fit['trend'])[0, 1]:.2f}")
     print(f"  generator: yearly component present = "
           f"{truth['listing']['yearly_component_present']}")
 

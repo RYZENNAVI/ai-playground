@@ -1,14 +1,12 @@
-"""Split a series into trend, cycle and remainder, then ask whether what is left can be modelled.
-
-Demonstrates the two questions that come before any forecast is fitted:
+"""This script splits the long daily index into trend, cycle and remainder with a moving-average
+decomposition and with robust STL, then tests the cash-flow columns for stationarity with the ADF
+and KPSS tests. Both checks come before any forecast is fitted. The run prints 6 parts:
     1. Decompose the long index at the cycle length it was built with, and score the recovered cycle.
     2. Decompose it again at three wrong cycle lengths, and read what the mistake costs.
     3. Run a robust decomposition on the same series and compare it against the moving-average one.
     4. Test both cash-flow columns for a unit root, and check each verdict against the generator.
     5. Find what hid the wandering level from that test, and rerun it with the cycle removed.
     6. Difference the wandering column, difference it once too often, and cross-check with KPSS.
-
-Module 08: Time Series Forecasting - Decomposition and Stationarity.
 """
 
 import json
@@ -54,14 +52,8 @@ def planted_cycle(n: int, period: int, amplitude: float) -> np.ndarray:
 
 
 def score_seasonal(recovered: pd.Series, planted: np.ndarray) -> tuple[float, float]:
-    """Return the correlation between a recovered cycle and the planted one, and its amplitude.
-
-    Correlation is the criterion rather than a plot, because a decomposition
-    always returns a seasonal component of the length it was asked for: the
-    component exists whether or not a cycle of that length is in the data. What
-    separates a right answer from a wrong one is whether that component tracks
-    the cycle the series was built from.
-    """
+    """Return how closely a recovered cycle tracks the planted one, and its half-amplitude.
+    A decomposition returns a cycle of any length it is asked for, so only this tells periods apart."""
     left = recovered.to_numpy(dtype=float)
     mask = ~np.isnan(left)
     corr = float(np.corrcoef(left[mask], planted[mask])[0, 1])
@@ -71,19 +63,8 @@ def score_seasonal(recovered: pd.Series, planted: np.ndarray) -> tuple[float, fl
 
 def stationary_call_rate(n: int, cycle: np.ndarray | None, truth: dict,
                          divide_back_out: bool = False) -> float:
-    """Return how often the unit-root test calls a random walk of length n stationary.
-
-    Every series drawn here is a random walk, so every stationary verdict is a
-    mistake and the returned rate is an error rate. The only thing that changes
-    between calls is whether a fixed repeating cycle is laid over the walk
-    before the test sees it. That isolates the cycle as the cause: the walk, the
-    length and the test are identical in both conditions.
-
-    divide_back_out multiplies the cycle in and then divides it out again. That
-    is an identity, not an experiment, and the rate it returns has to match the
-    one measured without a cycle at all. It is here to show that the division
-    used on the real column further down loses nothing, not to add evidence.
-    """
+    """Return how often ADF calls a random walk of length n stationary, which is an error rate.
+    Every call reuses the same seed, so the walks match and only the cycle differs between calls."""
     rng = np.random.default_rng(POWER_SEED + n)
     sigma = truth["redeem_random_walk_sigma"]
     calls = 0
@@ -106,18 +87,13 @@ def cycle_over(dates: pd.DatetimeIndex, truth: dict) -> np.ndarray:
 
 
 def verdict(p_value: float, reject_means: str, accept_means: str) -> str:
-    """Turn a p-value into the sentence it actually supports."""
+    """Turn a p-value into the verdict it supports."""
     return reject_means if p_value < ALPHA else accept_means
 
 
 def adf_report(series: pd.Series, label: str) -> float:
-    """Run an augmented Dickey-Fuller test and print the parts that get misread.
-
-    The null hypothesis is that the series has a unit root, so a small p-value
-    is the good news: it is evidence against a random walk. Printing the
-    statistic next to the critical values matters because a p-value alone hides
-    how close the call was.
-    """
+    """Run an augmented Dickey-Fuller test, whose null is a unit root, and print its critical values.
+    The critical values show how close the call was, which a p-value alone hides."""
     stat, p_value, used_lag, nobs, crit, _ = adfuller(series.dropna(), autolag="AIC")
     call = verdict(p_value, "stationary", "unit root not rejected")
     print(f"  {label:<34} stat {stat:9.3f}  p {p_value:8.4f}  "
@@ -128,22 +104,10 @@ def adf_report(series: pd.Series, label: str) -> float:
 
 
 def kpss_report(series: pd.Series, label: str, regression: str = "c") -> float:
-    """Run a KPSS test, whose null hypothesis is the reverse of the previous one.
-
-    KPSS assumes stationarity and looks for evidence against it, so its verdict
-    reads the opposite way round. Running both is what turns a single borderline
-    p-value into an agreement or a disagreement, and a disagreement is itself
-    information: it usually means the series is neither clean noise nor a clean
-    random walk.
-
-    regression says what the test is allowed to call stationary. 'c' asks
-    whether the series is stationary around a level, 'ct' around a straight
-    line. A column built with a growth term is not stationary around a level,
-    so asking the first question of it is asking the wrong one, and the answer
-    that comes back is not usable as a cross-check on anything.
-    """
+    """Run a KPSS test, whose null hypothesis (stationarity) is the reverse of ADF's.
+    regression 'c' asks about stationarity around a level, 'ct' around a straight line."""
     # The lookup table this test interpolates in stops at 0.01 and 0.10, and it
-    # warns whenever a statistic falls outside that range. Every call here does,
+    # warns whenever a statistic falls outside that range. Most calls here do,
     # which is the point being reported below rather than something to fix.
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", InterpolationWarning)
@@ -195,7 +159,7 @@ def main() -> None:
     print(f"  every run returned a seasonal component; {len(close)} of {len(tracking)} "
           f"track the cycle above {TRACKING_CORRELATION}: {close}")
     if multiples:
-        print(f"  {multiples} are whole multiples of {period}, and a multiple spans the "
+        print(f"  whole multiples of {period} among them: {multiples}. A multiple spans the "
               f"real cycle a whole number of times, so it fits it just as well")
         print("  correlation alone does not say the period is the shortest one that works")
 
@@ -206,8 +170,11 @@ def main() -> None:
           f"remainder sd {stl.resid.std():.5f}")
     print(f"  moving average  correlation {corr:+.4f}  half-amplitude {amp:.4f}  "
           f"remainder sd {np.log(resid).std():.5f}")
-    print("  STL lets the cycle change shape over thirty years; the moving average "
+    years = (index.index[-1] - index.index[0]).days / 365.25
+    print(f"  STL lets the cycle change shape over {years:.0f} years; the moving average "
           "holds it fixed")
+    if corr > stl_corr:
+        print("  the planted cycle never changes shape, so the fixed one fits it better here")
 
     print("\n--- 4. Test both cash-flow columns for a unit root ---")
     window = flow.loc["2014-03-01":"2014-08-31"]
@@ -258,8 +225,8 @@ def main() -> None:
     print(f"  one realisation is not the error rate: the first row above says this "
           f"still goes wrong {bare:.0%} of the time on a clean walk, and this column "
           f"is one of those times")
-    print("  the cycle removal is still what makes the verdict worth reading; it just "
-          "does not make a 184-row verdict conclusive")
+    print(f"  the cycle removal is still what makes the verdict worth reading; it just "
+          f"does not make a {n}-row verdict conclusive")
 
     print("\n--- 6. Difference the wandering column, then difference it once too often ---")
     print(f"  {'series':<34} {'sd':>14}  {'ADF p':>8}  {'verdict':>26}")
@@ -305,20 +272,17 @@ def main() -> None:
         adf_says = adf_p < ALPHA
         print(f"  {label}{str(adf_says):>16}{str(level >= ALPHA):>22}"
               f"{str(trend >= ALPHA):>22}")
-    print("\n  The middle column agrees with ADF on all three, and that agreement is "
-          "worth nothing:")
-    print("  the outflow was built with a growth term, so it is not stationary around a "
-          "level, and")
-    print("  a test asked whether it is stationary around a level has been asked a "
-          "question with a")
-    print("  known answer. It fails to reject on everything, so it confirms whatever it "
-          "is put next to.")
-    print("  The right-hand column asks the question the generator actually poses and "
-          "contradicts ADF")
-    print("  on the raw outflow, which is the disagreement the generator says should be "
-          "there.")
-    print("  Two tests agreeing is only evidence when each of them could have said "
-          "something else.")
+    print("\n  The middle column agrees with ADF on all three rows. On the raw outflow that "
+          "agreement is")
+    print("  worth nothing: the column was built with a growth term, so it is not stationary "
+          "around a")
+    print("  level, and ADF here and this KPSS column both allow only a level. The right-hand "
+          "column")
+    print("  allows the growth term and contradicts ADF on the raw outflow, which is the "
+          "disagreement")
+    print("  the generator says should be there. Two tests agreeing is only evidence when "
+          "each of them")
+    print("  could have said something else.")
 
 
 if __name__ == "__main__":
