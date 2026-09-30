@@ -1,20 +1,20 @@
-"""Read one file two ways, get the same shape twice, and only one of them is the data.
+"""This script reads one space-separated listings file into pandas two ways and runs
+exploratory data analysis (EDA) on both. The two frames have the same shape and an
+equally clean profile, and only one of them is the data, so a clean profile is no
+evidence that the load was correct.
 
-Demonstrates why a clean-looking profile is not evidence that the load was correct:
-    1. Load the listings with a single-space separator and with a whitespace-run separator.
-    2. Compare the two frames on the things people usually check, which agree.
-    3. Check a quantity that can be falsified instead, and watch the two disagree.
-    4. Show the mechanism on the first affected row, field by field.
-    5. Count how much of the file is affected, and what the wrong read does to the missing-value report.
-    6. Profile the correct frame, and check the profile against the generator that wrote it.
-
-Module 07: Machine Learning and Deep Learning Foundations - Load Auditing.
+The run prints 6 parts:
+    1. The same file, read with a single-space and with a whitespace-run separator.
+    2. The checks people run, which agree.
+    3. A check that can be falsified, which does not agree.
+    4. The mechanism, on the first affected row.
+    5. How much of the file this touches, and which columns the gaps move to.
+    6. Profiling the frame that was read properly, checked against script 01's formula.
 """
 
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 # Print UTF-8 even when the output is piped or redirected on Windows.
@@ -87,7 +87,7 @@ def show_the_mechanism(path, correct, collapsed):
           + "   one space")
     print("    " + "".join(f"{str(collapsed.loc[index, c]):>{width}}" for c in columns)
           + "   whitespace run")
-    print("\n    The empty field is not read as missing, it is not read at all.")
+    print("\n    The whitespace-run read skips the empty field, so it never becomes a NaN.")
     print("    Every column to its right slides one place left, all the way to price.")
 
 
@@ -112,10 +112,10 @@ def count_the_damage(correct, collapsed):
               f"{int(collapsed[column].isna().sum()):>16}")
     last = correct.columns[-1]
     two_holes = int(total_correct - moved)
-    print(f"\n    The shift runs to the end of the row, so under the wrong read a row")
-    print(f"    with one hole loses its {last} - the label. The {two_holes} rows that")
-    print(f"    carry two holes shift twice and lose {correct.columns[-2]} instead, which")
-    print("    is why the wrong read spreads its gaps over the last two columns.")
+    print("\n    The shift runs to the end of the row, so under the wrong read a row")
+    print(f"    with one hole loses its {last}, the label. The {two_holes} rows with two")
+    print(f"    holes shift twice and lose {correct.columns[-2]} as well, which is why the")
+    print("    wrong read puts its gaps in the last two columns.")
 
 
 def profile_the_correct_frame(correct):
@@ -137,6 +137,8 @@ def profile_the_correct_frame(correct):
     print(f"\n    five strongest latent correlations: {top}")
     print(f"    the five that were paid into the price: {paid}")
     print(f"    they match: {sorted(top) == sorted(paid)}")
+    weakest = min(paid, key=lambda column: ranked[column])
+    print(f"    weakest paid column: {weakest} at {ranked[weakest]:.4f}")
     print(f"    strongest noise column: {ranked.index[PRICED_LATENTS]} at "
           f"{ranked.iloc[PRICED_LATENTS]:.4f}")
 
@@ -145,24 +147,36 @@ def main():
     if not LISTINGS.exists():
         raise SystemExit("Run 01_build_tabular_datasets.py first.")
 
+    # 1. The same file, two separators
+
     print("--- 1. The same file, two separators ---")
     correct, collapsed = load_both_ways(LISTINGS)
     print(f"    pd.read_csv(path, sep=' ')            -> {correct.shape}")
     print(f"    pd.read_csv(path, sep=r'\\s+')         -> {collapsed.shape}")
 
+    # 2. The checks people run, which agree
+
     print("\n--- 2. The checks people run, which agree ---")
     compare_the_usual_checks(correct, collapsed)
 
+    # 3. A check that can be falsified, which does not agree
+
     print("\n--- 3. A check that can be falsified, which does not agree ---")
     compare_a_falsifiable_check(correct, collapsed)
-    print("\n    gearbox is manual or automatic. A reading that finds hundreds of")
-    print("    distinct values for it has not found a surprise in the data.")
+    print("\n    gearbox is manual or automatic, so a read that finds hundreds of")
+    print("    distinct values for it has misread the file.")
+
+    # 4. The mechanism, on the first affected row
 
     print("\n--- 4. The mechanism, on the first affected row ---")
     show_the_mechanism(LISTINGS, correct, collapsed)
 
+    # 5. How much of the file this touches
+
     print("\n--- 5. How much of the file this touches ---")
     count_the_damage(correct, collapsed)
+
+    # 6. Profiling the frame that was read properly
 
     print("\n--- 6. Profiling the frame that was read properly ---")
     profile_the_correct_frame(correct)

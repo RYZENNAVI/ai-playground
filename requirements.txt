@@ -178,6 +178,8 @@ ultralytics>=8.3.0        # 14 -> YOLO(...).train() and .predict() on the genera
 # --- 07-ml-dl-foundation ---
 catboost>=1.2.0           # 03 -> CatBoostRegressor; 05 -> CatBoostClassifier; 06 -> one of the blended regressors
 xgboost>=2.0.0            # 05 -> XGBClassifier; 06 -> one of the blended regressors
+ngboost>=0.5.0            # 05 -> NGBClassifier
+#                         #   Pulls lifelines, which caps pandas below 3.0.
 lightgbm>=4.0.0           # 04 -> the model every leakage variant is measured on; 05, 06 -> same family
 tensorflow>=2.16.0        # 08 -> the gradient-tape rung and the one-line fitting interface
 #                         #   Pulls keras as a transitive dependency.

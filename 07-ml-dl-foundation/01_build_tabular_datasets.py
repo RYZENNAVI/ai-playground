@@ -1,14 +1,18 @@
-"""Generate the four tabular datasets the rest of this module trains on, from known ground truth.
+"""This script builds the four tabular datasets the rest of the module trains on as synthetic
+data with known ground truth: each one is drawn from a stated model, so later scripts can check
+what they recover against the numbers that made the file.
 
-Demonstrates how to build a dataset whose every claim can later be checked:
-    1. Draw vehicle listings from an explicit price formula and keep the formula.
-    2. Write them space separated, leaving a missing value as nothing at all.
-    3. Draw an attrition table from an explicit log-odds model, including two dead columns.
-    4. Draw a speaker table whose classes are almost separable, as a contrast case.
-    5. Draw a small property table for the from-scratch network to fit.
-    6. Print the coefficients that produced each file, so later scripts can be scored against them.
-
-Module 07: Machine Learning and Deep Learning Foundations - Dataset Construction.
+The run prints 6 parts:
+    1. Vehicle listings, priced from a known formula. A training file of 30000 rows and a
+       holdout of 10000.
+    2. Written space separated, a missing value written as nothing. One row's fields are
+       counted two ways.
+    3. Employee attrition, drawn from a stated log-odds model. Two columns are constant on
+       purpose.
+    4. Speaker acoustics, the near-separable contrast to attrition. mean_fundamental alone
+       sorts most rows.
+    5. Property valuation, small and dense for the networks in scripts 07 and 08.
+    6. The formulas behind the vehicle, attrition and property files.
 """
 
 import sys
@@ -27,16 +31,11 @@ VEHICLE_TRAIN_ROWS = 30000
 VEHICLE_HOLDOUT_ROWS = 10000
 ATTRITION_ROWS = 1800
 SPEAKER_ROWS = 3200
-# The share of employees who leave. The intercept of the log-odds model is
-# solved for this number rather than guessed, so the class balance is a
-# parameter of the file and not an accident of the coefficients.
 TARGET_POSITIVE_RATE = 0.16
 PROPERTY_ROWS = 506
 
-# Categorical fields that are allowed to go missing in the vehicle file. These
-# are the three that carry the separator trap in script 02: a missing value is
-# written as nothing between two spaces, so a reader that collapses runs of
-# whitespace shifts the whole rest of the row one column to the left.
+# Categorical fields that may go missing. Script 02 reads these three for its
+# separator check.
 VEHICLE_NULLABLE = ("body_type", "fuel_type", "gearbox")
 MISSING_RATE = 0.022
 
@@ -45,8 +44,8 @@ BRAND_TIERS = {
     5: 13000.0, 6: 11000.0, 7: 9500.0, 8: 8000.0, 9: 6500.0,
 }
 
-# The price formula. Every number here is recovered or contradicted by a later
-# script, so it is stated once and printed at the end of the run.
+# The price formula, printed at the end of the run. Scripts 02 and 03 check which
+# v_ columns were paid, and script 03 takes NOISE_SIGMA as its error floor.
 AGE_HALF_LIFE_YEARS = 6.0
 POWER_COEFFICIENT = 41.0
 ODOMETER_COEFFICIENT = -430.0
@@ -55,15 +54,22 @@ GEARBOX_AUTOMATIC_BONUS = 1900.0
 LATENT_WEIGHTS = (2600.0, -1800.0, 1200.0, 900.0, -650.0)
 NOISE_SIGMA = 900.0
 
+# The attrition log-odds, in the order they are summed.
+ATTRITION_LOG_ODDS = (
+    ("OverTime=Yes", 1.25), ("MaritalStatus=Single", 0.85),
+    ("BusinessTravel=Travel_Frequently", 0.55), ("YearsAtCompany", -0.085),
+    ("MonthlyIncome", -0.000105), ("JobSatisfaction", -0.24),
+    ("JobInvolvement", -0.20), ("WorkLifeBalance", -0.17),
+    ("DistanceFromHome", 0.030), ("Age", -0.019),
+    ("NumCompaniesWorked", 0.11), ("StockOptionLevel", -0.22),
+)
+
 
 def _write_space_separated(frame, path):
-    """Write a frame with single spaces and empty fields for missing values.
+    """Write a frame with single spaces, leaving a missing value as an empty field.
 
-    This is the layout the vehicle file ships in. It matters that a missing
-    value becomes an empty field rather than a placeholder: the row still has
-    the right number of separators, so the file looks intact to any reader that
-    treats one space as one separator, and silently loses a column to any
-    reader that treats a run of whitespace as one separator.
+    The row keeps its separator count, so only a reader that splits on runs of
+    whitespace loses a column.
     """
     columns = list(frame.columns)
     lines = [" ".join(columns)]
@@ -93,7 +99,10 @@ def make_vehicles(rng, rows, first_id):
 
     reg_date = reg_year * 10000 + reg_month * 100 + reg_day
     list_date = list_year * 10000 + list_month * 100 + list_day
-    age_years = np.maximum((list_date - reg_date) / 10000.0, 0.0)
+    # Age in calendar days over 365, the way scripts 03 and 04 compute it.
+    registered = pd.to_datetime(reg_date.astype(str), format="%Y%m%d")
+    listed = pd.to_datetime(list_date.astype(str), format="%Y%m%d")
+    age_years = np.maximum((listed - registered).days.to_numpy() / 365.0, 0.0)
 
     brand = rng.integers(0, 10, rows)
     model_code = rng.integers(0, 120, rows)
@@ -106,8 +115,8 @@ def make_vehicles(rng, rows, first_id):
     offer_type = np.zeros(rows, dtype=int)
 
     power = np.clip(rng.normal(120, 45, rows), 0, None).round().astype(int)
-    # A handful of listings carry an implausible power reading. Script 03 asks
-    # whether flagging them changes anything.
+    # A handful of listings carry an implausible power reading. Script 03 flags
+    # readings above 580 and clips them.
     outlier_idx = rng.choice(rows, size=max(1, rows // 200), replace=False)
     power[outlier_idx] = rng.integers(600, 20000, len(outlier_idx))
     odometer_km = np.clip(rng.normal(9.0, 3.4, rows), 0.05, 15.0).round(1)
@@ -146,7 +155,6 @@ def make_vehicles(rng, rows, first_id):
         frame[f"v_{i}"] = latent[:, i].round(4)
     frame["price"] = price
 
-    # Knock holes in the three nullable categorical columns.
     for column in VEHICLE_NULLABLE:
         mask = rng.random(rows) < MISSING_RATE
         frame.loc[mask, column] = np.nan
@@ -197,25 +205,28 @@ def make_attrition(rng, rows):
     performance_rating = np.where(percent_salary_hike > 20, 4, 3)
     training_times = rng.integers(0, 7, rows)
 
-    # The generative model. Overtime and being single dominate; income and
-    # tenure pull the other way. Script 05 asks which library recovers this.
-    linear = (1.25 * (over_time == "Yes")
-             + 0.85 * (marital_status == "Single")
-             + 0.55 * (business_travel == "Travel_Frequently")
-             - 0.085 * years_at_company
-             - 0.000105 * monthly_income
-             - 0.24 * job_satisfaction
-             - 0.20 * job_involvement
-             - 0.17 * work_life_balance
-             + 0.030 * distance_from_home
-             - 0.019 * age
-             + 0.11 * num_companies_worked
-             - 0.22 * stock_option_level
-             + rng.normal(0, 0.32, rows))
+    # Overtime and being single carry the largest weights. Script 05 asks how much
+    # of this a logistic regression recovers from 1800 rows.
+    terms = {
+        "OverTime=Yes": over_time == "Yes",
+        "MaritalStatus=Single": marital_status == "Single",
+        "BusinessTravel=Travel_Frequently": business_travel == "Travel_Frequently",
+        "YearsAtCompany": years_at_company,
+        "MonthlyIncome": monthly_income,
+        "JobSatisfaction": job_satisfaction,
+        "JobInvolvement": job_involvement,
+        "WorkLifeBalance": work_life_balance,
+        "DistanceFromHome": distance_from_home,
+        "Age": age,
+        "NumCompaniesWorked": num_companies_worked,
+        "StockOptionLevel": stock_option_level,
+    }
+    linear = sum(weight * terms[name] for name, weight in ATTRITION_LOG_ODDS)
+    linear = linear + rng.normal(0, 0.32, rows)
 
-    # Solve the intercept by bisection so that the expected positive rate lands
-    # on TARGET_POSITIVE_RATE. Guessing an intercept instead produced a 1.1%
-    # positive class, because every centred term above pulls the log-odds down.
+    # Solve the intercept by bisection so the expected share of leavers lands on
+    # TARGET_POSITIVE_RATE. The terms above are not centred and average -3.19 here,
+    # so an intercept of 0 would give only 9.2%.
     low, high = -20.0, 20.0
     for _ in range(80):
         intercept = (low + high) / 2.0
@@ -305,12 +316,8 @@ def make_speaker_acoustics(rng, rows):
 
 
 def make_property_valuation(rng, rows):
-    """Draw a small dense regression table for the from-scratch network.
-
-    Twelve numeric predictors on deliberately different scales, so that script
-    07 has something to say about normalisation, and a target built from a
-    linear part plus one saturating term.
-    """
+    """Draw a small dense regression table: twelve predictors on very different scales,
+    and a target that is linear apart from one saturating term."""
     rooms = np.clip(rng.normal(6.3, 0.7, rows), 3.5, 8.8)
     build_year = rng.integers(1930, 2016, rows)
     lot_size = np.clip(rng.normal(9500, 4200, rows), 1200, None)
@@ -362,6 +369,8 @@ def main():
     DATA.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(SEED)
 
+    # 1. Vehicle listings, priced from a known formula
+
     print("--- 1. Vehicle listings, priced from a known formula ---")
     train, train_holes = make_vehicles(rng, VEHICLE_TRAIN_ROWS, 1)
     holdout, holdout_holes = make_vehicles(rng, VEHICLE_HOLDOUT_ROWS, 500001)
@@ -373,6 +382,8 @@ def main():
     print(f"price   min {train['price'].min()}, median {int(train['price'].median())}, "
           f"max {train['price'].max()}")
 
+    # 2. Written space separated, a missing value written as nothing
+
     print("\n--- 2. Written space separated, a missing value written as nothing ---")
     _write_space_separated(train, DATA / "vehicle_listings.csv")
     _write_space_separated(holdout, DATA / "vehicle_holdout.csv")
@@ -383,9 +394,10 @@ def main():
     print(f"    split on one space          {len(line.split(' '))} fields  (correct)")
     print(f"    split on runs of whitespace {len(line.split())} fields  (one column short)")
     print(f"    the row reads: {' '.join(line.split(' ')[:9])}")
-    print("gearbox really has exactly "
-          f"{int(train['gearbox'].nunique())} distinct values "
-          "- script 02 uses that number as its check")
+    print(f"gearbox has exactly {int(train['gearbox'].nunique())} distinct values, "
+          "the number script 02 checks for")
+
+    # 3. Employee attrition, drawn from a stated log-odds model
 
     print("\n--- 3. Employee attrition, drawn from a stated log-odds model ---")
     attrition, positive_rate, intercept = make_attrition(rng, ATTRITION_ROWS)
@@ -397,7 +409,9 @@ def main():
           f"{attrition['EmployeeCount'].nunique()} and "
           f"{attrition['StandardHours'].nunique()} distinct values")
 
-    print("\n--- 4. Speaker acoustics, the near-separable contrast case ---")
+    # 4. Speaker acoustics, the near-separable contrast to attrition
+
+    print("\n--- 4. Speaker acoustics, the near-separable contrast to attrition ---")
     speaker = make_speaker_acoustics(rng, SPEAKER_ROWS)
     speaker.to_csv(DATA / "speaker_acoustics.csv", index=False)
     female = speaker.loc[speaker["label"] == "female", "mean_fundamental"].mean()
@@ -405,8 +419,13 @@ def main():
     print(f"{speaker.shape[0]} rows x {speaker.shape[1]} columns, classes balanced")
     print(f"mean_fundamental separates them on its own: "
           f"female {female:.4f} against male {male:.4f}")
+    midpoint = (female + male) / 2
+    sorted_right = ((speaker["mean_fundamental"] < midpoint) == (speaker["label"] == "male")).mean()
+    print(f"one cut at the midpoint {midpoint:.4f} sorts {sorted_right:.1%} of rows correctly")
 
-    print("\n--- 5. Property valuation, small and dense for the hand-written network ---")
+    # 5. Property valuation, small and dense for the networks in scripts 07 and 08
+
+    print("\n--- 5. Property valuation, small and dense for the networks in scripts 07 and 08 ---")
     property_frame = make_property_valuation(rng, PROPERTY_ROWS)
     property_frame.to_csv(DATA / "property_valuation.csv", index=False)
     print(f"{property_frame.shape[0]} rows x {property_frame.shape[1]} columns")
@@ -414,7 +433,9 @@ def main():
           f"noise_level around {property_frame['noise_level'].mean():.2f}, "
           f"lot_size around {property_frame['lot_size'].mean():.0f}")
 
-    print("\n--- 6. The coefficients that produced these files ---")
+    # 6. The formulas behind the vehicle, attrition and property files
+
+    print("\n--- 6. The formulas behind the vehicle, attrition and property files ---")
     print("vehicle price:")
     print(f"    brand tier base        {min(BRAND_TIERS.values()):.0f} to "
           f"{max(BRAND_TIERS.values()):.0f}")
@@ -424,13 +445,16 @@ def main():
     print(f"    automatic gearbox      {GEARBOX_AUTOMATIC_BONUS:+.0f}")
     print(f"    undamaged_flag == 0    x{DAMAGE_PENALTY}, so a damaged car is the cheaper one")
     print(f"    v_0 to v_4 weights     {LATENT_WEIGHTS}")
-    print(f"    v_5 to v_14            no effect at all, they are noise columns")
+    print("    v_5 to v_14            no effect at all, they are noise columns")
     print(f"    residual noise sigma   {NOISE_SIGMA:.0f}")
-    print("attrition log-odds: OverTime +1.25, Single +0.85, Travel_Frequently +0.55,")
-    print("    YearsAtCompany -0.085, JobSatisfaction -0.24, StockOptionLevel -0.22")
-    print("property value: linear in eleven features, saturating in vacancy_rate")
+    print("attrition log-odds, intercept solved as above:")
+    for start in range(0, len(ATTRITION_LOG_ODDS), 3):
+        chunk = ATTRITION_LOG_ODDS[start:start + 3]
+        print("    " + ", ".join(f"{name} {weight:+g}" for name, weight in chunk))
+    print("property value: linear in eleven features, saturating in vacancy_rate, "
+          "clipped to 5 to 50")
 
-    print(f"\nAll five files written to {DATA}")
+    print(f"\nAll five files written to {DATA.relative_to(Path(__file__).parent)}")
     print("Rerunning this script reproduces them byte for byte.")
 
 

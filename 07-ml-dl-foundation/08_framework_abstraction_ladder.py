@@ -1,16 +1,19 @@
-"""Build the same network four times, from hand-derived gradients up to one call to fit.
+"""This script trains the same network four times on the property table: in numpy with
+hand-derived gradients, in PyTorch with autograd, in TensorFlow with a gradient tape and
+through Keras fit. It then compiles the step with tf.function and runs the model under a
+data-parallel strategy.
 
-Demonstrates what each rung of the abstraction ladder takes over, and what it does not:
+Each rung of the ladder takes something over, and the run shows what it does not:
     1. Fix one set of starting weights and one training rule for every rung to share.
     2. Train it in numpy, differentiating the loss by hand.
     3. Train it in PyTorch, letting autograd differentiate the same expression.
     4. Train it in TensorFlow with a gradient tape, one step at a time.
-    5. Line the three loss curves up and measure how far apart they ever get.
-    6. Train it once more through the one-line fitting interface.
+    5. Line the three loss curves and final weights up, and score each rung on the
+       test rows.
+    6. Train it once more through Keras compile and fit.
     7. Compile the step into a graph and time it against running it eagerly.
-    8. Wrap the model in a data-parallel strategy and report what the machine gave back.
-
-Module 07: Machine Learning and Deep Learning Foundations - Framework Ladder.
+    8. Wrap the model in a data-parallel strategy and report how many replicas this
+       machine gives it.
 """
 
 import os
@@ -60,12 +63,8 @@ def load():
 
 
 def starting_weights(input_units):
-    """Draw one set of starting weights for every rung to begin from.
-
-    All four runs below start from these exact arrays. Without that the curves
-    could not be compared at all, and any difference between the frameworks
-    would be a difference between two random draws.
-    """
+    """Draw the starting weights that every rung, and parts 7 and 8, begin from.
+    Otherwise a gap between frameworks would partly be a gap between random draws."""
     rng = np.random.default_rng(SEED)
     return {
         "w1": rng.normal(0, np.sqrt(2.0 / input_units),
@@ -110,7 +109,6 @@ def train_torch(weights, x, y):
     """Rung two: the same expression, with autograd supplying the derivatives."""
     import torch
 
-    torch.manual_seed(SEED)
     tensors = {name: torch.tensor(value, requires_grad=True)
                for name, value in weights.items()}
     xt = torch.tensor(x)
@@ -192,13 +190,13 @@ def main():
     print("\n--- 2. numpy, gradients derived by hand ---")
     numpy_history, numpy_weights = train_numpy(weights, x_train, y_train)
     print(f"    first loss {numpy_history[0]:.6f}, final loss {numpy_history[-1]:.6f}")
-    print("    Five lines of chain rule, written out in the loop above.")
+    print("    Six lines of chain rule, written out in train_numpy().")
 
     print("\n--- 3. PyTorch, gradients from autograd ---")
     torch_history, torch_weights = train_torch(weights, x_train, y_train)
     print(f"    first loss {torch_history[0]:.6f}, final loss {torch_history[-1]:.6f}")
     print("    The forward expression is the same. loss.backward() replaces the")
-    print("    five lines, and the update is still written out by hand.")
+    print("    six lines, and the update is still written out by hand.")
 
     print("\n--- 4. TensorFlow, gradients from a tape ---")
     tf_history, tf_weights = train_tensorflow(weights, x_train, y_train)
@@ -227,8 +225,8 @@ def main():
     print("    of the arithmetic they stand for.")
 
     # The gaps above are the stronger comparison, because two runs can reach the
-    # same score having taken different paths. The scores are printed as well so
-    # that every rung is answerable in the units the task is actually judged in.
+    # same score having taken different paths. The scores are printed too, as test
+    # MAE in the target's own unit.
     def test_mae(parameters):
         hidden = np.maximum(x_test @ parameters["w1"] + parameters["b1"], 0.0)
         return float(np.mean(np.abs(hidden @ parameters["w2"] + parameters["b2"] - y_test)))
@@ -238,7 +236,7 @@ def main():
                               ("tensorflow", tf_weights)):
         print(f"    {label:<14}{test_mae(parameters):>10.4f}")
 
-    print("\n--- 6. The same run through the one-line interface ---")
+    print("\n--- 6. The same run through Keras fit ---")
     model = build_keras_model(weights)
     model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=LEARNING_RATE),
                   loss="mse")
@@ -248,9 +246,9 @@ def main():
     print(f"    first loss {keras_losses[0]:.6f}, final loss {keras_losses[-1]:.6f}")
     print(f"    final loss against the hand-written run: "
           f"{abs(keras_losses[-1] - numpy_history[-1]):.3e}")
-    print("    Three lines instead of a loop, landing in the same place. What is")
-    print("    gone from the file is the update rule and the batching, which are")
-    print("    exactly the two things the earlier rungs had to state out loud.")
+    print("    compile and fit replace the loop. The gradients, the update and the")
+    print("    loss history now come from fit, and the update rule is reduced to a")
+    print("    name, SGD.")
 
     predicted = model.predict(x_test, verbose=0)
     print(f"    {'keras':<14}{float(np.mean(np.abs(predicted - y_test))):>10.4f}"
@@ -301,13 +299,13 @@ def main():
     print(f"    {TIMED_STEPS} steps eagerly     {eager_seconds:.3f} s")
     print(f"    {TIMED_STEPS} steps as a graph  {graph_seconds:.3f} s")
     print(f"    ratio {eager_seconds / graph_seconds:.2f}x")
-    print(f"    both loops started from the same weights and ended at the same loss: "
-          f"{eager_loss:.6f} against {graph_loss:.6f}")
+    print(f"    loss after both loops from the same weights: eager {eager_loss:.6f}, "
+          f"graph {graph_loss:.6f}")
     print("    Eager runs each operation as the line is reached. tf.function runs")
     print("    the Python once to record what happened, then replays that record.")
-    print("    On a network this small the saving is the Python overhead between")
-    print("    operations, which is most of the runtime here and almost none of it")
-    print("    on a model large enough to matter.")
+    print("    On a network this small, most of the runtime is Python overhead between")
+    print("    operations, and that is what the graph saves. On a large model the")
+    print("    arithmetic dominates, so the same switch saves far less.")
 
     print("\n--- 8. Wrapping the same model in a data-parallel strategy ---")
     strategy = tf.distribute.MirroredStrategy()
@@ -326,11 +324,13 @@ def main():
     print(f"    final loss inside the strategy {parallel_losses[-1]:.6f}, "
           f"outside it {keras_losses[-1]:.6f}")
     print(f"    difference {abs(parallel_losses[-1] - keras_losses[-1]):.3e}")
-    print(f"\n    This run had {replicas} replica, so nothing was split and nothing")
-    print("    ran in parallel. Reporting it as a speed result would be reporting")
-    print("    a measurement that was never taken. What it does show is the")
-    print("    programming model: the model, the optimiser and the fit call are")
-    print("    unchanged, and the scope is the only new line. Mirrored means each")
+    if replicas == 1:
+        print("\n    This run had 1 replica, so nothing was split and nothing ran in")
+        print("    parallel. Reporting it as a speed result would be reporting a")
+        print("    measurement that was never taken.")
+    print("\n    What the run does show is the programming model: the model, the")
+    print("    optimiser and the fit call are unchanged, and creating the strategy and")
+    print("    entering its scope are the only new lines. Mirrored means each")
     print("    device holds a full copy of the weights and gets a slice of the")
     print("    batch; the gradients are summed across devices before the update,")
     print("    which is why the result does not depend on how many there are.")

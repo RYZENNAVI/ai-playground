@@ -236,10 +236,10 @@ See [Multimodal-Vision-From-Pixels-to-Models.md](06-multimodal-vision/Multimodal
 | 01 | `01_build_tabular_datasets.py` | Four tables drawn from explicit formulas, with the coefficients printed so later scripts can be scored |
 | 02 | `02_eda_that_silently_lies.py` | One file loaded two ways, same shape twice, and the check that tells them apart |
 | 03 | `03_feature_engineering_and_boosting.py` | Seventy engineered features fed to CatBoost, then a count of how many it never used |
-| 04 | `04_leakage_and_split_discipline.py` | Three leaks that improve the validation score while the model gets no better |
+| 04 | `04_leakage_and_split_discipline.py` | Three leaks that improve the validation score but not the holdout |
 | 05 | `05_classifier_toolbox_and_thresholds.py` | Nine classifiers on one split, then the one number none of them chose |
-| 06 | `06_ensembling_blend_vs_stack.py` | Four regressors combined four ways, traced back to the error correlation that paid for it |
-| 07 | `07_neural_net_from_scratch.py` | A network in numpy alone, every gradient checked against a finite difference |
+| 06 | `06_ensembling_blend_vs_stack.py` | Blending and stacking four regressors, each result next to its members' error correlation |
+| 07 | `07_neural_net_from_scratch.py` | A network in numpy alone, its gradients spot-checked against a finite difference |
 | 08 | `08_framework_abstraction_ladder.py` | The same network four times, from hand-derived gradients up to one call to fit |
 
 See [Machine-Learning-and-Deep-Learning-Foundations.md](07-ml-dl-foundation/Machine-Learning-and-Deep-Learning-Foundations.md) for the concepts behind these scripts.

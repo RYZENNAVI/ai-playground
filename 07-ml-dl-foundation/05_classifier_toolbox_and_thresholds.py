@@ -1,16 +1,16 @@
-"""Run nine classifiers over the same split, then move the one number none of them chose.
+"""This script runs nine classifiers, from logistic regression to four gradient boosting
+libraries, over the same split of an imbalanced attrition table, then tunes the decision
+threshold, the one number none of them chose.
 
-Demonstrates where a classification result actually comes from:
+It shows where a classification result actually comes from:
     1. Score the whole toolbox on an imbalanced table, against the accuracy of guessing.
     2. Score the same code on a near-separable table, and compare the two ceilings.
     3. Rescale the features and rerun, to sort the models that care from those that do not.
-    4. Swap label encoding for one-hot on the same model, on the same split.
+    4. Swap label encoding for one-hot on the same model, on this split and on ten others.
     5. Drop the two columns that never vary, and measure what that cost.
     6. Sweep the decision threshold and watch the ranking metric refuse to move.
     7. Force the predicted positive rate to match the observed one, and price it.
     8. Read the fitted coefficients back against the log-odds model that made the labels.
-
-Module 07: Machine Learning and Deep Learning Foundations - Classifier Toolbox.
 """
 
 import sys
@@ -30,13 +30,14 @@ SPEAKER = DATA / "speaker_acoustics.csv"
 
 SEED = 20260824
 TEST_FRACTION = 0.25
+SPLIT_REPEATS = 10
 
 CATEGORICAL = ["BusinessTravel", "Department", "EducationField", "Gender",
                "JobRole", "MaritalStatus", "OverTime"]
 CONSTANT_COLUMNS = ["EmployeeCount", "StandardHours"]
 DROP_ALWAYS = ["employee_id", "Attrition"]
 
-# The coefficients script 01 used to draw the labels. Section 8 asks how much of
+# The coefficients script 01 used to draw the labels. Part 8 asks how much of
 # this a logistic regression recovers from 1800 rows.
 TRUE_LOG_ODDS = {
     "OverTime": 1.25, "MaritalStatus_Single": 0.85, "BusinessTravel_Travel_Frequently": 0.55,
@@ -46,30 +47,15 @@ TRUE_LOG_ODDS = {
 }
 
 
-def build_models(scaled):
-    """Return the toolbox. Names are printed as given, so they stay short.
-
-    One note on installing this list. NGBoost declares no pandas requirement of
-    its own, but it depends on lifelines, and lifelines caps pandas below 3.0.
-    Installing NGBoost will therefore downgrade pandas unless it is pinned. The
-    cap is precautionary rather than a real incompatibility: lifelines imports
-    and NGBClassifier fits and predicts normally on pandas 3.0.5, which is the
-    version every script in this module was verified against. Keeping pandas at
-    3.x leaves one entry in `pip check` complaining about that declared bound,
-    and nothing else.
-
-    The reason to hold pandas at 3.x rather than accept the downgrade is that
-    3.0 removed conversions that 2.x only warned about, so a script that runs on
-    2.x is not yet known to run on 3.x. Calling float() on a one-element Series
-    is the example this file actually tripped over.
-    """
+def build_models():
+    """Return the toolbox. Names are printed as given, so they stay short."""
     from catboost import CatBoostClassifier
     from lightgbm import LGBMClassifier
     from ngboost import NGBClassifier
     from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
     from sklearn.linear_model import LogisticRegression
     from sklearn.svm import SVC
-    from sklearn.tree import DecisionTreeClassifier
+    from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
     from xgboost import XGBClassifier
 
     return [
@@ -85,7 +71,10 @@ def build_models(scaled):
                                     random_state=SEED, verbose=-1)),
         ("catboost", CatBoostClassifier(iterations=400, learning_rate=0.05, depth=4,
                                         random_seed=SEED, verbose=0)),
-        ("ngboost", NGBClassifier(n_estimators=300, learning_rate=0.02,
+        # NGBoost's default base tree takes no seed of its own, so it is passed one here.
+        ("ngboost", NGBClassifier(Base=DecisionTreeRegressor(criterion="friedman_mse",
+                                                             max_depth=3, random_state=SEED),
+                                  n_estimators=300, learning_rate=0.02,
                                   random_state=SEED, verbose=False)),
     ]
 
@@ -109,12 +98,12 @@ def load_speaker():
     return frame.drop(columns=["label"]), target
 
 
-def score_toolbox(x_train, x_test, y_train, y_test, scaled=False):
+def score_toolbox(x_train, x_test, y_train, y_test):
     """Fit every model and report ranking quality and accuracy at the default cut."""
     from sklearn.metrics import accuracy_score, roc_auc_score
 
     rows = []
-    for name, model in build_models(scaled):
+    for name, model in build_models():
         model.fit(x_train, y_train)
         probability = model.predict_proba(x_test)[:, 1]
         rows.append({
@@ -151,6 +140,7 @@ def main():
     from sklearn.model_selection import train_test_split
     from sklearn.preprocessing import MinMaxScaler
 
+    # 1. Nine models on the attrition table
     features, target = load_attrition()
     x_train, x_test, y_train, y_test = train_test_split(
         features, target, test_size=TEST_FRACTION, random_state=SEED, stratify=target)
@@ -170,9 +160,10 @@ def main():
           f"{len(beat)} of {len(attrition_scores)}")
     print(f"    models that flag nobody at the 0.5 cut: "
           f"{int((attrition_scores['flagged'] == 0).sum())}")
-    print("    Accuracy on a 16% positive class is mostly a report of the class")
-    print("    balance. The ranking column is the one that separates the models.")
+    print(f"    Accuracy on a {target.mean():.1%} positive class is mostly a report of the")
+    print("    class balance. The ranking column is the one that separates the models.")
 
+    # 2. The same nine on the acoustic table
     print("\n--- 2. The same nine on the acoustic table ---")
     s_features, s_target = load_speaker()
     sx_train, sx_test, sy_train, sy_test = train_test_split(
@@ -182,9 +173,8 @@ def main():
                 ["model", "auc", "accuracy", "flagged"], [22, 9, 11, 10])
     print(f"\n    best AUC on attrition {attrition_scores['auc'].max():.4f}, "
           f"on acoustics {speaker_scores['auc'].max():.4f}")
-    # One model is unusable on raw columns and drags the spread with it, so the
-    # spread is reported twice. Quoting only the first number would contradict
-    # the sentence underneath it, which is a claim about ordinary models.
+    # One model is unusable on raw columns and would set the spread alone, so the
+    # spread is printed with and without it.
     def spread(frame, drop=None):
         rows = frame if drop is None else frame[frame["model"] != drop]
         return rows["auc"].max() - rows["auc"].min()
@@ -198,16 +188,17 @@ def main():
           f"attrition {spread(attrition_scores, outlier):.4f}, "
           f"acoustics {spread(speaker_scores, outlier):.4f}")
     print(f"    changing the table moves the best AUC by {table_gap:.4f}")
-    print(f"    Same nine calls, same split code, two different ceilings. The")
+    print("    Same nine calls, same split code, two different ceilings. The")
     print(f"    ceiling belongs to the data: once '{outlier}' is set aside, choosing")
     print("    among the rest moves the result by less than the choice of table")
-    print(f"    does. '{outlier}' is the exception and step 3 says why.")
+    print(f"    does. '{outlier}' is the exception and part 3 says why.")
 
+    # 3. Which models care that the columns are on different scales
     print("\n--- 3. Which models care that the columns are on different scales ---")
     scaler = MinMaxScaler().fit(x_train)
     sx_train_scaled = pd.DataFrame(scaler.transform(x_train), columns=x_train.columns)
     sx_test_scaled = pd.DataFrame(scaler.transform(x_test), columns=x_test.columns)
-    scaled_scores = score_toolbox(sx_train_scaled, sx_test_scaled, y_train, y_test, True)
+    scaled_scores = score_toolbox(sx_train_scaled, sx_test_scaled, y_train, y_test)
     merged = attrition_scores[["model", "auc"]].merge(
         scaled_scores[["model", "auc"]], on="model", suffixes=("_raw", "_scaled"))
     merged["change"] = merged["auc_scaled"] - merged["auc_raw"]
@@ -216,11 +207,18 @@ def main():
     print(f"\n    MonthlyIncome spans {x_train['MonthlyIncome'].min()} to "
           f"{x_train['MonthlyIncome'].max()}, JobSatisfaction spans "
           f"{x_train['JobSatisfaction'].min()} to {x_train['JobSatisfaction'].max()}")
+    trees = merged[~merged["model"].isin(["logistic regression", outlier])]
+    largest = trees.loc[trees["change"].abs().idxmax()]
+    outlier_change = float(merged.loc[merged["model"] == outlier, "change"].iloc[0])
     print("    A distance in that raw space is a distance in monthly income with a")
-    print("    rounding error attached. A tree never computes a distance, so its")
-    print("    row of this table is the control group.")
+    print("    rounding error attached. A tree compares values inside one column and")
+    print("    never computes a distance, so in principle scaling leaves its splits")
+    print(f"    alone. The largest tree change here is {largest['model']} at "
+          f"{largest['change']:+.4f},")
+    print(f"    against {outlier_change:+.4f} for '{outlier}'.")
 
-    print("\n--- 4. One-hot against label encoding, same model, same split ---")
+    # 4. One-hot against label encoding on the same model
+    print("\n--- 4. One-hot against label encoding on the same model ---")
     from lightgbm import LGBMClassifier
     raw = pd.read_csv(ATTRITION).drop(columns=DROP_ALWAYS)
     one_hot = pd.get_dummies(raw, columns=CATEGORICAL, drop_first=False)
@@ -234,10 +232,29 @@ def main():
     print(f"    label encoded, {features.shape[1]:>3} columns -> AUC {label_auc:.4f}")
     print(f"    one-hot,       {one_hot.shape[1]:>3} columns -> AUC {one_hot_auc:.4f}")
     print(f"    difference {one_hot_auc - label_auc:+.4f}")
-    print("    Label encoding puts JobRole on an ordered axis it does not have.")
-    print("    A deep enough tree can carve that axis back into the right pieces,")
-    print("    which is why the difference here is small rather than absent.")
+    # One split cannot say whether that difference is the encoding or the split, so
+    # the comparison is repeated on other splits.
+    gaps = []
+    for split_seed in range(SPLIT_REPEATS):
+        train_rows, test_rows = train_test_split(
+            np.arange(len(target)), test_size=TEST_FRACTION, random_state=split_seed,
+            stratify=target)
+        pair = []
+        for table in (features, one_hot):
+            repeat = LGBMClassifier(n_estimators=400, learning_rate=0.05, num_leaves=15,
+                                    random_state=SEED, verbose=-1)
+            repeat.fit(table.iloc[train_rows], target.iloc[train_rows])
+            pair.append(roc_auc_score(target.iloc[test_rows],
+                                      repeat.predict_proba(table.iloc[test_rows])[:, 1]))
+        gaps.append(pair[1] - pair[0])
+    print(f"    over {SPLIT_REPEATS} other splits, one-hot minus label averages "
+          f"{np.mean(gaps):+.4f}, from {min(gaps):+.4f} to {max(gaps):+.4f}")
+    print("    Label encoding puts JobRole on an ordered axis it does not have, and a")
+    print("    tree can cut that axis back into the right pieces. The difference")
+    print("    changes sign from split to split, so on this table neither encoding")
+    print("    costs anything measurable.")
 
+    # 5. The two columns that never vary
     print("\n--- 5. The two columns that never vary ---")
     for column in CONSTANT_COLUMNS:
         print(f"    {column}: {features[column].nunique()} distinct value, "
@@ -253,9 +270,10 @@ def main():
     print("    housekeeping rather than a fix. It is worth doing because the next")
     print("    reader should not have to check.")
 
+    # 6. Moving the threshold on the best-ranking model
     print("\n--- 6. Moving the threshold on the best-ranking model ---")
     best_name = attrition_scores.sort_values("auc", ascending=False).iloc[0]["model"]
-    best_model = dict(build_models(False))[best_name]
+    best_model = dict(build_models())[best_name]
     best_model.fit(x_train, y_train)
     probability = best_model.predict_proba(x_test)[:, 1]
     print(f"    model: {best_name}, AUC {roc_auc_score(y_test, probability):.4f}")
@@ -271,8 +289,10 @@ def main():
               f"{roc_auc_score(y_test, probability):>9.4f}")
     print("    The last column is constant down the table. AUC reads the ordering")
     print("    of the scores, and moving a cut through a fixed ordering cannot")
-    print("    change it. Everything to its left is a business decision.")
+    print("    change it. The columns to its left follow the cut, and where to put")
+    print("    the cut is a business decision.")
 
+    # 7. Forcing the flagged rate to match the base rate
     print("\n--- 7. Forcing the flagged rate to match the base rate ---")
     rate = float(y_train.mean())
     wanted = int(round(len(probability) * rate))
@@ -293,58 +313,59 @@ def main():
               f"{precision_score(y_test, predicted, zero_division=0):>11.4f}"
               f"{recall_score(y_test, predicted, zero_division=0):>9.4f}")
     print("    The same fitted model, the same scores, one number changed by hand.")
-    print("    Which row is better depends on what an interview costs against what")
-    print("    losing an employee costs, and no metric in this script knows that.")
+    print("    Which row is better depends on what a conversation with a flagged")
+    print("    employee costs against what losing one costs, and no metric in this")
+    print("    script knows that.")
 
+    # 8. Reading the coefficients back against the generator
     print("\n--- 8. Reading the coefficients back against the generator ---")
     from sklearn.linear_model import LogisticRegression
     from sklearn.preprocessing import StandardScaler
 
+    # Keeping every category would share each effect among its group's columns, so the
+    # first one is dropped. Here that is Divorced, Non-Travel and No, which the
+    # generator gives no weight, and OverTime_Yes takes the generator's name.
     design = pd.get_dummies(pd.read_csv(ATTRITION).drop(columns=DROP_ALWAYS),
-                            columns=CATEGORICAL, drop_first=False).astype(float)
-    design["OverTime"] = design["OverTime_Yes"]
+                            columns=CATEGORICAL, drop_first=True).astype(float)
+    design = design.rename(columns={"OverTime_Yes": "OverTime"})
     standardiser = StandardScaler().fit(design)
     fitted = LogisticRegression(max_iter=4000, C=1.0, random_state=SEED).fit(
         standardiser.transform(design), target)
     coefficients = pd.Series(fitted.coef_[0], index=design.columns)
     ranked = coefficients.abs().sort_values(ascending=False)
 
-    # The fit ran on standardised columns, so each fitted coefficient is a weight
-    # per standard deviation of its column, not per unit. Comparing it against a
-    # raw log-odds weight compares two different things. The generator's weights
-    # are put on the same footing here by multiplying each one by the spread of
-    # its own column, which is what makes the two orderings comparable at all.
+    # The fit ran on standardised columns, so each coefficient is a weight per standard
+    # deviation. Multiplying each generator weight by its column's spread puts the two
+    # on the same footing.
     comparable = {term: truth * float(design[term].std())
                   for term, truth in TRUE_LOG_ODDS.items() if term in design.columns}
     true_order = sorted(comparable, key=lambda t: -abs(comparable[t]))
+    # Both ranks count among the same twelve terms.
+    fitted_order = coefficients[true_order].abs().sort_values(ascending=False)
 
-    print(f"    {'term':<36}{'raw weight':>12}{'x spread':>11}"
+    print(f"    {'term':<36}{'raw weight':>12}{'x spread':>11}{'fitted':>9}"
           f"{'true rank':>11}{'fitted rank':>13}{'sign':>7}")
     correct_signs = 0
     for position, term in enumerate(true_order, start=1):
         truth = TRUE_LOG_ODDS[term]
-        rank = int(ranked.index.get_loc(term)) + 1
+        rank = int(fitted_order.index.get_loc(term)) + 1
         agrees = np.sign(coefficients[term]) == np.sign(truth)
         correct_signs += int(agrees)
         print(f"    {term:<36}{truth:>12.4f}{comparable[term]:>11.4f}"
-              f"{position:>11}{rank:>13}{'ok' if agrees else 'wrong':>7}")
+              f"{coefficients[term]:>9.4f}{position:>11}{rank:>13}{'ok' if agrees else 'wrong':>7}")
 
     within_three = sum(1 for position, term in enumerate(true_order, start=1)
-                       if abs(int(ranked.index.get_loc(term)) + 1 - position) <= 3)
+                       if abs(int(fitted_order.index.get_loc(term)) + 1 - position) <= 3)
     print(f"\n    signs recovered: {correct_signs} of {len(comparable)}")
-    print(f"    terms whose fitted rank lands within three of the true rank: "
+    print(f"    fitted ranks within three places of the true rank: "
           f"{within_three} of {len(comparable)}")
     print(f"    strongest fitted term overall: {ranked.index[0]}")
-    print("    Read against raw weights the ordering looks wrong: OverTime carries")
-    print("    the heaviest weight in the generator and does not come out on top.")
-    print("    It is a yes-or-no column, so its whole range is one step, while")
-    print("    YearsAtCompany moves over decades. Weight per unit and weight per")
-    print("    standard deviation are different questions, and a fitted")
-    print("    coefficient only ever answers the second one.")
-    print("    Even on the same footing the ordering only half survives: every")
-    print("    sign is right, the strongest term is right, and most of the middle")
-    print("    of the table is shuffled. Twelve overlapping effects and 1800 rows")
-    print("    are enough to recover directions, not a league table.")
+    print("    Read against raw weights, OverTime should come first: 1.25 is the")
+    print("    largest weight in the generator. It is a yes-or-no column, so its whole")
+    print("    range is one step, while YearsAtCompany moves over decades. Per standard")
+    print("    deviation the generator itself ranks YearsAtCompany first, and so does")
+    print(f"    the fit. Twelve overlapping effects and {len(design)} rows are enough to")
+    print("    recover directions, not a league table.")
 
 
 if __name__ == "__main__":

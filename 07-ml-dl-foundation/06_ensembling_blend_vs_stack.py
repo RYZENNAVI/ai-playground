@@ -1,14 +1,16 @@
-"""Combine four regressors four ways, and find out what the gain is actually made of.
+"""This script combines four regressors that price the vehicle listings, by blending
+(plain and weighted averages) and by stacking, and puts each result next to how
+correlated the members' errors are.
 
-Demonstrates that an ensemble pays for disagreement, not for headcount:
     1. Train three boosted models and one neighbour model, and score each alone.
-    2. Correlate their predictions, then correlate their errors, which is the number that matters.
-    3. Average the three boosters, and weight the average by their scores.
-    4. Learn the weights instead, from out-of-fold predictions, and read them.
-    5. Add the weak neighbour model to both the average and the stack, and compare the damage.
-    6. Relate every gain in the run back to the error correlation that produced it.
-
-Module 07: Machine Learning and Deep Learning Foundations - Model Ensembling.
+    2. Correlate their predictions, then their errors, which is the number averaging
+       depends on.
+    3. Average the three boosters, plainly and weighted by inverse holdout error.
+    4. Learn the weights out of fold with a linear meta model, and read them. Rescale
+       catboost alone the same way, to see how much of the stack's gain is just that.
+    5. Add the neighbour model to both the average and the stack.
+    6. Put every result in one table, and check whether the best gain is larger than
+       the noise.
 """
 
 import sys
@@ -26,6 +28,7 @@ HOLDOUT = DATA / "vehicle_holdout.csv"
 
 SEED = 20260824
 FOLDS = 4
+BOOTSTRAP = 2000
 
 FEATURES = ["brand", "model_code", "power", "odometer_km", "undamaged_flag",
             "gearbox", "body_type", "fuel_type", "vehicle_age_years",
@@ -53,12 +56,8 @@ def mae(actual, predicted):
 
 
 def make_learners():
-    """Return the four learners as fit/predict closures over plain arrays.
-
-    They are wrapped rather than used directly because three of them take the
-    full feature table and the fourth takes a scaled subset, and the folding
-    code below should not have to know which is which.
-    """
+    """Return the four learners as fit-and-predict functions, so the fold loop treats
+    the scaled neighbour model like the trees."""
     from catboost import CatBoostRegressor
     from lightgbm import LGBMRegressor
     from sklearn.neighbors import KNeighborsRegressor
@@ -93,12 +92,8 @@ def make_learners():
 
 
 def out_of_fold_predictions(learners, train, holdout):
-    """Return each learner's out-of-fold predictions and its holdout predictions.
-
-    A stack has to be fitted on predictions the base models made for rows they
-    did not see, or the meta model is reading fitted values and will weight the
-    most overfitted base model highest.
-    """
+    """Return each learner's out-of-fold and holdout predictions. A stack fitted on
+    in-sample predictions would favour the model that overfits most."""
     from sklearn.model_selection import KFold
 
     folds = KFold(n_splits=FOLDS, shuffle=True, random_state=SEED)
@@ -129,7 +124,8 @@ def main():
     learners = make_learners()
     booster_names = [name for name, _ in learners if name != "neighbours"]
 
-    print(f"--- 1. Four learners, each scored on its own ---")
+    # 1. Four learners, each scored on its own
+    print("--- 1. Four learners, each scored on its own ---")
     print(f"    {len(train)} training rows, {len(holdout)} holdout rows, "
           f"{FOLDS}-fold out-of-fold predictions\n")
     oof, holdout_predictions = out_of_fold_predictions(learners, train, holdout)
@@ -138,6 +134,7 @@ def main():
     best_solo = min(solo, key=solo.get)
     print(f"\n    best single model: {best_solo} at {solo[best_solo]:.2f}")
 
+    # 2. How much they agree
     print("\n--- 2. How much they agree ---")
     prediction_correlation = holdout_predictions.corr()
     errors = holdout_predictions.sub(holdout["price"], axis=0)
@@ -163,6 +160,7 @@ def main():
     print("    are what is left when the price is taken out, and averaging can only")
     print("    cancel what is left.")
 
+    # 3. Averaging the three boosters
     print("\n--- 3. Averaging the three boosters ---")
     simple = holdout_predictions[booster_names].mean(axis=1)
     inverse = np.array([1.0 / solo[name] for name in booster_names])
@@ -176,7 +174,8 @@ def main():
     print(f"    best single model            {solo[best_solo]:8.2f}  [{best_solo}]")
     change = mae(holdout["price"], simple) - solo[best_solo]
     print(f"\n    The average is {change:+.2f} MAE against the best single model,")
-    print("    which is to say it is worse. Averaging pulls every member towards")
+    print(f"    which is to say it is {'worse' if change > 0 else 'better'}. "
+          "Averaging pulls every member towards")
     print("    the middle, and here the members are not equally good: the best one")
     print(f"    scores {solo[best_solo]:.0f} and the worst "
           f"{max(solo[n] for n in booster_names):.0f}, so an equal vote spends the")
@@ -185,6 +184,7 @@ def main():
     print("    weights were read off the set being predicted, which is fitting on")
     print("    the holdout with one parameter per model.")
 
+    # 4. Learning the weights out of fold instead
     print("\n--- 4. Learning the weights out of fold instead ---")
     stack = LinearRegression().fit(oof[booster_names], train["price"])
     stacked = stack.predict(holdout_predictions[booster_names])
@@ -194,7 +194,14 @@ def main():
     print(f"    stacked                      {mae(holdout['price'], stacked):8.2f}")
     print("    The weights come from predictions made for unseen rows, so nothing")
     print("    about the holdout took part in choosing them.")
+    # The stack both mixes the models and rescales them. Rescaling the best one
+    # alone shows how much of the gain is only the rescaling.
+    rescale = LinearRegression().fit(oof[[best_solo]], train["price"])
+    rescaled = rescale.predict(holdout_predictions[[best_solo]])
+    print(f"    {best_solo + ' alone, rescaled':<29}{mae(holdout['price'], rescaled):8.2f}   "
+          f"(intercept {rescale.intercept_:.2f}, slope {rescale.coef_[0]:.4f})")
 
+    # 5. Adding a model that is much worse and much more different
     print("\n--- 5. Adding a model that is much worse and much more different ---")
     all_names = names
     simple_four = holdout_predictions[all_names].mean(axis=1)
@@ -208,50 +215,66 @@ def main():
     print(f"    stacked over all four        {mae(holdout['price'], stacked_four):8.2f}")
     for name, weight in zip(all_names, stack_four.coef_):
         print(f"    weight for {name:<12}{weight:>8.4f}")
-    print("    An average has to take the weak model at full strength. The stack")
-    print("    was free to set its weight to anything, and what it chose is")
-    print("    printed above rather than assumed here.")
+    neighbour_weight = dict(zip(all_names, stack_four.coef_))["neighbours"]
+    print("    An average has to take the weak model at full strength. The stack gave it")
+    print(f"    a weight of {neighbour_weight:.4f} and moved "
+          f"{mae(holdout['price'], stacked_four) - mae(holdout['price'], stacked):+.2f} MAE "
+          "from the three-booster stack.")
 
-    print("\n--- 6. Every gain in this run, next to what produced it ---")
+    # 6. Every result in this run, next to its error correlation
+    print("\n--- 6. Every result in this run, next to its error correlation ---")
+    booster_correlation = np.mean(booster_pairs)
+    all_correlation = float(error_correlation.values[np.triu_indices(4, 1)].mean())
     rows = [
-        ("best single model", solo[best_solo], None),
-        ("average of 3 boosters", mae(holdout["price"], simple), np.mean(booster_pairs)),
-        ("holdout-weighted average", mae(holdout["price"], weighted), np.mean(booster_pairs)),
-        ("stack of 3 boosters", mae(holdout["price"], stacked), np.mean(booster_pairs)),
-        ("average of 4", mae(holdout["price"], simple_four),
-         float(error_correlation.values[np.triu_indices(4, 1)].mean())),
-        ("stack of 4", mae(holdout["price"], stacked_four),
-         float(error_correlation.values[np.triu_indices(4, 1)].mean())),
+        ("best single model", holdout_predictions[best_solo], None),
+        ("average of 3 boosters", simple, booster_correlation),
+        ("holdout-weighted average", weighted, booster_correlation),
+        ("stack of 3 boosters", stacked, booster_correlation),
+        ("average of 4", simple_four, all_correlation),
+        ("stack of 4", stacked_four, all_correlation),
     ]
+    rows = [(label, prediction, mae(holdout["price"], prediction), correlation)
+            for label, prediction, correlation in rows]
     print(f"    {'combination':<28}{'holdout MAE':>13}{'gain':>9}{'error corr':>13}")
-    for label, score, correlation in rows:
+    for label, _, score, correlation in rows:
         gain = solo[best_solo] - score
         correlation_text = "-" if correlation is None else f"{correlation:.4f}"
         print(f"    {label:<28}{score:>13.2f}{gain:>9.2f}{correlation_text:>13}")
-    # Picking the smallest of these on the holdout is a choice made on the same
-    # rows the choice is then scored on, which is the leak step 3 named, one
-    # level up. It is called out here rather than left implicit, because a
-    # script that discloses one selection effect and hides another is worse than
-    # one that discloses neither.
-    best_combination = min(rows[1:], key=lambda r: r[1])
-    print(f"\n    The best combination here is {best_combination[0]}, and it beats")
-    print(f"    the best single model by {solo[best_solo] - best_combination[1]:.2f} MAE, "
-          f"or {(solo[best_solo] - best_combination[1]) / solo[best_solo]:.2%}.")
-    print(f"    That winner was chosen by reading {len(rows) - 1} scores off this holdout and")
-    print("    keeping the smallest, so the margin is the best of several draws rather")
-    print("    than an estimate of what the next dataset would give. Step 4's weights")
-    print("    came out of fold; this choice between whole routes did not.")
+
+    # The winner is picked on the holdout, the leak part 3 names, one level up.
     combinations = rows[1:]
-    worse = [r for r in combinations if r[1] > solo[best_solo]]
-    share = (solo[best_solo] - best_combination[1]) / solo[best_solo]
-    print(f"    That is the honest size of the win: four models, a fold loop and a")
-    print(f"    meta model, for {share:.2%}. {len(worse)} of the {len(combinations)} "
-          f"combinations came out")
-    print("    worse than doing nothing.")
-    print("    Three models that make the same mistakes are one model that took")
-    print("    three times as long to train. The question to ask before adding a")
-    print("    model to a blend is not how good it is, it is how differently it")
-    print("    is wrong, and that is a number rather than a judgement.")
+    winner_label, winner_prediction, winner_score, _ = min(combinations, key=lambda r: r[2])
+    winner_gain = solo[best_solo] - winner_score
+    paired = (np.abs(holdout["price"] - holdout_predictions[best_solo])
+              - np.abs(holdout["price"] - winner_prediction)).to_numpy()
+    rng = np.random.default_rng(SEED)
+    draws = [paired[rng.integers(0, len(paired), len(paired))].mean()
+             for _ in range(BOOTSTRAP)]
+    low, high = np.percentile(draws, [2.5, 97.5])
+    if low <= 0 <= high:
+        verdict = "so it cannot be told apart from zero"
+    elif low > 0:
+        verdict = "so it is larger than the noise"
+    else:
+        verdict = "so it is a real loss"
+    rescale_gain = solo[best_solo] - mae(holdout["price"], rescaled)
+    worse = [r for r in combinations if r[2] > solo[best_solo]]
+    print(f"\n    The best combination here is {winner_label}, with a gain of "
+          f"{winner_gain:+.2f} MAE")
+    print(f"    ({winner_gain / solo[best_solo]:+.2%}) over the best single model. "
+          f"It was chosen by reading {len(combinations)}")
+    print("    scores off this holdout and keeping the smallest. Part 4's weights came")
+    print("    out of fold; this choice between whole routes did not.")
+    print(f"    Resampling the holdout rows {BOOTSTRAP} times puts that gain between "
+          f"{low:+.2f} and {high:+.2f},")
+    print(f"    {verdict}. Rescaling {best_solo} alone gives {rescale_gain:+.2f} of it.")
+    print(f"    {len(worse)} of the {len(combinations)} combinations came out worse "
+          "than doing nothing.")
+    print("    Two numbers decide whether a model helps a blend: its error, and how much")
+    print("    its errors overlap the others'. The neighbour model overlapped least and")
+    print(f"    still got a weight of {neighbour_weight:.4f}, because its error was "
+          f"{solo['neighbours'] / solo[best_solo]:.1f} times")
+    print("    the best model's.")
 
 
 if __name__ == "__main__":

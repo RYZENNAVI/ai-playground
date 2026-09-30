@@ -1,14 +1,18 @@
-"""Three ways a validation score gets better while the model gets no better at all.
+"""This script builds three kinds of data leakage into a LightGBM price model on the
+vehicle listings (a scaler fitted with the holdout included, target encoding over
+every row, and one listing on both sides of a random split). Each leak makes the
+validation score look better than the model is, and a holdout that took part in no
+fit shows the difference. The scaler is fitted on the whole training file in both
+arms, so what they contrast is the holdout crossing into the transform.
 
-Demonstrates that leakage damages the estimate rather than the model:
-    1. Build an honest baseline whose validation score and holdout score agree.
-    2. Fit the scaler before the split instead of after, and price the difference.
-    3. Encode a high-cardinality column with target statistics taken from every row.
-    4. Let the same listing appear on both sides of a random split.
-    5. Put the three next to the baseline and read which number moved.
-    6. Show what the gap between the two scores catches, and the one it does not.
-
-Module 07: Machine Learning and Deep Learning Foundations - Leakage and Splits.
+The run prints 6 parts:
+    1. An honest baseline, scored on validation and on the holdout.
+    2. The scaler fitted with and without the holdout, on a nearest-neighbour model.
+    3. Target encoding at four key cardinalities, built from the fit rows, from every
+       row, and out of fold.
+    4. The same listing on both sides of a random split.
+    5. The four setups side by side.
+    6. What the gap between validation and holdout catches, and what it misses.
 """
 
 import sys
@@ -27,6 +31,7 @@ HOLDOUT = DATA / "vehicle_holdout.csv"
 SEED = 20260824
 VALIDATION_FRACTION = 0.2
 DUPLICATE_FRACTION = 0.25
+FOLDS = 5
 
 # Target encoding is tested at four cardinalities rather than one. How much a
 # row's own price flows back into its own feature depends on how many rows share
@@ -62,16 +67,13 @@ def load(path):
 
 
 def mae(actual, predicted):
-    """Mean absolute error, the metric every section below reports."""
+    """Mean absolute error, the metric every part reports."""
     return float(np.mean(np.abs(np.asarray(actual) - np.asarray(predicted))))
 
 
 def fit_tree(x_train, y_train, x_eval):
-    """Train one gradient boosting model and predict, with no early stopping.
-
-    Early stopping is deliberately off. It would read the evaluation set during
-    training, which is a fourth way to leak and would blur the three below.
-    """
+    """Train one LightGBM model and predict. No early stopping: it would read the
+    evaluation set, which is a fourth way to leak."""
     import lightgbm as lgb
     model = lgb.train(TREE_PARAMS, lgb.Dataset(x_train, label=y_train),
                       num_boost_round=TREE_ROUNDS)
@@ -92,18 +94,8 @@ def honest_baseline(train, holdout):
 
 
 def scaler_before_split(train, holdout):
-    """Compare a scaler fitted on everything against one fitted on the training file.
-
-    A nearest-neighbour model is used because a tree does not care about the
-    scale of a feature at all, so it cannot show the effect either way.
-
-    The honest arm here fits on the whole training file and splits afterwards,
-    so the internal validation rows do reach the scaler. What the two arms
-    contrast is therefore the holdout crossing into the transform, not a
-    textbook fit-on-the-fit-rows-only scaler; a stricter version would move the
-    scaler inside the split. The measured difference is small either way, and
-    step 6 reads that smallness rather than assuming it.
-    """
+    """Score a nearest-neighbour model with the scaler fitted with and without the
+    holdout. A tree ignores the scale of a feature, so it could not show the effect."""
     from sklearn.model_selection import train_test_split
     from sklearn.neighbors import KNeighborsRegressor
     from sklearn.preprocessing import MinMaxScaler
@@ -114,8 +106,7 @@ def scaler_before_split(train, holdout):
     for label in ("leaky", "honest"):
         frame = train.copy()
         if label == "leaky":
-            # Every row of the holdout is standing right here, contributing its
-            # minimum and maximum to the transform that the training rows get.
+            # The holdout's minimum and maximum go into the transform as well.
             scaler = MinMaxScaler().fit(
                 pd.concat([frame[columns], holdout[columns]], ignore_index=True))
             scaled_train = pd.DataFrame(scaler.transform(frame[columns]), columns=columns)
@@ -134,12 +125,21 @@ def scaler_before_split(train, holdout):
     return results
 
 
-def target_encoding_at(train, holdout, key_builder):
-    """Compare an encoding built from every row against one built from the fit rows.
+def out_of_fold_means(fit):
+    """Encode each fit row from the other folds only, so no row sees its own price."""
+    from sklearn.model_selection import KFold
 
-    Returns the two validation and holdout scores plus how many rows share a key,
-    which is the number the comparison turns out to depend on.
-    """
+    values = np.empty(len(fit))
+    for kept, held in KFold(FOLDS, shuffle=True, random_state=SEED).split(fit):
+        part = fit.iloc[kept]
+        means = part.groupby("_key")["price"].mean()
+        values[held] = fit["_key"].iloc[held].map(means).fillna(part["price"].mean())
+    return values
+
+
+def target_encoding_at(train, holdout, key_builder):
+    """Score the key's mean price as a feature, built three ways, and count the rows
+    per key, which the leak turns out to depend on."""
     from sklearn.model_selection import train_test_split
 
     train = train.copy()
@@ -151,25 +151,30 @@ def target_encoding_at(train, holdout, key_builder):
                                      random_state=SEED)
     results = {}
 
-    for label in ("leaky", "honest"):
+    for label in ("leaky", "honest", "out_of_fold"):
         source = train if label == "leaky" else fit
         means = source.groupby("_key")["price"].mean()
         fallback = source["price"].mean()
 
-        def encode(frame):
+        def encode(frame, values=None):
             encoded = frame[BASE_FEATURES].copy()
-            encoded["key_target"] = frame["_key"].map(means).fillna(fallback).to_numpy()
+            if values is None:
+                values = frame["_key"].map(means).fillna(fallback).to_numpy()
+            encoded["key_target"] = values
             return encoded
 
+        # The leaky and honest arms encode each fit row with a mean that includes
+        # its own price. Only the out of fold arm does not.
+        fit_encoded = encode(fit, out_of_fold_means(fit) if label == "out_of_fold" else None)
         results[label] = (
-            mae(validate["price"], fit_tree(encode(fit), fit["price"], encode(validate))),
-            mae(holdout["price"], fit_tree(encode(fit), fit["price"], encode(holdout))))
+            mae(validate["price"], fit_tree(fit_encoded, fit["price"], encode(validate))),
+            mae(holdout["price"], fit_tree(fit_encoded, fit["price"], encode(holdout))))
 
     distinct = int(train["_key"].nunique())
     return results, distinct, len(train) / distinct
 
 
-def duplicated_rows(train, holdout, rng):
+def duplicated_rows(train, holdout):
     """Copy a quarter of the listings, then split at random and score."""
     from sklearn.model_selection import train_test_split
 
@@ -194,11 +199,12 @@ def main():
     if not LISTINGS.exists() or not HOLDOUT.exists():
         raise SystemExit("Run 01_build_tabular_datasets.py first.")
 
-    rng = np.random.default_rng(SEED)
     train = load(LISTINGS)
     holdout = load(HOLDOUT)
     print(f"{len(train)} listings to learn from, {len(holdout)} kept aside and "
           "never touched by any fit below.\n")
+
+    # 1. Honest baseline
 
     print("--- 1. Honest baseline ---")
     base_validation, base_holdout = honest_baseline(train, holdout)
@@ -207,7 +213,9 @@ def main():
     print(f"    gap            {base_validation - base_holdout:+8.2f}")
     print("    The two agree, which is what a validation score is for.")
 
-    print("\n--- 2. Scaler fitted before the split ---")
+    # 2. Scaler fitted with the holdout included
+
+    print("\n--- 2. Scaler fitted with the holdout included ---")
     scaler_results = scaler_before_split(train, holdout)
     print(f"    {'':<10}{'validation':>14}{'holdout':>12}{'gap':>10}")
     for label in ("honest", "leaky"):
@@ -217,29 +225,50 @@ def main():
     delta = scaler_results["honest"][0] - scaler_results["leaky"][0]
     print(f"    the leak is worth {delta:+.2f} MAE on the validation score")
     print("    A minimum and a maximum are two numbers per column. Handing them")
-    print("    over leaks almost nothing, and this is the leak most often caught")
-    print("    in review while the two below go unnoticed.")
+    print("    over leaks almost nothing.")
 
-    print("\n--- 3. Target encoding built from every row, at four cardinalities ---")
+    # 3. Target encoding
+
+    print("\n--- 3. Target encoding at four cardinalities ---")
     print("    Each validation row is averaged into its own key's mean, so the")
     print("    feature carries a share of that row's own price back to it. How big")
     print("    a share is decided by how many rows sit in the key.\n")
     print(f"    {'key':<22}{'keys':>7}{'rows/key':>10}{'honest val':>12}"
           f"{'leaky val':>11}{'leaked':>9}{'leaky holdout':>15}")
     encoding_results = {}
+    rows_per_key = {}
     for name, builder in ENCODING_KEYS:
         results, distinct, per_key = target_encoding_at(train, holdout, builder)
         gain = results["honest"][0] - results["leaky"][0]
         encoding_results[name] = results
+        rows_per_key[name] = per_key
         print(f"    {name:<22}{distinct:>7}{per_key:>10.1f}{results['honest'][0]:>12.2f}"
               f"{results['leaky'][0]:>11.2f}{gain:>9.2f}{results['leaky'][1]:>15.2f}")
-    print("\n    The last column is the one that never improves. The leak buys")
-    print("    validation MAE and nothing else, and it buys more of it the fewer")
-    print("    rows share a key. At one and a half rows per key the encoded")
-    print("    feature is close to being the label itself.")
+    print("\n    The leaked column is what the validation score gained, and it grows")
+    print("    as fewer rows share a key. For the three milder keys the holdout")
+    print("    stays near the baseline, so the model gained none of it.")
+
+    print("\n    Out of fold, each fit row is encoded from the other "
+          f"{FOLDS - 1} folds only:\n")
+    print(f"    {'key':<22}{'validation':>12}{'holdout':>10}")
+    for name, results in encoding_results.items():
+        validation, holdout_score = results["out_of_fold"]
+        print(f"    {name:<22}{validation:>12.2f}{holdout_score:>10.2f}")
+    worst_key = "region_code x brand"
+    oof_validation, oof_holdout = encoding_results[worst_key]["out_of_fold"]
+    print(f"\n    {worst_key} now scores {oof_validation:.2f} on validation and "
+          f"{oof_holdout:.2f}")
+    print(f"    on the holdout, against the baseline's {base_validation:.2f} and "
+          f"{base_holdout:.2f}. The")
+    print("    honest arm still encodes each fit row with a mean that includes its")
+    print(f"    own price, and at {rows_per_key[worst_key]:.1f} rows per key that mean "
+          "is mostly the row's")
+    print("    own label.")
+
+    # 4. Duplicated listings
 
     print("\n--- 4. The same listing on both sides of the split ---")
-    dup_validation, dup_holdout, shared, validate_rows = duplicated_rows(train, holdout, rng)
+    dup_validation, dup_holdout, shared, validate_rows = duplicated_rows(train, holdout)
     print(f"    listings duplicated: {DUPLICATE_FRACTION:.0%}")
     print(f"    ids present in both halves: {shared} of {validate_rows} validation rows")
     print(f"    validation MAE {dup_validation:8.2f}")
@@ -248,8 +277,9 @@ def main():
     print("    Nothing here is an encoding mistake. The split ran on rows, and the")
     print("    rows were not independent.")
 
+    # 5. The four setups side by side
+
     print("\n--- 5. All four together ---")
-    worst_key = "region_code x brand"
     rows = [
         ("honest baseline", base_validation, base_holdout, "boosted trees"),
         ("target encoding leak", encoding_results[worst_key]["leaky"][0],
@@ -265,39 +295,36 @@ def main():
     print("    The scaler row runs on a different model and is not comparable")
     print("    against the three above it in absolute terms, only in its gap.")
 
-    print("\n--- 6. What survives all three ---")
+    # 6. What the gap catches
+
+    print("\n--- 6. What the gap catches ---")
     mild = [name for name in encoding_results if name != worst_key]
-    print(f"    For the scaler, for the duplicates and for the {len(mild)} milder encodings,")
-    print("    the holdout column hardly moves: the leak did not build a better")
-    print("    model, it built a better report of the same model, and the report is")
-    print("    what gets acted on.")
-    print(f"    The extreme encoding is the exception and is worth stating plainly:")
-    print(f"    its holdout went from {base_holdout:.0f} to "
-          f"{encoding_results[worst_key]['leaky'][1]:.0f}, so there the model really")
-    print("    is worse. Its honest twin scored "
-          f"{encoding_results[worst_key]['honest'][0]:.0f} on validation, which says")
-    print("    the feature was a bad idea at that cardinality whether or not it")
-    print(f"    leaked. The reference point matters: {encoding_results[worst_key]['leaky'][0]:.0f} "
-          f"is still worse than the baseline's")
-    print(f"    {base_validation:.0f}, so leakage did not make the feature look good, it made a")
-    print("    bad feature look survivable next to its own honest twin.")
+    print(f"    For the scaler, the duplicates and the {len(mild)} milder encodings, the")
+    print("    holdout column hardly moves. The leak made the report better and left")
+    print("    the model where it was, and the report is what gets acted on.")
+    print("    The extreme encoding is the exception: its holdout went from "
+          f"{base_holdout:.0f} to")
+    print(f"    {encoding_results[worst_key]['leaky'][1]:.0f}, so there the model really "
+          "is worse. The key is not to blame,")
+    print(f"    since out of fold it scored {oof_holdout:.0f} on the holdout. In the other two arms")
+    print("    every fit row saw its own price in the encoding, and the tree learned")
+    print("    to lean on it.")
     print("    None of the three raised an error, printed a warning or produced an")
     print("    implausible number on the way in.")
 
-    # The gap is the check this script is built around, so its one failure is
-    # measured rather than left out. Both scaler arms are scored here; if their
-    # gaps agree, the gap cannot be what separates leaky from honest.
+    # Both scaler arms are scored, so the gap's one miss is measured: gaps that
+    # agree cannot tell the leaky arm from the honest one.
     honest_gap = scaler_results["honest"][0] - scaler_results["honest"][1]
     leaky_gap = scaler_results["leaky"][0] - scaler_results["leaky"][1]
-    caught = [name for name in ("target encoding", "duplicate rows")]
-    print(f"    The gap column catches {len(caught)} of the three: {', '.join(caught)} both")
-    print(f"    beat their untouched holdout by a wide margin, and the baseline does not.")
-    print(f"    It does not catch the scaler. Its two arms differ by "
+    print("    The gap column catches the target encoding and the duplicate rows: both")
+    print("    beat their untouched holdout by a wide margin, and the baseline does not.")
+    print("    It misses the scaler. Its two arms differ by "
           f"{abs(leaky_gap - honest_gap):.2f} MAE of gap")
-    print(f"    ({honest_gap:+.2f} honest against {leaky_gap:+.2f} leaky), so the gap cannot tell")
-    print("    them apart; what that column shows for the scaler row is the nearest")
-    print("    neighbour model, not the leak. A leak this small needs the two")
-    print("    fits placed side by side, which is what step 2 does and step 5 cannot.")
+    print(f"    ({honest_gap:+.2f} honest against {leaky_gap:+.2f} leaky), so the gap "
+          "cannot tell")
+    print("    them apart. What that column shows for the scaler row comes from the")
+    print("    nearest neighbour model, not the leak. A leak this small needs the two")
+    print("    fits side by side, which part 2 does and part 5 cannot.")
 
 
 if __name__ == "__main__":

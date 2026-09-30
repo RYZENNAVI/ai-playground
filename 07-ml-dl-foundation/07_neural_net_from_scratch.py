@@ -1,14 +1,17 @@
-"""Write a network with nothing but arrays, and check its gradients against the definition.
+"""This script builds a small neural network from numpy arrays alone, with the forward pass
+and backpropagation written by hand, checks its gradients against finite differences
+(gradient checking) and fits it to the synthetic property table from script 01.
 
-Demonstrates the whole of a small network, with no framework anywhere in it:
+The whole network is in view, with no framework anywhere in it:
     1. Define three activation functions with their derivatives, and tabulate both.
-    2. Multiply those derivatives layer after layer, and measure where the gradient goes.
-    3. Push one input through a three-layer network by hand, printing every intermediate.
-    4. Derive the gradients on paper and check them against a finite difference.
-    5. Train on a real table, once with the bias gradients and once without them.
-    6. Read the fitted first layer against the coefficients the target was built from.
-
-Module 07: Machine Learning and Deep Learning Foundations - Networks from Scratch.
+    2. Multiply the best-case slopes layer after layer, and see where the gradient goes.
+    3. Push one input through a three-layer sigmoid network by hand, printing every
+       intermediate. This part stands alone and nothing later uses it.
+    4. Check the hand-written gradients of the training network (one hidden layer of
+       relu units) against a finite difference of the loss.
+    5. Train that network twice, once with the bias gradients and once without them.
+    6. Rank the features by the size of the trained weights, and compare the ranking with
+       how much each term moves the target in the generator.
 """
 
 import sys
@@ -32,8 +35,7 @@ TEST_FRACTION = 0.25
 GRADIENT_CHECK_EPSILON = 1e-6
 
 # The worked example: two inputs, two hidden layers of three and two units, one
-# output. Every number is small enough to verify with a calculator, which is the
-# only reason these particular values are here.
+# output. Every number is small enough to verify with a calculator.
 EXAMPLE_INPUT = np.array([1.0, 0.5])
 EXAMPLE_WEIGHTS = {
     "w1": np.array([[0.1, 0.3, 0.5], [0.2, 0.4, 0.6]]),
@@ -103,18 +105,8 @@ def tabulate_activations():
 
 
 def measure_vanishing(depth):
-    """Multiply the largest possible slope of each activation through a stack.
-
-    The product below uses the best case for each activation, the slope at its
-    own peak, so it is the most the activation functions alone can pass through
-    a stack of this depth.
-
-    It is not a bound on the gradient. Backpropagation multiplies the weight
-    matrices in as well, and a large weight scales the product straight back up,
-    which is why initialisation and normalisation are levers at all. What this
-    table isolates is the one factor those levers cannot touch: a sigmoid gives
-    away three quarters of the signal per layer before any weight is involved.
-    """
+    """Raise each activation's peak slope to the power of the depth. The weights are
+    left out, so this is the activation's share of the shrinking, not a gradient bound."""
     print(f"    {'layers':>7}" + "".join(f"{name:>16}" for name in ACTIVATIONS))
     for layers in depth:
         line = f"    {layers:>7}"
@@ -147,11 +139,10 @@ def forward_example():
     print("    Nothing above is approximate. A network at this size is three matrix")
     print("    products with a squash after each of the first two, and it can be")
     print("    checked against a calculator line by line.")
-    return z3
 
 
 def initialise(input_units, hidden_units, rng):
-    """Draw starting weights with a scale that keeps the first pass in range."""
+    """Draw starting weights by He initialisation, spread sqrt(2 / inputs), for relu."""
     return {
         "w1": rng.normal(0, np.sqrt(2.0 / input_units), (input_units, hidden_units)),
         "b1": np.zeros(hidden_units),
@@ -169,13 +160,8 @@ def forward(parameters, x):
 
 
 def loss_and_gradients(parameters, x, y):
-    """Return mean squared error and the gradient of that same mean.
-
-    Both halves use the mean over the batch. Taking the loss as a mean and its
-    gradient as a sum leaves the two off by the batch size, which does not raise
-    anything: it silently rescales the learning rate by however many rows are in
-    the batch.
-    """
+    """Return mean squared error and its gradient, both as a mean over the batch. A sum
+    in one and a mean in the other would silently scale the learning rate by the batch."""
     n = x.shape[0]
     prediction, cache = forward(parameters, x)
     residual = prediction - y
@@ -240,26 +226,33 @@ def main():
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from sklearn.linear_model import LinearRegression
     from sklearn.model_selection import train_test_split
 
     OUTPUTS.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(SEED)
 
+    # 1. Three activations and their slopes
     print("--- 1. Three activations and their slopes ---")
     tabulate_activations()
 
+    # 2. What those slopes do when they are multiplied together
     print("\n--- 2. What those slopes do when they are multiplied together ---")
     print("    Backpropagation carries the error back through one derivative per")
     print("    layer, multiplying as it goes. Best case per activation:\n")
     measure_vanishing([1, 2, 5, 10, 20, 40])
     print("\n    Sigmoid cannot do better than a quarter per layer, so ten layers")
     print("    of it deliver at most a millionth of the error to the first one.")
-    print("    Relu keeps a slope of exactly one wherever its input was positive,")
-    print("    which is the whole of why the column on the right is flat.")
+    print("    Tanh and relu both peak at one, so their best case never shrinks. The")
+    print("    difference is where: tanh reaches one only at exactly zero "
+          f"({tanh_derivative(0.5):.4f} at 0.5,")
+    print(f"    {tanh_derivative(2.0):.4f} at 2), relu at every positive input.")
 
+    # 3. One input, pushed through by hand
     print("\n--- 3. One input, pushed through by hand ---")
     forward_example()
 
+    # 4. Checking the derived gradients against the definition
     print("\n--- 4. Checking the derived gradients against the definition ---")
     frame = pd.read_csv(PROPERTY)
     target = frame["market_value"].to_numpy().reshape(-1, 1)
@@ -283,13 +276,13 @@ def main():
     total = sum(array.size for array in check_parameters.values())
     print(f"\n    worst relative error {worst:.2e}, over {len(rows)} of the "
           f"{total} parameters")
-    print("    Every parameter would take two extra forward passes each, so this is")
-    print("    a sample rather than a proof. A derivation that is wrong is usually")
+    print("    Checking every parameter would take two extra forward passes per")
+    print("    parameter, so this is a sample. A derivation that is wrong is usually")
     print("    wrong for a whole array at once, which a sample from each array finds.")
-    print("    A gradient that is wrong still trains, just towards somewhere else.")
-    print("    This is the one check that separates the two cases, and it needs no")
-    print("    framework: perturb a weight, watch the loss, divide.")
+    print("    A wrong gradient still trains, just towards somewhere else, and this")
+    print("    check is what catches it.")
 
+    # 5. Training, with and without the bias gradients
     print("\n--- 5. Training, with and without the bias gradients ---")
     with_bias, history_with, mae_with = train(
         x_train, y_train, x_test, y_test, np.random.default_rng(SEED), True)
@@ -297,7 +290,7 @@ def main():
         x_train, y_train, x_test, y_test, np.random.default_rng(SEED), False)
 
     print(f"    target mean {target.mean():.2f}, so the network has to reach a")
-    print(f"    non-zero average from standardised inputs that average zero.")
+    print("    non-zero average from standardised inputs that average zero.")
     print(f"    {'run':<22}{'first loss':>13}{'final loss':>13}{'test MAE':>11}")
     print(f"    {'biases updated':<22}{history_with[0]:>13.4f}"
           f"{history_with[-1]:>13.4f}{mae_with:>11.4f}")
@@ -308,14 +301,22 @@ def main():
     frozen = with_bias["b1"].size + with_bias["b2"].size
     total = sum(value.size for value in with_bias.values())
     print(f"    parameters left frozen: {frozen} of {total} ({frozen / total:.1%})")
-    print("    Declaring the biases and never updating them is not a crash and not")
-    print("    a warning. It is a small share of the parameters, and it is the")
-    print(f"    share that reaches an average of {target.mean():.1f} directly. The weights")
-    print("    are not helpless without it: the inputs average zero, but relu keeps")
-    print("    only the positive side, so the hidden layer has a positive average for")
-    print("    the output weights to scale. What it cannot do is move that average")
-    print("    without also changing how it responds to every input, which is the")
-    print("    one job a bias does on its own. The loss curve goes down either way.")
+    zero = np.zeros((1, x_train.shape[1]))
+    print("    prediction for the average house (all inputs zero): "
+          f"{forward(with_bias, zero)[0][0, 0]:.2f} against "
+          f"{forward(without_bias, zero)[0][0, 0]:.2f}")
+    print("    Without biases, every layer maps zero to zero, so the average house is")
+    print("    priced at exactly 0.00 whatever the weights are. The weights can only")
+    print(f"    reach the {target.mean():.1f} average indirectly, through inputs far from "
+          "zero.")
+    loss_ratio = history_without[-1] / history_with[-1]
+    print(f"    That costs {loss_ratio:.1f} times the final loss and "
+          f"{mae_without / mae_with:.1f} times the test MAE, with no")
+    print("    crash and no warning.")
+    lowest = int(np.argmin(history_with))
+    print(f"    The run with biases was lowest at epoch {lowest + 1} "
+          f"({history_with[lowest]:.4f}) and ended at {history_with[-1]:.4f},")
+    print("    so its loss was not only going down when training stopped.")
 
     plt.figure(figsize=(9, 5))
     plt.plot(history_with, label="biases updated")
@@ -343,7 +344,8 @@ def main():
     plt.close()
     print(f"    plots written to {OUTPUTS}")
 
-    print("\n--- 6. What the first layer learned, against the generator ---")
+    # 6. Ranking the features by weight size, against the generator
+    print("\n--- 6. Ranking the features by weight size, against the generator ---")
     columns = list(frame.drop(columns=["market_value"]).columns)
     influence = pd.Series(
         np.abs(with_bias["w1"]) @ np.abs(with_bias["w2"]).reshape(-1),
@@ -369,12 +371,28 @@ def main():
         print(f"    {name:<22}{term_spread[name]:>13.3f}{position:>11}"
               f"{int(influence.index.get_loc(name)) + 1:>14}")
     top_three = set(true_order[:3]) & set(influence.index[:3])
+    rank_correlation = pd.Series(term_spread).corr(influence, method="spearman")
+    gaps = {name: int(influence.index.get_loc(name)) - position
+            for position, name in enumerate(true_order)}
+    misses = sorted(gaps, key=lambda n: -abs(gaps[n]))[:2]
     print(f"\n    of the three strongest terms in the generator, the network puts "
           f"{len(top_three)} in its own top three")
-    print(f"    test MAE {mae_with:.4f} against a target that carries noise of "
-          f"sigma 2.20")
-    print("    The network was never told there are twelve features or that one of")
-    print("    them saturates. It has one hidden layer of relu units and a loop.")
+    print(f"    rank correlation over all twelve {rank_correlation:.2f}; largest misses:")
+    print("    " + ", ".join(f"{n} (true {true_order.index(n) + 1}, network "
+                      f"{int(influence.index.get_loc(n)) + 1})" for n in misses))
+    baseline = LinearRegression().fit(x_train, y_train)
+    baseline_mae = float(np.mean(np.abs(baseline.predict(x_test) - y_test)))
+    floor = 2.2 * np.sqrt(2 / np.pi)
+    print(f"    test MAE {mae_with:.4f}, a linear regression {baseline_mae:.4f}, "
+          f"and about {floor:.2f} for a perfect model")
+    print("    (the MAE of noise with sigma 2.20).")
+    print("    Weight size is a loose reading of what a network uses: it got the")
+    first = "right" if true_order[0] == influence.index[0] else "wrong"
+    print(f"    strongest term {first} and missed two others by "
+          f"{min(abs(gaps[n]) for n in misses)} places or more.")
+    if baseline_mae < mae_with:
+        print("    On a table this close to linear, the network does not beat a linear")
+        print("    regression.")
 
 
 if __name__ == "__main__":
