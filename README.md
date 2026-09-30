@@ -19,9 +19,9 @@ libraries. One script, 02-08, also calls the Tavily search API over plain HTTP.
 | [02-rag](02-rag/) | Embeddings · chunking · vector databases · RAG pipelines · rerank · query rewrite · multimodal RAG · knowledge-base curation & versioning · GraphRAG |
 | [03-text2sql](03-text2sql/) | Natural language to SQL · schema prompting · SQL agents · query safety · result evaluation |
 | [04-agents](04-agents/) | Prompt templates & memory · chain orchestration · ReAct agents · MCP / A2A · LangGraph architectures |
-| [05-fine-tuning](05-fine-tuning/) (reviewing) | Low-rank adaptation · supervised fine-tuning · reward-driven training · decode-time thinking budget · vision adapters |
-| [06-multimodal-vision](06-multimodal-vision/) (reviewing) | Classical vision (colour, edges, Hough, HOG, Haar) · optical flow · training mechanics & loss behaviour · detection, segmentation and pose · attention & self-supervision · vision-language auditing · split and submission audits |
-| [07-ml-dl-foundation](07-ml-dl-foundation/) (reviewing) | Classical ML · EDA pitfalls · gradient boosting · leakage & split discipline · thresholds · ensembling · networks from scratch up to frameworks |
+| [05-fine-tuning](05-fine-tuning/) | Low-rank adaptation · supervised fine-tuning · reward-driven training · decode-time thinking budget · vision adapters |
+| [06-multimodal-vision](06-multimodal-vision/) | Classical vision (colour, edges, Hough, HOG, Haar) · optical flow · training mechanics & loss behaviour · detection, segmentation and pose · attention & self-supervision · vision-language auditing · split and submission audits |
+| [07-ml-dl-foundation](07-ml-dl-foundation/) | Classical ML · EDA pitfalls · gradient boosting · leakage & split discipline · thresholds · ensembling · networks from scratch up to frameworks |
 | [08-time-series](08-time-series/) (reviewing) | Seasonal decomposition · stationarity · ARIMA / Prophet · periodic factors · LSTM windowing · rolling-origin backtesting |
 | [09-lowcode-platforms](09-lowcode-platforms/) (reviewing) | Workflow engines from a declarative graph · node & plugin contracts · table knowledge bases · platform API protocol |
 | [10-projects](10-projects/) (reviewing) | Join grain & aggregation · reported columns and bands · tool return shapes · chart criteria & index alignment · control-chart rules · label leakage · sample units · cohort analysis · retrieval backends · citation checks |
