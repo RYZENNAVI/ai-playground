@@ -1,9 +1,8 @@
-"""Colour tracking and optical flow: follow a coloured object through a clip, then measure motion.
-
-The script renders a clip of a blue ellipse that moves, grows, turns and dims halfway, so
-every frame has a true mask. It segments the object by colour and tracks it with mean shift
-and CAMSHIFT on a hue back-projection. The motion parts use still images shifted by a known
-amount, and compare block matching with Lucas-Kanade optical flow.
+"""This script tracks a blue ellipse through a rendered clip by its colour, with mean shift
+and CAMSHIFT, then measures motion with block matching and Lucas-Kanade optical flow. The
+ellipse moves, grows, turns and dims halfway, so every frame has a true mask. The object is
+segmented by colour and tracked on a hue back-projection. The motion parts use still images
+shifted by a known amount.
 
 The run prints eleven parts:
     1. The clip: 90 frames with their true masks, dimmed to 0.45 from frame 45.

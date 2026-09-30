@@ -1,8 +1,8 @@
-"""Diagnose a loss spike in Adam training with per-step instrumentation and controlled reruns.
+"""This script diagnoses a loss spike in the Adam training of script 05's detector, with
+per-step instrumentation and controlled reruns. The loss falls smoothly for twenty-odd epochs,
+then every term rises together for a couple of epochs and falls back.
 
-The detector from script 05 has a loss that falls smoothly for twenty-odd epochs, then every
-term rises together for a couple of epochs and falls back. Each explanation that comes to mind
-is tested with a measurement:
+Each explanation that comes to mind is tested with a measurement:
     1. Reproduce the training run exactly, recording every optimiser step.
     2. Draw the anatomy of the rise: loss, gradient norm, step size, Adam's moments.
     3. Ask whether one unlucky batch is responsible.
@@ -161,7 +161,7 @@ def episodes(totals, threshold=RISE, after=10):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--long-epochs", type=int, default=LONG_EPOCHS,
                         help=f"epochs for the long run of step 7 (default {LONG_EPOCHS})")
     args = parser.parse_args()

@@ -1,9 +1,10 @@
-"""Measure the loss surface's curvature through a training break-up, with Hessian-vector products and power iteration.
+"""This script measures the curvature of the loss surface while script 05's detector trains
+through a break-up, with Hessian-vector products and power iteration. Script 05b showed what
+the rise near epoch 25 is not: not one unlucky batch, not Adam's denominator shrinking, not
+particular batches at all, and not something a smaller step removes. It pointed at the step
+size but did not measure what the step size meets.
 
-Script 05b showed what the rise near epoch 25 is not: not one unlucky batch, not Adam's
-denominator shrinking, not particular batches at all, and not something a smaller step removes.
-It pointed at the step size but did not measure what the step size meets. This script measures
-the curvature of the loss surface directly:
+Here the curvature is measured directly:
     1. Reproduce the training run of script 05 exactly, and fix one probe set to measure on.
     2. Train, and after every epoch measure three curvatures on the probe set: the sharpest one,
        estimated without building the Hessian; the one along the direction the parameters
@@ -186,7 +187,7 @@ def measure(s05, model, probe, anchors_t, optimiser, parameters, direction, gene
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--probe-size", type=int, default=PROBE_SIZE,
                         help=f"training images the curvature is measured on (default {PROBE_SIZE})")
     parser.add_argument("--power-iters", type=int, default=POWER_ITERATIONS,

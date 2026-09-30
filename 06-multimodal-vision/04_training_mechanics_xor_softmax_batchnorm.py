@@ -1,9 +1,9 @@
-"""Backpropagation, softmax cross-entropy, batch normalisation and dropout, worked through on small networks.
-
-A two-layer network learns XOR by backpropagation written as matrix products. The
-softmax cross-entropy gradient is checked against a numerical one. A numpy MLP and a
-PyTorch CNN with batch normalisation and dropout then train on digit images, and the
-trained CNN is run in training and evaluation mode to show what each layer changes.
+"""This script trains small networks on XOR and on digit images to work through
+backpropagation, softmax cross-entropy, batch normalisation and dropout. A two-layer
+network learns XOR by backpropagation written as matrix products. The softmax
+cross-entropy gradient is checked against a numerical one. A numpy MLP and a PyTorch
+CNN with batch normalisation and dropout learn the digits, and the trained CNN is
+run in training and evaluation mode to show what each layer changes.
 
 The run prints seven parts:
     1. Train one sigmoid unit on XOR from 100 seeds and show why it gets at most three of four;
@@ -286,7 +286,7 @@ def predictions(model, x, batch=1000):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--mnist-root", help="MNIST folder holding the uncompressed IDX files (or raw/)")
     args = parser.parse_args()
     global OUT_DIR

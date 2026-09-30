@@ -1,14 +1,17 @@
-"""Price a network designed for 224x224 inputs when it is handed a 32x32 one instead.
+"""This script trains a CNN designed for 224x224 inputs on 32x32 images, and measures what
+the input resolution mismatch costs against a network sized for the input and one below
+it.
 
-Demonstrates how to settle the question by measurement rather than by intuition:
-    1. Synthesise a 32x32 dataset whose classes differ only in a distance of a few pixels.
-    2. Trace a 224-shaped stem stage by stage and watch the feature map reach 1x1.
-    3. Work out how many cells each separation survives as.
-    4. Build a network sized for the input, and one deliberately below it.
-    5. Train all three on the same images and time them.
-    6. Score all three, and name the cost the numbers actually support.
-
-Module 06: Multimodal Vision - Input Resolution and Network Design.
+It settles the question by measurement rather than by intuition:
+    1. The dataset: four classes of 32x32 images, each two 2x2 dots 3, 5, 7 or 9
+       pixels apart, with the same total brightness in every class.
+    2. The feature map size after each stage of ResNet-50, from 32x32 and from
+       224x224, and how many values each stage holds.
+    3. How wide each gap is in cells once the stem has run. This part states the
+       intuition that part 6 tests.
+    4. The three networks: ResNet-50, one sized for the input, and one far below it.
+    5. Training all three on the same images, and the time each takes.
+    6. Held-out accuracy per class, and what the numbers support.
 """
 
 import random
@@ -28,9 +31,8 @@ sys.stdout.reconfigure(encoding="utf-8")
 SEED = 3407
 IMAGE_SIZE = 32
 DESIGNED_SIZE = 224
-# Every class draws the same two dots and differs only in how far apart they sit.
-# Total brightness is therefore identical across classes, so no amount of blur
-# leaves a shortcut behind: separation is the only thing that says which class it is.
+# Every class draws the same two dots and differs only in how far apart they sit,
+# so total brightness is identical across classes and cannot give the class away.
 SEPARATIONS = (3, 5, 7, 9)
 CLASSES = tuple(f"gap_{value}" for value in SEPARATIONS)
 DOT_PIXELS = 2
@@ -44,12 +46,9 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def draw_sample(separation, rng):
-    """Draw one 32x32 sample: two bright dots that sit `separation` pixels apart.
+    """Draw one 32x32 sample: two bright dots `separation` pixels apart.
 
-    The pair's position jitters across the frame so the classifier cannot win by
-    memorising coordinates, and the pair is drawn horizontally or vertically so it
-    cannot win on axis either. Every class puts the same amount of light on the
-    frame, which is what makes the separation the only usable signal.
+    Position jitters and the pair is horizontal or vertical at random, so neither gives the class away.
     """
     img = Image.new("L", (IMAGE_SIZE, IMAGE_SIZE), color=25)
     draw = ImageDraw.Draw(img)
@@ -81,12 +80,7 @@ def build_dataset(per_class, seed):
 
 
 class SizedForInput(nn.Module):
-    """A small convolutional network whose downsampling matches a 32x32 input.
-
-    Three stride-1 convolutions, each followed by one halving. The first layer
-    keeps the full resolution, so a separation of a few pixels is still that many
-    pixels wide when the first weights see it.
-    """
+    """A small CNN whose downsampling suits a 32x32 input: three 3x3 convolutions, each followed by a 2x pool."""
 
     def __init__(self, num_classes):
         super().__init__()
@@ -103,13 +97,9 @@ class SizedForInput(nn.Module):
 
 
 class TooSmall(nn.Module):
-    """The same kind of network with far too little of it.
+    """One 3x3 convolution with two channels, then an 8x pool.
 
-    One convolution of two channels, then a single pool that throws away most of
-    the resolution at once. Architecture family, optimiser, data and schedule all
-    match SizedForInput, so capacity is the only thing that differs. Without this
-    arm the comparison only shows that the oversized model is expensive; it never
-    shows that the size was chosen rather than merely survived.
+    It differs from SizedForInput in depth, width and pooling at once; this run does not say which one it lacks.
     """
 
     def __init__(self, num_classes):
@@ -125,18 +115,14 @@ class TooSmall(nn.Module):
 
 
 def build_designed_for_224(num_classes):
-    """Return a ResNet-50 with its first layer accepting one channel.
-
-    Nothing else is touched. The stem still runs a 7x7 convolution at stride 2 and
-    then a stride-2 max pool, because that is what the architecture is.
-    """
+    """Return a ResNet-50 whose first layer takes one channel; the stem is otherwise unchanged."""
     model = torchvision.models.resnet50(weights=None, num_classes=num_classes)
     model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
     return model
 
 
 def trace_stem(model, size):
-    """Return the feature map size after each stage of a ResNet, for one input size."""
+    """Return the feature map size and value count after each stage of a ResNet, for one input size."""
     # eval mode matters here: batch normalisation refuses a batch of one while
     # training, and the final stage of this trace is exactly one 1x1 cell.
     was_training = model.training
@@ -154,7 +140,7 @@ def trace_stem(model, size):
     with torch.no_grad():
         for name, stage in stages:
             x = stage(x)
-            trace.append((name, x.shape[-1]))
+            trace.append((name, x.shape[-1], x[0].numel()))
     model.train(was_training)
     return trace
 
@@ -218,8 +204,8 @@ def main():
           f"{', '.join(str(s) for s in SEPARATIONS)} pixels")
     brightness = train_x.sum(dim=(1, 2, 3))
     spread = [float(brightness[train_y == i].mean()) for i in range(len(CLASSES))]
-    print(f"  mean brightness per class: {', '.join(f'{v:.1f}' for v in spread)} "
-          f"- identical, so brightness carries no answer")
+    print(f"  mean brightness per class: {', '.join(f'{v:.1f}' for v in spread)}"
+          f": identical, so brightness carries no answer")
     print(f"device: {DEVICE}")
 
     print()
@@ -227,9 +213,9 @@ def main():
     designed = build_designed_for_224(len(CLASSES))
     small_trace = trace_stem(designed, IMAGE_SIZE)
     large_trace = trace_stem(designed, DESIGNED_SIZE)
-    print(f"{'stage':<16}{'from 32':>10}{'from 224':>12}")
-    for (name, small), (_, large) in zip(small_trace, large_trace):
-        print(f"{name:<16}{small:>10}{large:>12}")
+    print(f"{'stage':<16}{'from 32':>10}{'from 224':>12}{'values from 32':>17}")
+    for (name, small, values), (_, large, _) in zip(small_trace, large_trace):
+        print(f"{name:<16}{small:>10}{large:>12}{values:>17,}")
     print(f"  the 32x32 input reaches {small_trace[-1][1]}x{small_trace[-1][1]} before the "
           f"classifier, where the design expects {large_trace[-1][1]}x{large_trace[-1][1]}")
 
@@ -237,13 +223,13 @@ def main():
     print("--- 3. What the stem costs the separations ---")
     after_stem = small_trace[1][1]
     factor = IMAGE_SIZE / after_stem
-    print(f"the stem downsamples by {factor:.0f}x before any residual block runs, so one "
-          f"cell afterwards covers {factor:.0f} input pixels")
+    print(f"the stem downsamples by {factor:.0f}x before any residual block runs, so "
+          f"neighbouring cells afterwards sit {factor:.0f} input pixels apart")
     for separation in SEPARATIONS:
-        cells = separation / factor
-        verdict = "inside one cell" if cells < 1 else f"{cells:.2f} cells apart"
-        print(f"  gap_{separation}: {verdict}")
-    print(f"  the same stem on a {DESIGNED_SIZE}x{DESIGNED_SIZE} photograph leaves "
+        print(f"  gap_{separation}: a gap {separation / factor:.2f} cells wide")
+    step = SEPARATIONS[1] - SEPARATIONS[0]
+    print(f"  neighbouring classes differ by {step} pixels, {step / factor:.2f} cells")
+    print(f"  the same stem on a {DESIGNED_SIZE}x{DESIGNED_SIZE} input leaves "
           f"{large_trace[1][1]}x{large_trace[1][1]} cells to work with")
 
     print()
@@ -254,13 +240,13 @@ def main():
     counts = {name: sum(p.numel() for p in model.parameters()) for name, model in arms}
     for name, _ in arms:
         print(f"{name:<14}{counts[name]:>12,} parameters")
-    print(f"  the oversized arm carries {counts['ResNet-50'] / counts['SizedForInput']:.0f}x "
-          f"the parameters of the sized one, the starved arm "
+    print(f"  ResNet-50 has {counts['ResNet-50'] / counts['SizedForInput']:.0f}x the "
+          f"parameters of SizedForInput, and TooSmall "
           f"{counts['SizedForInput'] / counts['TooSmall']:.0f}x fewer")
     with torch.no_grad():
         sized_map = sized.features(torch.zeros(1, 1, IMAGE_SIZE, IMAGE_SIZE)).shape[-1]
-    print(f"  its last feature map is {sized_map}x{sized_map}, not "
-          f"{small_trace[-1][1]}x{small_trace[-1][1]}")
+    print(f"  SizedForInput's last feature map is {sized_map}x{sized_map}, where "
+          f"ResNet-50's is {small_trace[-1][1]}x{small_trace[-1][1]}")
 
     print()
     print("--- 5. Training all three on the same images ---")
@@ -275,29 +261,34 @@ def main():
     print()
     print("--- 6. Scoring all three on the held-out images ---")
     results = {}
+    by_class = {}
     for name, model in arms:
         overall, per_class = evaluate(model, test_x, test_y)
         results[name] = overall
+        by_class[name] = per_class
         detail = "  ".join(f"{cls}={score:.2f}" for cls, score in per_class.items())
         print(f"{name:<14} accuracy {overall:.1%}   {detail}")
     print(f"chance is {1 / len(CLASSES):.0%}")
 
     print()
     print("what the numbers support, and what they do not:")
-    print(f"  the mismatch did NOT hide the fine detail. The stem samples at stride 2, but "
-          f"each of its kernels still spans 7 input pixels, so a {SEPARATIONS[0]}-pixel gap "
-          f"survives in the channel values even once the map has gone coarse")
+    print(f"  the mismatch did NOT hide the fine detail: ResNet-50 scores "
+          f"{by_class['ResNet-50'][CLASSES[0]]:.2f} on {CLASSES[0]}, a gap "
+          f"{SEPARATIONS[0] / factor:.2f} cells wide after the stem")
+    fewest = min(small_trace, key=lambda stage: stage[2])
+    print(f"  a coarse map is not a small one: the fewest values any stage holds is "
+          f"{fewest[2]:,} ({fewest[0]}), against {IMAGE_SIZE * IMAGE_SIZE:,} input pixels")
     print(f"  what it cost is measurable elsewhere: "
           f"{counts['ResNet-50'] / counts['SizedForInput']:.0f}x the "
           f"parameters and {seconds['ResNet-50'] / seconds['SizedForInput']:.1f}x the training "
           f"time, for {results['ResNet-50']:.1%} against {results['SizedForInput']:.1%}")
-    print(f"  the starved arm is what says the size was chosen rather than merely survived: "
+    print(f"  TooSmall shows the task is not free: "
           f"{results['TooSmall']:.1%} on the same images, against "
           f"{results['SizedForInput']:.1%} and a chance rate of {1 / len(CLASSES):.0%}")
     print(f"  and the last feature map is {small_trace[-1][1]}x{small_trace[-1][1]}, so the "
-          f"pooling that follows averages a single cell - nothing downstream can ask where")
-    print("  'it cannot see the detail' was the intuition; the run says otherwise, and the "
-          "run is what gets reported")
+          f"average pool that follows has a single cell to average, and nothing downstream "
+          f"can tell where anything was")
+    print("  'it cannot see the detail' was the intuition; the run says otherwise")
     print("=" * 78)
 
 

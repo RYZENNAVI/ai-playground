@@ -1,17 +1,27 @@
-"""Write attention out by hand, then learn image representations with no labels and score them.
+"""This script computes scaled dot-product attention by hand, then trains encoders on
+images without labels (self-supervised learning) and scores their representations two
+ways. Attention compares every token's query with every token's key and returns a
+weighted sum of the values. A transformer encoder block wraps it in residual
+connections and layer normalisation. Here an autoencoder rebuilds the image, a masked
+autoencoder rebuilds the patches its encoder was not shown, and a contrastive encoder
+picks out two augmented views of one image with the NT-Xent loss. Each encoder is then
+scored with labels in two ways. A linear probe trains one linear layer on its frozen
+features. Fine-tuning trains the encoder and a fresh linear classifier together.
 
-Demonstrates the transformer block and three label-free training objectives:
-    1. Compute scaled dot-product attention from Q, K and V, and check it against PyTorch.
+The run prints eight parts:
+    1. Compute attention from Q, K and V, and check it against nn.MultiheadAttention.
     2. Put it inside an encoder block with residual connections and layer normalisation.
-    3. Cut an image into tokens two ways, by patches and by convolution, classify with labels,
-       and probe what each tokeniser's frozen representation is worth on its own.
-    4. Train a supervised convolutional baseline as the reference the label-free methods are read against.
-    5. Train an autoencoder on reconstruction alone and probe its representation with one linear layer.
-    6. Train a masked autoencoder that rebuilds the patches it was not shown, and probe it the same way.
-    7. Train a contrastive encoder on pairs of augmentations, with and without a projection head.
-    8. Score six encoders two ways: a frozen linear probe, and the same fine-tuning for all of them.
+    3. Cut an image into tokens two ways, by patches and by convolution, train each as a
+       classifier, and probe each frozen representation.
+    4. Train a supervised ConvNet as the reference the label-free encoders are read against.
+    5. Train an autoencoder on reconstruction alone.
+    6. Train a masked autoencoder that rebuilds the half of the patches it was not shown.
+    7. Train a contrastive encoder on pairs of augmented views, with and without a
+       projection head.
+    8. Score six encoders with the linear probe and with the same fine-tuning. The run
+       without a projection head is left out of the six; part 8 prints its probe score separately.
 
-Module 06: Multimodal Vision - Attention and Self-Supervised Representations.
+Pass --cifar10-root to run on CIFAR-10 photographs instead of the rendered objects.
 """
 
 import argparse
@@ -42,12 +52,12 @@ EMBED, HEADS, DEPTH, MLP_RATIO = 96, 4, 3, 2
 SUPERVISED_EPOCHS, BATCH, LEARNING_RATE = 8, 128, 1e-3
 AE_EPOCHS, MAE_EPOCHS, CONTRASTIVE_EPOCHS = 12, 30, 20
 PROBE_EPOCHS, PROBE_BATCH, PROBE_LEARNING_RATE = 5, 256, 1e-3
-# Fine-tuning deliberately borrows the supervised settings, so that the six encoders meet the
+# Fine-tuning borrows the supervised settings, so that the six encoders meet the
 # downstream task on exactly the terms the supervised baseline was trained on.
 FINETUNE_EPOCHS, FINETUNE_BATCH, FINETUNE_LEARNING_RATE = SUPERVISED_EPOCHS, BATCH, LEARNING_RATE
 MASK_RATIO, TEMPERATURE, CONTRASTIVE_BATCH = 0.5, 0.2, 256
 # The six encoders compared head to head in step 8. The projection-head ablation of step 7 is
-# deliberately left out: it is a second run of one of these six, not a seventh design.
+# left out: it is a second run of one of these six, not a seventh design.
 COMPARED = ("patch tokens", "convolutional tokens", "supervised ConvNet", "autoencoder",
             "masked autoencoder", "contrastive with head")
 LABELLED_PRETRAINING = ("patch tokens", "convolutional tokens", "supervised ConvNet")
@@ -94,11 +104,9 @@ def synthetic_dataset(count, rng):
 
 
 def load_cifar10(root, train_count, test_count, rng):
-    """CIFAR-10 images as 32x32 BGR arrays, from the python batches.
+    """CIFAR-10 images as 32x32 BGR arrays, both splits drawn from the first two training batches.
 
-    Both splits are drawn from the first two training batches; the official test_batch
-    is not read. The held-out split is fine for comparing the methods here with each
-    other, but its accuracies are not CIFAR-10 test-set figures.
+    The official test_batch is not read, so the accuracies here are not CIFAR-10 test-set figures.
     """
     def read(name):
         with open(Path(root) / name, "rb") as handle:
@@ -119,11 +127,7 @@ def load_cifar10(root, train_count, test_count, rng):
 def attention_by_hand(q, k, v, heads):
     """Scaled dot-product attention, split across heads, written out in matrix form.
 
-    Every token's query is compared with every token's key by a dot product, which
-    is large when the two point the same way. Dividing by the square root of the
-    head dimension keeps those dot products from growing with the dimension and
-    pushing the softmax into a corner. The softmax turns each row into weights that
-    sum to one, and the output of a token is that weighted sum of the values.
+    Dividing by the square root of the head dimension keeps the dot products from growing with it.
     """
     import torch
 
@@ -269,9 +273,7 @@ def build_models(classes):
     class MaskedAutoencoder(nn.Module):
         """Encode the visible patches only, then rebuild the hidden ones from their positions.
 
-        The encoder never sees a masked patch, so it cannot copy it; the only route
-        to a low loss is a representation of the visible patches that says enough
-        about the picture to predict the rest of it.
+        The encoder never sees a masked patch, so it cannot copy one into the prediction.
         """
 
         def __init__(self, dim=EMBED, depth=DEPTH):
@@ -434,12 +436,9 @@ def augment(images):
 
 
 def nt_xent(z1, z2, temperature=TEMPERATURE):
-    """Normalised temperature-scaled cross-entropy: each view must pick its partner out of the batch.
+    """Normalised temperature-scaled cross-entropy: each view must pick its partner out of the other 2N - 1.
 
-    Both views are L2-normalised, so a dot product is a cosine. Every view is scored
-    against all 2N - 1 others, its partner is the single positive, and the loss is
-    the cross-entropy of that choice. Dividing by a small temperature sharpens the
-    distribution, which puts the pressure on the hardest negatives.
+    A small temperature sharpens the softmax, which puts the pressure on the hardest negatives.
     """
     import torch
     import torch.nn.functional as F
@@ -526,18 +525,9 @@ def linear_probe(train_features, train_labels, test_features, test_labels, class
 
 
 def fine_tune(encoder, x_train, y_train, x_test, y_test, classes, device, generator):
-    """Unfreeze a trained encoder, put a fresh linear classifier on it, and train the two together.
+    """Deep-copy a trained encoder, put a fresh linear classifier on it, and train the two together.
 
-    This asks a different question from the probe. The probe freezes the encoder and measures how
-    linearly separable its representation already is; this lets the encoder keep learning from the
-    labels and measures what the whole system reaches after adapting to the task.
-
-    The encoder is deep-copied, so the representation the probe scored is left exactly as it was,
-    and the classifier is a new layer rather than the task head the encoder may already carry. Every
-    encoder gets the same labelled data, epochs, batch size, optimiser, learning rate and objective;
-    only the width of its representation differs. Parts that the representation does not use - an
-    autoencoder's decoder, a contrastive projection head, an original classification head - stay in
-    the copy but receive no gradient, so they never move.
+    Parts the features do not use (a decoder, a projection head, an old task head) get no gradient and never move.
     """
     import copy
 
@@ -570,10 +560,8 @@ def fine_tune(encoder, x_train, y_train, x_test, y_test, classes, device, genera
     return time.perf_counter() - started, history, (predicted == y_test).float().mean().item(), width
 
 
-# Main
-
 def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--cifar10-root", help="folder holding the CIFAR-10 python batches")
     args = parser.parse_args()
     global OUT_DIR
@@ -590,13 +578,13 @@ def main():
 
     torch.manual_seed(SEED)
     # cuDNN chooses a convolution algorithm per shape and some of them accumulate in a
-    # non-deterministic order, which moves a probe accuracy by a point or two between runs.
+    # non-deterministic order, which would let the numbers move between runs.
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     generator = torch.Generator().manual_seed(SEED)
 
-    # 1. Attention
+    # 1. Scaled dot-product attention
     print("--- 1. Scaled dot-product attention ---")
     torch.manual_seed(SEED)
     q, k, v = (torch.randn(2, 4, EMBED) for _ in range(3))
@@ -604,8 +592,8 @@ def main():
     print(f"  {q.shape[1]} tokens of {EMBED} values, {HEADS} heads of {EMBED // HEADS}: "
           f"Q, K, V {tuple(q.shape)} -> attention weights {tuple(weights.shape)} -> output {tuple(out.shape)}")
     print(f"  every row of the weights sums to {weights.sum(-1).min().item():.6f}; "
-          f"first head, first token attends {np.round(weights[0, 0, 0].numpy(), 3).tolist()}")
-    show = lambda t: np.round(t[0, 0, :6].numpy(), 3).tolist()
+          f"first head, first token attends {[round(float(w), 3) for w in weights[0, 0, 0]]}")
+    show = lambda t: [round(float(value), 3) for value in t[0, 0, :6]]
     print(f"  first six values of the first token: Q {show(q)}")
     print(f"                                       K {show(k)}")
     print(f"                                       V {show(v)}")
@@ -617,6 +605,11 @@ def main():
         theirs, _ = reference(q, k, v, need_weights=False)
     print(f"  against nn.MultiheadAttention with identity projections: largest gap "
           f"{(out - theirs).abs().max().item():.2e}")
+    head_dim = EMBED // HEADS
+    split = lambda t: t.view(*q.shape[:2], HEADS, head_dim).transpose(1, 2)
+    unscaled = torch.softmax(split(q) @ split(k).transpose(-2, -1), dim=-1)
+    print(f"  the largest weight in each row averages {weights.max(-1).values.mean().item():.3f}; "
+          f"without the division by sqrt({head_dim}) it averages {unscaled.max(-1).values.mean().item():.3f}")
     print("  Dividing by the square root of the head dimension keeps the dot products from")
     print("  growing with the dimension; without it the softmax saturates and the gradient")
     print("  through it vanishes.")
@@ -638,7 +631,7 @@ def main():
     plt.close(fig)
     print("  attention_weights.png: the 4x4 weight matrix of every head for the first sequence")
 
-    # 2. Encoder block
+    # 2. The encoder block around it
     print("\n--- 2. The encoder block around it ---")
     _, EncoderBlock = build_blocks()
     block = EncoderBlock()
@@ -677,7 +670,7 @@ def main():
     plt.close(fig)
     print("  encoder_block.png: input and output value distributions, and the zeroed block against the identity")
 
-    # Data
+    # 3. Data, and tokenising an image two ways
     print("\n--- 3. Tokenising an image two ways ---")
     if args.cifar10_root:
         train_images, train_labels, test_images, test_labels = load_cifar10(
@@ -722,8 +715,8 @@ def main():
         with torch.no_grad():
             accuracy = (torch.cat([model(x_test[s:s + 500].to(device)).argmax(1).cpu()
                                    for s in range(0, len(x_test), 500)]) == y_test).float().mean().item()
-        # The probe added here must not disturb the random stream the later objectives draw from,
-        # so it runs on a forked generator of its own and the outer stream resumes untouched.
+        # The probe runs on a forked generator, so the later objectives draw the same random
+        # numbers as without it.
         with torch.random.fork_rng(devices=[]):
             torch.manual_seed(SEED)
             probe_generator = torch.Generator().manual_seed(SEED)
@@ -770,8 +763,8 @@ def main():
     print("  tokenisers.png: the input window of two neighbouring tokens under each tokeniser;")
     print("  dataset.png: the first 16 training images with their classes")
 
-    # 4-7. Representations
-    print("\n--- 4. A supervised baseline, and three objectives that use no labels ---")
+    # 4. A supervised baseline
+    print("\n--- 4. A supervised baseline ---")
     results = {}
     baseline = models["supervised ConvNet"]().to(device)
     elapsed, loss_histories["supervised ConvNet"] = train_supervised(baseline, x_train, y_train, SUPERVISED_EPOCHS,
@@ -781,6 +774,9 @@ def main():
         representations(baseline, x_test, device), y_test, classes, device, generator))
     encoders["supervised ConvNet"] = baseline
     print(f"  supervised ConvNet trained in {elapsed:.0f}s")
+
+    # 5. An autoencoder
+    print("\n--- 5. An autoencoder ---")
 
     autoencoder = models["autoencoder"]().to(device)
     elapsed, loss, loss_histories["autoencoder"] = train_autoencoder(autoencoder, x_train, AE_EPOCHS, device,
@@ -798,6 +794,9 @@ def main():
         ("input", list(restore(sample.cpu()))), ("reconstruction", list(restore(rebuilt)))]))
     print("  autoencoder.png: eight test images above their reconstructions")
 
+    # 6. A masked autoencoder
+    print("\n--- 6. A masked autoencoder ---")
+
     masked = models["masked autoencoder"]().to(device)
     elapsed, loss, loss_histories["masked autoencoder"] = train_masked_autoencoder(masked, x_train, MAE_EPOCHS,
                                                                                    device, generator)
@@ -806,7 +805,7 @@ def main():
         representations(masked, x_test, device), y_test, classes, device, generator))
     encoders["masked autoencoder"] = masked
     print(f"  masked autoencoder: {MAE_EPOCHS} epochs at mask ratio {MASK_RATIO}, "
-          f"{int((SIZE // PATCH) ** 2 * (1 - MASK_RATIO))} of {(SIZE // PATCH) ** 2} patches encoded, "
+          f"{int(round((SIZE // PATCH) ** 2 * (1 - MASK_RATIO)))} of {(SIZE // PATCH) ** 2} patches encoded, "
           f"final MSE on the hidden patches {loss:.4f}")
     # The mask for the picture comes from a generator of its own, so drawing it takes
     # nothing from the global stream that the contrastive augmentations draw from next.
@@ -830,6 +829,9 @@ def main():
         ("hidden patches filled in by the decoder", list(restore(to_image(rebuilt).cpu())))]))
     print("  masked_autoencoder.png: eight test images, the half the encoder is shown, and the")
     print("  hidden half as the decoder predicts it")
+
+    # 7. A contrastive encoder, with and without a projection head
+    print("\n--- 7. A contrastive encoder, with and without a projection head ---")
 
     for name in ("contrastive with head", "contrastive without head"):
         model = models[name]().to(device)
@@ -863,7 +865,7 @@ def main():
     print("  augmentations.png: eight test images and two random views of each;")
     print("  training_losses.png: every training loss per epoch, grouped by objective")
 
-    # 8. The same two evaluations on every representation
+    # 8. Six encoders, two evaluations
     print("\n--- 8. Six encoders, two evaluations ---")
     chance = 1 / classes
     probe_accuracy.update({name: accuracy for name, (_, _, accuracy) in results.items()})
@@ -901,9 +903,9 @@ def main():
         print(f"  {name:<26}{pretrain_time[name]:>12.0f}s{probe_accuracy[name]:>10.2%}"
               f"{fine_tuned[name]:>13.2%}{difference:>+14.2f}")
     print("\n  Three numbers in this script must not be run together into one ranking:")
-    print("    end-to-end accuracy (step 3) - what a classifier reaches on its own task, its own head included")
-    print("    probe accuracy             - how linearly separable a frozen representation already is")
-    print("    fine-tuned accuracy        - what the encoder reaches after adapting to the labels")
+    print("    end-to-end accuracy (step 3): what a classifier reaches on its own task, its own head included")
+    print("    probe accuracy: how linearly separable a frozen representation already is")
+    print("    fine-tuned accuracy: what the encoder reaches after adapting to the labels")
     print("  The six encoders meet the same downstream protocol, but their pretraining objectives,")
     print("  architectures, feature widths, epochs and exposure to labels all differ, so this compares")
     print("  these configurations, not the objectives in isolation, and it is not a causal ranking of")
@@ -970,23 +972,29 @@ def main():
     print("  are trained on labels in every row, and the held-out split is only ever read for scoring:")
     print("  the standardising mean and standard deviation come from the training features alone, and")
     print("  no setting here was chosen by looking at a held-out number.")
-    print("  The three label-free training families differ in architecture, feature size and epochs as well")
-    print("  as in objective, so the ordering is of these configurations, not of the objectives alone.")
-    print("  It is consistent with reconstruction rewarding whatever fills the most pixels, while")
-    print("  the other two ask for something harder: predicting patches the encoder never saw, and")
-    print("  telling two views of one image apart from every other image.")
+    label_free = sorted(("autoencoder", "masked autoencoder", "contrastive with head"),
+                        key=probe_accuracy.get, reverse=True)
+    print("  Of the three label-free encoders the probe ranks "
+          + " > ".join(f"{name} {probe_accuracy[name]:.2%}" for name in label_free) + ".")
+    if label_free[-1] == "autoencoder":
+        print("  That is consistent with reconstruction rewarding whatever fills the most pixels, while")
+        print("  the other two ask for something harder: predicting patches the encoder never saw, and")
+        print("  telling two views of one image apart from every other image.")
     print("\n  The projection-head ablation of step 7 stays out of the six above, being a second run of")
     print("  one of them rather than a seventh design; its probe accuracy is the hatched bar:")
+    gap = 100 * (probe_accuracy['contrastive with head'] - probe_accuracy['contrastive without head'])
     print(f"  contrastive with a projection head {probe_accuracy['contrastive with head']:.2%} against "
-          f"{probe_accuracy['contrastive without head']:.2%} without one, a gap of "
-          f"{100 * (probe_accuracy['contrastive with head'] - probe_accuracy['contrastive without head']):.1f} "
-          f"points.")
+          f"{probe_accuracy['contrastive without head']:.2%} without one, a gap of {gap:.1f} points.")
     print("  The two contrastive runs share the body architecture and every training setting, and")
     print("  the projection head is their one design difference; each still starts from its own")
     print("  random weights, augmentations and batch order, so it is not a strict single-variable")
-    print("  ablation. In this setup the head substantially improves the features underneath it: the loss")
-    print("  pulls the head's output onto a sphere and discards what it does not need, and the")
-    print("  body is one layer removed from that.")
+    print("  ablation.")
+    if gap > 0:
+        print("  In this run the head improves the features underneath it. The loss pulls the head's")
+        print("  output onto a sphere and discards what it does not need, and the body is one layer")
+        print("  removed from that.")
+    else:
+        print("  In this run the head does not improve the features underneath it.")
     print(f"\n  images written to {OUT_DIR}")
 
 

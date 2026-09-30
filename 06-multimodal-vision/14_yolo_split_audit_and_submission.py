@@ -1,22 +1,27 @@
-"""Audit a detection split before training it, then price two changes that touch no boxes at all.
+"""This script audits the class balance of a synthesised defect dataset's split before
+training a small detector in the YOLO format, then prices two changes to the submission
+that move no box.
 
-Demonstrates where a detection number comes from, and how little of it is the model:
-    1. Synthesise a defect dataset whose every instance is recorded as it is drawn.
-    2. Write the labels as VOC XML, then convert them to the YOLO text layout.
-    3. Split the images the way a downloaded dataset usually arrives.
-    4. Audit the split by class before a single epoch runs.
-    5. Train a small detector and read its metric on the tiny split and on the full one.
-    6. Rebuild the submission twice without moving a box, and score all three.
-
-Module 06: Multimodal Vision - Detection Split Audit.
+It shows where a detection number comes from, and how little of it is the model:
+    1. The dataset: four defect classes on textured plates, each box recorded as
+       it is drawn.
+    2. One label in VOC XML, the YOLO line it converts to, and how many boxes
+       converted.
+    3. The split: almost everything in train, two validation images, the rest test.
+    4. Instances per class in each split, counted before training.
+    5. mAP@0.5 on validation and on test, the same on every pair of test images,
+       then on test again at the viewing confidence of 0.25.
+    6. The test predictions written three ways, and each file read back and scored.
 """
 
+import csv
 import os
 import random
 import shutil
 import sys
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
+from itertools import combinations
 from pathlib import Path
 
 import numpy as np
@@ -31,9 +36,8 @@ IMAGE_SIZE = 128
 TOTAL_IMAGES = 160
 SEED = 3407
 
-# The split shape a downloaded dataset often arrives in: almost everything in
-# train, a validation set small enough to fit on one screen, and a test set that
-# nobody looks at until the end.
+# Almost everything in train, two validation images, and a test set scored only
+# at the end.
 AS_ARRIVED = {"train": 128, "val": 2, "test": 30}
 
 EPOCHS = 60
@@ -49,12 +53,8 @@ VIEWING_CONFIDENCE = 0.25
 
 
 def synthesise(rng):
-    """Draw one plate of textured metal with defects on it, returning the boxes drawn.
-
-    The boxes are not detected here, they are recorded as they are painted. That is
-    the whole point of synthesising the data: the ground truth cannot disagree with
-    the image, so any disagreement later belongs to the model or to the split.
-    """
+    """Draw one plate of textured metal with defects, returning each box as it was
+    painted rather than detected afterwards."""
     noise = np.array(rng.choices(range(96, 152), k=IMAGE_SIZE * IMAGE_SIZE), dtype=np.uint8)
     img = Image.fromarray(noise.reshape(IMAGE_SIZE, IMAGE_SIZE), mode="L")
     img = img.filter(ImageFilter.GaussianBlur(1.1)).convert("L")
@@ -114,9 +114,7 @@ def write_voc(path, filename, boxes):
 def voc_to_yolo(xml_path, txt_path):
     """Convert one VOC file to YOLO lines: class index, centre x, centre y, width, height.
 
-    VOC stores absolute corners and YOLO stores a normalised centre and extent, so
-    the conversion divides by the image size. Getting this wrong produces boxes that
-    are valid numbers in the wrong places, which trains without complaint.
+    VOC stores absolute corners and YOLO a normalised centre and extent; a box outside the image is skipped.
     """
     root = ET.parse(xml_path).getroot()
     width = float(root.find("size/width").text)
@@ -138,7 +136,8 @@ def voc_to_yolo(xml_path, txt_path):
 
 
 def build_dataset(seed=SEED):
-    """Generate every image once, write both label formats, and return the truth table."""
+    """Generate every image once, write both label formats, and return the truth table
+    and the number of boxes converted."""
     if ROOT.exists():
         shutil.rmtree(ROOT)
     rng = random.Random(seed)
@@ -148,14 +147,15 @@ def build_dataset(seed=SEED):
     (raw / "labels").mkdir(parents=True)
 
     truth = {}
+    converted = 0
     for index in range(TOTAL_IMAGES):
         name = f"{index:04d}"
         image, boxes = synthesise(rng)
         image.save(raw / "images" / f"{name}.png")
         write_voc(raw / "annotations" / f"{name}.xml", f"{name}.png", boxes)
-        voc_to_yolo(raw / "annotations" / f"{name}.xml", raw / "labels" / f"{name}.txt")
+        converted += voc_to_yolo(raw / "annotations" / f"{name}.xml", raw / "labels" / f"{name}.txt")
         truth[name] = boxes
-    return truth
+    return truth, converted
 
 
 def split_names(truth, shape, seed=SEED):
@@ -217,11 +217,9 @@ def iou(box_a, box_b):
 
 
 def average_precision(predictions, truth, names):
-    """Compute mean average precision at one IoU threshold, over the given images.
+    """Return AP at one IoU threshold for each class present, with 101-point interpolation.
 
-    The predictions are ranked by confidence and walked from the top down, so the
-    score depends on the order of the list as much as on the boxes in it. That is
-    the property the last step of this script exploits.
+    Predictions are ranked by confidence; ties keep the order of the list, which part 6 relies on.
     """
     per_class = {}
     for index, cls in enumerate(CLASSES):
@@ -285,22 +283,35 @@ def predict(model, split_dir, names, confidence=METRIC_CONFIDENCE):
     return records
 
 
-def write_submission(path, records, order):
-    """Write the prediction table in a given row order, one box per row."""
+def write_submission(path, rows):
+    """Write the prediction table, one box per row, in the order given."""
     lines = ["image_id,x1,y1,x2,y2,category_id,confidence"]
-    for record in order:
+    for record in rows:
         x1, y1, x2, y2 = (int(round(v)) for v in record["box"])
         lines.append(
             f"{record['image']},{x1},{y1},{x2},{y2},{record['class']},{record['confidence']:.4f}"
         )
     path.write_text("\n".join(lines), encoding="utf-8")
-    return len(records)
+
+
+def read_submission(path):
+    """Read a submission file back into prediction records, so the file itself is scored."""
+    with path.open(encoding="utf-8") as handle:
+        return [
+            {
+                "image": row["image_id"],
+                "class": int(row["category_id"]),
+                "confidence": float(row["confidence"]),
+                "box": tuple(float(row[key]) for key in ("x1", "y1", "x2", "y2")),
+            }
+            for row in csv.DictReader(handle)
+        ]
 
 
 def main():
     print("=" * 78)
     print("--- 1. A dataset whose every instance was recorded as it was drawn ---")
-    truth = build_dataset()
+    truth, converted = build_dataset()
     totals = Counter(label for boxes in truth.values() for label, *_ in boxes)
     print(f"{TOTAL_IMAGES} images at {IMAGE_SIZE}x{IMAGE_SIZE}, "
           f"{sum(totals.values())} instances")
@@ -316,6 +327,7 @@ def main():
     print(f"{sample}.xml first object: {first_object.strip()[:96]}")
     print(f"{sample}.txt            : {txt_text.splitlines()[0]}")
     print("  absolute corners became a normalised centre and extent")
+    print(f"  {converted} of {sum(totals.values())} boxes converted")
 
     print()
     print("--- 3. The split as the folder arrives ---")
@@ -324,7 +336,7 @@ def main():
     for split, names in splits.items():
         share = len(names) / TOTAL_IMAGES
         print(f"  {split:<6}{len(names):>5} images  {share:>6.1%} of the set")
-    print(f"wrote {yaml_path}")
+    print(f"wrote {yaml_path.relative_to(Path(__file__).parent)}")
 
     print()
     print("--- 4. Auditing the split before any epoch runs ---")
@@ -373,11 +385,16 @@ def main():
         detail = "  ".join(f"{cls}={value:.3f}" for cls, value in per_class.items())
         print(f"  {split:<5} mAP@{IOU_THRESHOLD} = {mean:.3f} over {len(per_class)} classes"
               f"   {detail}")
-    val_mean = sum(scores["val"][0].values()) / len(scores["val"][0])
     test_mean = sum(scores["test"][0].values()) / len(scores["test"][0])
-    print(f"  the validation figure is an average over {table['val']['instances']} instances "
-          f"and the test figure over {table['test']['instances']}, so {val_mean:.3f} against "
-          f"{test_mean:.3f} is a difference in sample size before it is anything else")
+    print(f"  the validation figure averages {table['val']['instances']} instances and the test "
+          f"figure {table['test']['instances']}, and the checkpoint was chosen on the validation images")
+    pairs = []
+    for pair in combinations(splits["test"], 2):
+        per_class = average_precision(scores["test"][1], truth, list(pair))
+        pairs.append(sum(per_class.values()) / len(per_class))
+    perfect = sum(1 for value in pairs if value >= 0.9995)
+    print(f"  of the {len(pairs)} ways to pick 2 test images, {perfect} score 1.000 "
+          f"with these same weights, against {test_mean:.3f} on all {len(splits['test'])}")
     print(f"  both were scored over every detection down to confidence {METRIC_CONFIDENCE}, "
           f"which is what average precision is defined over")
 
@@ -407,19 +424,24 @@ def main():
         ("grouped by image_id", grouped),
         ("confidence set to 1.0", flattened),
     )
+    file_scores = {}
     for label, rows in variants:
         path = submissions / f"{label.replace(' ', '_')}.csv"
-        write_submission(path, rows, rows)
-        per_class = average_precision(rows, truth, test_names)
+        write_submission(path, rows)
+        submitted = read_submission(path)
+        per_class = average_precision(submitted, truth, test_names)
         mean = sum(per_class.values()) / len(per_class) if per_class else 0.0
-        print(f"  {label:<24} {len(rows):>4} rows   mAP@{IOU_THRESHOLD} = {mean:.4f}")
+        file_scores[label] = mean
+        print(f"  {label:<24} {len(submitted):>4} rows   mAP@{IOU_THRESHOLD} = {mean:.4f}")
+    print(f"  the files hold whole-pixel coordinates, which score "
+          f"{file_scores['as predicted']:.4f} against {full_mean:.4f} before rounding")
 
     print("  sorting changed the file and not the score: average precision ranks the rows "
           "itself before scoring them")
     print("  flattening the confidence column did change it, because every row now ties and "
           "the ranking falls back to the order they were written in")
-    print("  neither edit touched a coordinate, which is the whole point: the metric is a "
-          "property of the submitted list, not only of the detector")
+    print("  neither edit touched a coordinate: the metric is a property of the submitted "
+          "list, not only of the detector")
     print("=" * 78)
 
 

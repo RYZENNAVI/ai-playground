@@ -1,9 +1,9 @@
-"""Canny edge detection and the Hough transform: find edges, then let edge pixels vote for shapes.
-
-The script draws lines and disks with known parameters, adds noise, and scores every stage
-against the true boundary. Canny is built stage by stage: Gaussian smoothing, Sobel gradients,
-non-maximum suppression and hysteresis. The edges then vote for lines and circles, and a
-generalised Hough transform finds a template shape by its R-table.
+"""This script finds the lines and disks in a noisy drawn scene with Canny edge detection and
+the Hough transform, where edge pixels vote for shapes. The lines and disks are drawn with
+known parameters, so every stage is scored against the true boundary. Canny is built stage by
+stage: Gaussian smoothing, Sobel gradients, non-maximum suppression and hysteresis. The edges
+vote for lines and circles, and a generalised Hough transform finds a template shape by its
+R-table.
 
 The run prints nine parts:
     1. The scene: four lines and three disks at known parameters, under Gaussian noise.

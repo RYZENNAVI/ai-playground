@@ -1,14 +1,17 @@
-"""Audit what survives when a PDF is parsed back into blocks, against a structure known in advance.
+"""This script renders a PDF from a structure declared in code, parses it back into
+blocks with PyMuPDF, and audits which headings a layout parse by type size recovers.
 
-Demonstrates why a parsed document needs reconciling before anything is built on it:
-    1. Declare a document structure in code, so every heading and paragraph is known.
-    2. Render it to a PDF, including the three layouts that break naive parsers.
-    3. Read the page back as positioned blocks and spans.
-    4. Classify blocks into headings and body the way a layout parser does, by type size.
-    5. Reconcile the recovered headings against the declared ones and report the recall.
-    6. Slice the document by recovered heading and show what the missed ones cost.
+A parsed document needs reconciling before anything is built on it, and that
+needs a document whose structure is known before it is drawn.
 
-Module 06: Multimodal Vision - Document Layout Audit.
+The run prints six parts:
+    1. The declared structure: six sections, each with the flaw its heading is drawn with.
+    2. Rendering it to a two-column PDF.
+    3. Reading the page back as positioned lines. The same lines sorted top to bottom
+       are shown for comparison only; nothing later uses them.
+    4. Classifying lines as headings or body by type size alone.
+    5. Matching each declared heading against the lines, and the heading recall.
+    6. Slicing the document by recovered heading, and what the missed headings cost.
 """
 
 import re
@@ -33,9 +36,8 @@ HEADING_SIZE = 14.0
 BODY_FONT = "helv"
 HEADING_FONT = "hebo"
 
-# How far a display title's characters ride above and below the baseline. Six
-# points is where PyMuPDF stops seeing one line and starts seeing one line per
-# character, which is the same shape the artefact takes in real parser output.
+# How far a display title's characters ride above and below the baseline. At six
+# points PyMuPDF sees one line per character; at five it still reads one line.
 BASELINE_STAGGER = 6
 
 # The threshold a size-based classifier uses. Anything at or above it is called a
@@ -44,10 +46,10 @@ HEADING_SIZE_THRESHOLD = 12.0
 
 # The document, declared before it is drawn. Each entry carries the flaw that its
 # heading is rendered with, which is what makes the reconciliation checkable:
-#   "clean"   - full heading size and weight
-#   "demoted" - drawn a shade above body size, under the classifier threshold
-#   "fused"   - drawn on the same line as the paragraph that follows it
-#   "art"     - drawn character by character on a staggered baseline
+#   "clean":   full heading size and weight
+#   "demoted": drawn a shade above body size, under the classifier threshold
+#   "fused":   drawn on the same line as the paragraph that follows it
+#   "art":     drawn character by character on a staggered baseline
 SECTIONS = [
     ("Scope of Cover", "clean", [
         "This handbook states what the policy covers and the conditions attached to each "
@@ -89,11 +91,7 @@ SECTIONS = [
 
 
 def draw_paragraph(page, text, rect, size=BODY_SIZE, font=BODY_FONT):
-    """Fill a rectangle with wrapped text and return the height actually used.
-
-    insert_textbox returns the space left over when the text fits and a negative
-    number when it does not, so the caller can lay the next block out underneath.
-    """
+    """Fill a rectangle with wrapped text and return the height used, or raise if it does not fit."""
     leftover = page.insert_textbox(rect, text, fontname=font, fontsize=size, align=0)
     if leftover < 0:
         raise ValueError(f"text did not fit in {rect}: {text[:40]!r}")
@@ -103,9 +101,7 @@ def draw_paragraph(page, text, rect, size=BODY_SIZE, font=BODY_FONT):
 def draw_art_heading(page, text, x, y):
     """Draw a heading one character at a time on a baseline that rises and falls.
 
-    Display titles are often set this way. Nothing is wrong with the characters,
-    but each one is its own positioned glyph, and a parser that groups glyphs into
-    lines by their vertical position cannot put a staggered row back into one line.
+    A parser that groups glyphs into lines by height cannot rejoin the staggered row.
     """
     cursor = x
     for index, char in enumerate(text):
@@ -143,7 +139,7 @@ def build_pdf(path):
             y += HEADING_SIZE + 10
         elif flaw == "fused":
             # The heading and the first sentence share one line, so they end up in
-            # one span with one size. The heading is not lost, it is glued.
+            # one span with one size. The heading is still there, glued to the text.
             merged = f"{title}  {paragraphs[0]}"
             rect = pymupdf.Rect(x, y, x + COLUMN_WIDTH, y + 90)
             y += draw_paragraph(page, merged, rect) + 8
@@ -166,8 +162,7 @@ def build_pdf(path):
 def read_blocks(path, sort):
     """Return one record per extracted line, carrying its largest span size.
 
-    sort=True asks PyMuPDF to order blocks top-to-bottom before returning them,
-    which is the wrong order for a two-column page: it interleaves the columns.
+    sort=True orders blocks top to bottom, which interleaves a two-column page.
     """
     doc = pymupdf.open(path)
     records = []
@@ -202,17 +197,12 @@ def classify(records):
 
 
 def normalise(text):
-    """Strip case and spacing so a scrambled heading can still be compared."""
+    """Lowercase and keep letters only, so a scrambled heading can still be compared."""
     return re.sub(r"[^a-z]", "", text.lower())
 
 
 def find_shattered(headings, target):
-    """Return the run of consecutive heading lines that spells out target, if one does.
-
-    A heading broken into one line per character is still present in the output,
-    so counting heading lines makes the document look richer in headings than it
-    is. Only rejoining the run in order shows what happened.
-    """
+    """Return the run of consecutive heading lines that spells out target, or None."""
     for start in range(len(headings)):
         joined = ""
         for end in range(start, len(headings)):
@@ -303,7 +293,7 @@ def main():
         if earlier["x"] > first_column_x + 10 and later["x"] <= first_column_x + 10
     )
     print(f"sorting the same lines top-to-bottom jumps back to the left column {flips} times")
-    print("  a two-column page has two reading orders, and vertical position picks the wrong one")
+    print("  sorting by vertical position alone interleaves the two columns")
 
     print()
     print("--- 4. Classifying lines by type size ---")
@@ -313,7 +303,8 @@ def main():
     for record in headings[:8]:
         print(f"  {record['size']:>5.1f}pt  {record['text']!r}")
     if len(headings) > 8:
-        print(f"  ... and {len(headings) - 8} more, most of them a single character wide")
+        single = sum(1 for r in headings[8:] if len(r["text"]) == 1)
+        print(f"  ... and {len(headings) - 8} more, {single} of them one character wide")
 
     print()
     print("--- 5. Reconciling against the declared headings ---")
@@ -323,8 +314,10 @@ def main():
         print(f"  {result['title']:<28} {result['outcome']:<10}{seen}")
     good = sum(1 for r in results if r["outcome"] == "recovered")
     print(f"heading recall {good}/{len(results)} = {good / len(results):.0%}")
-    print(f"  counting heading lines instead would have reported {len(headings)} headings "
-          f"for {len(results)} sections, and got both the number and the direction wrong")
+    direction = "too many" if len(headings) > len(results) else "too few"
+    print(f"  counting lines at heading size would report {len(headings)} headings for "
+          f"{len(results)} sections: {direction}, while {len(results) - good} of the real "
+          f"headings were missed")
 
     print()
     print("--- 6. What the missed headings cost downstream ---")
@@ -343,10 +336,11 @@ def main():
     print(f"  the remaining {len(chunks) - len(substantial)} chunks carry five words or fewer, "
           f"one per character of the shattered heading")
     print()
-    print("the check that catches every heading failure above is one line: recovered "
-          "heading count against the count the document is known to have")
-    print("it does not catch the reading order, which is read correctly here and scrambled "
-          "only by the sorted pass in step 3 - that one needs its own check")
+    print(f"comparing the recovered heading count with the known count ({len(headings)} "
+          f"against {len(SECTIONS)}) shows something is wrong, but not what: errors can "
+          f"cancel, and only matching by title, as in part 5, names each failure")
+    print("the reading order is correct here and is scrambled only by the sorted pass in "
+          "part 3; it needs a check of its own")
     print("=" * 78)
 
 

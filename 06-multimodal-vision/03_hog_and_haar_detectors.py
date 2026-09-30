@@ -1,9 +1,9 @@
-"""HOG descriptors and Viola-Jones Haar features: describe a window by its gradients or by rectangle contrasts.
-
-HOG (histograms of oriented gradients) counts gradient directions in small cells. Here it
-is built and compared by distance only, with no classifier trained on it. Haar features
-compare the sums of neighbouring rectangles, read from an integral image, and AdaBoost
-picks a few of them to make a face classifier, as in the Viola-Jones detector.
+"""This script tells people from cars in rendered windows with HOG descriptors, and
+trains a face classifier on Haar features in the Viola-Jones style. HOG (histograms of
+oriented gradients) counts gradient directions in small cells. Here it is built and
+compared by distance only, with no classifier trained on it. Haar features compare the
+sums of neighbouring rectangles, read from an integral image, and AdaBoost picks a few of
+them to make the face classifier.
 
 The run prints eight parts:
     1. Render person, car and clutter windows, a star, and 16x16 face and non-face windows.
@@ -537,7 +537,7 @@ def score_histogram(scores, labels, name, height=260, width=640):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--tinyface-root", help="TinyFace folder containing Training_Set/")
     parser.add_argument("--cifar10-root", help="folder containing the CIFAR-10 python batches")
     args = parser.parse_args()

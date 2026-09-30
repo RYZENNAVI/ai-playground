@@ -1,14 +1,20 @@
-"""Answer questions about a clip with an image model, and measure what the sampling costs.
+"""This script answers questions about a synthesised clip with an image model, one
+call per sampled keyframe, as a stand-in for a video model, and measures what the
+sampling costs.
 
-Demonstrates a frame-sampling stand-in for a video model, and its two blind spots:
-    1. Synthesise a clip whose events happen at times chosen here, not observed.
-    2. Encode it, so the rest of the script reads a video file like any other.
-    3. Sample keyframes on a fixed stride and record which events each one can reach.
-    4. Ask the vision model one question per sampled frame.
-    5. Assemble the answers into a timeline and locate the event from it.
-    6. Re-sample the same answers at coarser strides and price each one.
+The stand-in has two blind spots. An event shorter than the sampling stride can
+fall between two samples, and then no model can see it. A change is seen only at
+the next sample, so its time is always estimated late when every frame is answered
+correctly.
 
-Module 06: Multimodal Vision - Video by Keyframe Sampling.
+The run prints six parts:
+    1. A clip whose events are known because they were scheduled here: a scrape
+       that appears and stays, and a brake lamp on for three frames.
+    2. Encoding it. The frames are then read back out of the mp4 file.
+    3. Sampling keyframes on a stride of 10, and whether any lands on the brake lamp.
+    4. One question per sampled frame: DAMAGED or CLEAN.
+    5. The timeline, and the event read off it.
+    6. The same answers re-read at strides of 10 to 40. No new calls are made.
 """
 
 import base64
@@ -29,7 +35,6 @@ load_dotenv(Path(__file__).parents[1] / ".env")
 
 OUT_DIR = Path(__file__).parent / "outputs" / "clip"
 VIDEO_PATH = OUT_DIR / "approach.mp4"
-MODEL = os.getenv("VISION_MODEL", "gemini-3.1-flash-lite")
 
 WIDTH, HEIGHT = 480, 270
 FPS = 30
@@ -52,8 +57,8 @@ QUESTION = (
 )
 
 
-# The free tier caps requests per minute rather than per day, so a batch that
-# fires as fast as the network allows will trip it. These two numbers pace it.
+# The free tier caps requests per minute, so a batch that fires as fast as the
+# network allows will trip it. These two numbers pace it.
 MAX_ATTEMPTS = 5
 BACKOFF_SECONDS = 8
 
@@ -118,11 +123,7 @@ def write_video(path):
 
 
 def sample_keyframes(path, stride):
-    """Read the encoded video back and return (index, jpeg bytes) for every stride-th frame.
-
-    The frames are read out of the file rather than kept from the renderer, so
-    everything downstream works from the video the way it would from any other.
-    """
+    """Read the encoded video back and return (index, jpeg bytes) for every stride-th frame."""
     capture = cv2.VideoCapture(str(path))
     frames = []
     index = 0
@@ -139,14 +140,8 @@ def sample_keyframes(path, stride):
     return frames
 
 
-
 def call_with_retry(client, **kwargs):
-    """Send one request, waiting out the per-minute request limit if it is hit.
-
-    The free tier allows a fixed number of requests a minute, and a script that
-    sends its whole batch as fast as it can will reach that limit part way through.
-    Backing off and retrying is what keeps a run reproducible for someone else.
-    """
+    """Send one request, waiting and retrying if the per-minute request limit is hit."""
     for attempt in range(MAX_ATTEMPTS):
         try:
             return client.chat.completions.create(**kwargs)
@@ -157,23 +152,28 @@ def call_with_retry(client, **kwargs):
 
 
 def build_client():
-    """Return an OpenAI-compatible client pointed at whichever key is present."""
+    """Return a client and model name: Gemini when GEMINI_API_KEY is set, else OPENAI_API_KEY."""
     key = os.getenv("GEMINI_API_KEY")
     if key:
         return OpenAI(
             api_key=key, base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
-        )
+        ), os.getenv("VISION_MODEL", "gemini-3.1-flash-lite")
     if os.getenv("OPENAI_API_KEY"):
-        return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        # OPENAI_BASE_URL belongs to OPENAI_API_KEY only, so a Gemini key is never
+        # sent to whatever endpoint that variable points at.
+        return OpenAI(
+            api_key=os.getenv("OPENAI_API_KEY"),
+            base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        ), os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     raise SystemExit("Set GEMINI_API_KEY or OPENAI_API_KEY first.")
 
 
-def ask_frame(client, jpeg):
-    """Send one frame and return its one-word verdict."""
+def ask_frame(client, model, jpeg):
+    """Send one frame and return DAMAGED or CLEAN, or the raw reply if it is neither."""
     encoded = base64.b64encode(jpeg).decode()
     response = call_with_retry(
         client,
-        model=MODEL,
+        model=model,
         temperature=0,
         messages=[
             {
@@ -188,8 +188,9 @@ def ask_frame(client, jpeg):
             }
         ],
     )
-    reply = (response.choices[0].message.content or "").strip().upper()
-    return "DAMAGED" if "DAMAG" in reply else "CLEAN"
+    reply = (response.choices[0].message.content or "").strip()
+    word = reply.strip(".").upper()
+    return word if word in ("DAMAGED", "CLEAN") else repr(reply)
 
 
 def locate_transition(timeline):
@@ -225,15 +226,19 @@ def main():
     print(f"  sampled frames: {indices}")
     reachable = [i for i in indices if FLASH_FRAME <= i < FLASH_FRAME + FLASH_LENGTH]
     print(f"  frames landing inside the brake lamp window: {reachable or 'none'}")
-    print(f"  an event shorter than the stride is not hard to see, it is not sampled")
+    if reachable:
+        print("  the brake lamp landed on a sample this time")
+    else:
+        print("  an event shorter than the stride fell between two samples here, "
+              "so no model could see it")
 
     print()
     print("--- 4. One question per sampled frame ---")
-    client = build_client()
-    print(f"model: {MODEL}")
+    client, model = build_client()
+    print(f"model: {model}")
     timeline = []
     for index, jpeg in frames:
-        verdict = ask_frame(client, jpeg)
+        verdict = ask_frame(client, model, jpeg)
         timeline.append((index, verdict))
     print(f"{len(timeline)} calls, one per frame, each one blind to the others")
 
@@ -241,7 +246,12 @@ def main():
     print("--- 5. The timeline, and the event read off it ---")
     for index, verdict in timeline:
         truth = "DAMAGED" if index >= IMPACT_FRAME else "CLEAN"
-        flag = "" if verdict == truth else "   <- disagrees with the frame as drawn"
+        if verdict not in ("DAMAGED", "CLEAN"):
+            flag = "   <- neither DAMAGED nor CLEAN"
+        elif verdict != truth:
+            flag = "   <- disagrees with the frame as drawn"
+        else:
+            flag = ""
         print(f"  frame {index:>4}  t={index / FPS:5.2f}s  {verdict:<8}{flag}")
     agree = sum(
         1 for index, verdict in timeline
@@ -255,27 +265,32 @@ def main():
         error = (found - IMPACT_FRAME) / FPS
         print(f"  first DAMAGED frame: {found} (t={found / FPS:.2f}s) against the scrape "
               f"at frame {IMPACT_FRAME} (t={IMPACT_FRAME / FPS:.2f}s)")
-        print(f"  the estimate is late by {error:.2f}s, and it can only ever be late, "
-              f"because the change is invisible until the next sample")
+        print(f"  the estimate is late by {error:.2f}s. With every frame answered correctly "
+              f"the estimate can only be late: the change is not seen until the next sample")
 
     print()
     print("--- 6. The same answers re-read at coarser strides ---")
     answered = dict(timeline)
     print(f"  {'stride':>7}{'calls':>7}{'window':>9}{'estimate':>11}{'error':>9}")
+    errors = {}
     for stride in COARSER_STRIDES:
         subset = [(i, answered[i]) for i in sorted(answered) if i % stride == 0]
         found = locate_transition(subset)
         estimate = f"{found / FPS:.2f}s" if found is not None else "not seen"
-        error = f"{(found - IMPACT_FRAME) / FPS:.2f}s" if found is not None else "-"
+        errors[stride] = found - IMPACT_FRAME if found is not None else None
+        error = f"{errors[stride] / FPS:.2f}s" if found is not None else "-"
         print(f"  {stride:>7}{len(subset):>7}{stride / FPS:>8.2f}s{estimate:>11}{error:>9}")
     print(f"  the window is what a stride guarantees; the error in any one run is wherever "
           f"the samples happened to fall inside it")
-    print(f"  stride {COARSER_STRIDES[-1]} lands closer here than stride {COARSER_STRIDES[-2]} "
-          f"does, on fewer calls - which is luck, not a reason to sample less")
+    last, before = errors[COARSER_STRIDES[-1]], errors[COARSER_STRIDES[-2]]
+    if last is not None and (before is None or last < before):
+        print(f"  stride {COARSER_STRIDES[-1]} lands closer here than stride "
+              f"{COARSER_STRIDES[-2]} does, on fewer calls, which is luck, not a reason "
+              f"to sample less")
     print()
     print("this reads each frame on its own and stitches the answers together afterwards; "
-          "a model built for video sees the frames together, which is how motion, order and "
-          "duration become answerable at all")
+          "a model built for video takes the frames together, so it can be asked about "
+          "motion, order and duration")
     print("=" * 78)
 
 

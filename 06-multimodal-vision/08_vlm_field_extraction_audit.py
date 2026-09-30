@@ -1,14 +1,17 @@
-"""Score a vision model field by field on forms whose every value was recorded as it was drawn.
+"""This script reads the fields of a motor claim form with a vision-language model, a
+task called key information extraction, and scores each field against what was drawn. The
+script draws the form itself, so every field has a known value. The model returns all the
+values as one JSON object. Five fields carry a trap that a careful reader gets right: a
+letter I that looks like a digit 1, a model badge beside a larger trim line, a ticked
+box, a blacked-out name and an empty field with a filled one under it.
 
-Demonstrates how to tell a working extractor from one that merely returns JSON:
-    1. Render claim forms locally, keeping the value written into each field.
-    2. Plant five traps that a reader gets right and an extractor often does not.
-    3. Render the same form in three languages, then again as a phone photograph of it.
-    4. Ask the model for one strict JSON object per form.
-    5. Score every field against the value that was drawn, not against a reading of the output.
-    6. Sort the mistakes by kind and report which condition carries them.
-
-Module 06: Multimodal Vision - Field-Level Extraction Audit.
+The run prints six parts:
+    1. List the value drawn into every field.
+    2. List the five traps.
+    3. Render the form in English, French and German, and make a photographed copy of each.
+    4. Ask the model for one JSON object per image.
+    5. Score every field against the value that was drawn.
+    6. Name the kind of each mistake and count the mistakes by condition.
 """
 
 import base64
@@ -28,7 +31,6 @@ sys.stdout.reconfigure(encoding="utf-8")
 load_dotenv(Path(__file__).parents[1] / ".env")
 
 OUT_DIR = Path(__file__).parent / "outputs" / "claim_forms"
-MODEL = os.getenv("VISION_MODEL", "gemini-3.1-flash-lite")
 FORM_WIDTH, FORM_HEIGHT = 720, 520
 
 FIELDS = (
@@ -50,8 +52,8 @@ TRAPS = {
     "road_surface": "a field left blank, with a filled neighbour to borrow from",
 }
 
-# Labels only. Every value on the form stays identical across the three renders,
-# so a difference in the score is a difference in reading the layout, not the data.
+# Only the labels change between languages; the values stay the same, so a
+# difference in the score comes from the labels.
 LABELS = {
     "english": {
         "title": "MOTOR CLAIM RECORD",
@@ -99,14 +101,17 @@ TRUTH = {
 }
 
 # Which of the three boxes is filled. The expected answer is the option printed
-# beside it, which differs by language - asking for a translated word instead
-# would score the model on its vocabulary rather than on which box it saw.
+# beside it, which differs by language. Asking for a translation would score the
+# model's vocabulary, not which box it saw.
 TICKED = 1
 
-# The value printed in the row under road_surface. It is named here rather than
-# written inline so that classify() can check whether a wrong road_surface answer
-# was actually borrowed from it, instead of asserting that it was.
+# The value printed under road_surface, inside the same ruled row. It is named
+# here so that classify() can check whether a wrong road_surface answer was
+# borrowed from it, instead of asserting that it was.
 NEIGHBOUR_VALUE = "Rain"
+
+# The larger trim line beside the model badge, named for the same reason.
+TRIM = "Avant quattro 45 TFSI"
 
 PROMPT = (
     "This image is a motor insurance claim form. Extract exactly these fields and "
@@ -127,8 +132,7 @@ PHOTO_BLUR = 0.8
 PHOTO_QUALITY = 55
 
 
-# The free tier caps requests per minute rather than per day, so a batch that
-# fires as fast as the network allows will trip it. These two numbers pace it.
+# Retry a rate-limited request up to five times, waiting 8, 16, 24 and 32 seconds.
 MAX_ATTEMPTS = 5
 BACKOFF_SECONDS = 8
 
@@ -170,10 +174,10 @@ def render_form(language):
     row(0, "policy_number", TRUTH["policy_number"])
 
     # The model code sits on a small badge; the trim/engine text beside it is
-    # more prominent and carries its own digits. A reader who grabs the
-    # biggest number on the line gets the trim, not the model.
+    # more prominent and carries its own digits. A reader who takes the most
+    # prominent text on the line gets the trim, not the model.
     y = row(1, "vehicle_model", None)
-    draw.text((left + 300, y + 2), "Avant quattro 45 TFSI", font=value_font, fill=(15, 15, 15))
+    draw.text((left + 300, y + 2), TRIM, font=value_font, fill=(15, 15, 15))
     badge_font = load_font(12, bold=True)
     badge_box = [left + 300, y + 26, left + 344, y + 42]
     draw.rounded_rectangle(badge_box, radius=3, fill=(196, 200, 206),
@@ -188,15 +192,14 @@ def render_form(language):
     y = row(3, "driver_name", None)
     draw.rectangle([left + 298, y, left + 470, y + 26], fill=(20, 20, 20))
 
-    # One field is filled and the one under it is not. The filled neighbour is
-    # what an over-eager reader borrows from.
+    # road_surface is left empty. Weather sits under it inside the same ruled row,
+    # and its value is what an over-eager reader borrows.
     y = row(4, "road_surface", None)
-    draw.text((left + 300, y + 2), "", font=value_font, fill=(15, 15, 15))
     draw.text((left, y + 26), labels["weather"], font=label_font, fill=(90, 90, 90))
     draw.text((left + 300, y + 24), NEIGHBOUR_VALUE, font=value_font, fill=(15, 15, 15))
 
-    # Three boxes, one ticked. Nothing is written next to the ticked box, so the
-    # answer is carried by which box is filled and not by any text.
+    # Every box has its option printed beside it, so only the fill says which one
+    # is ticked.
     y = top + 5 * row_height + 20
     draw.text((left, y), labels["severity"], font=label_font, fill=(90, 90, 90))
     box_x = left + 300
@@ -214,11 +217,9 @@ def render_form(language):
 
 
 def photograph(path):
-    """Return a degraded copy of a form, standing in for a picture taken of it.
+    """Return a rotated, blurred, unevenly lit JPEG copy of a form, standing in for a photograph of it.
 
-    Nothing about the content changes. Every value is still on the page, and a
-    person still reads all six. What changes is how much work the characters take,
-    which is where the difference between the two columns of the score comes from.
+    The content does not change, only how hard the characters are to read.
     """
     img = Image.open(path).convert("RGB")
     img = img.rotate(PHOTO_ROTATION, resample=Image.BICUBIC, expand=True, fillcolor="white")
@@ -226,7 +227,7 @@ def photograph(path):
 
     # A lighting gradient across the page, brighter on one side than the other.
     width, height = img.size
-    gradient = Image.linear_gradient("L").resize((width, height)).rotate(90)
+    gradient = Image.linear_gradient("L").rotate(90).resize((width, height))
     img = Image.composite(img, ImageEnhance.Brightness(img).enhance(0.62), gradient)
     img = ImageEnhance.Contrast(img).enhance(0.88)
 
@@ -236,12 +237,7 @@ def photograph(path):
 
 
 def call_with_retry(client, **kwargs):
-    """Send one request, waiting out the per-minute request limit if it is hit.
-
-    The free tier allows a fixed number of requests a minute, and a script that
-    sends its whole batch as fast as it can will reach that limit part way through.
-    Backing off and retrying is what keeps a run reproducible for someone else.
-    """
+    """Send one request, retrying with a longer wait each time the rate limit is hit."""
     for attempt in range(MAX_ATTEMPTS):
         try:
             return client.chat.completions.create(**kwargs)
@@ -252,24 +248,29 @@ def call_with_retry(client, **kwargs):
 
 
 def build_client():
-    """Return an OpenAI-compatible client pointed at whichever key is present."""
+    """Return a client and model name: Gemini when GEMINI_API_KEY is set, else OPENAI_API_KEY."""
     key = os.getenv("GEMINI_API_KEY")
     if key:
         return OpenAI(
             api_key=key, base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
-        )
+        ), os.getenv("VISION_MODEL", "gemini-3.1-flash-lite")
     if os.getenv("OPENAI_API_KEY"):
-        return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        # OPENAI_BASE_URL belongs to OPENAI_API_KEY only, so a Gemini key is never
+        # sent to whatever endpoint that variable points at.
+        return OpenAI(
+            api_key=os.getenv("OPENAI_API_KEY"),
+            base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        ), os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     raise SystemExit("Set GEMINI_API_KEY or OPENAI_API_KEY first.")
 
 
-def ask(client, image_path):
+def ask(client, model, image_path):
     """Send one form and return the raw reply text."""
     encoded = base64.b64encode(image_path.read_bytes()).decode()
     media = "jpeg" if image_path.suffix == ".jpg" else "png"
     response = call_with_retry(
         client,
-        model=MODEL,
+        model=model,
         messages=[
             {
                 "role": "user",
@@ -300,11 +301,9 @@ def parse_json(text):
 
 
 def normalise(field, value):
-    """Reduce a reply to the form the truth table is written in.
+    """Reduce a reply to the form the truth table is written in: upper case, digits only for the amount.
 
-    Every rule here is about presentation rather than content: casing, thousands
-    separators, a trailing currency code. Normalising these away keeps the score
-    on what was read rather than on how it was typed.
+    vehicle_model keeps the first letter-and-digit word, so `A6 Avant quattro` counts as A6.
     """
     if value is None:
         return "NULL"
@@ -321,9 +320,7 @@ def normalise(field, value):
 def classify(field, expected, got, language):
     """Name the kind of mistake, checking the trap rather than assuming it.
 
-    Naming the trap a field was built around is not the same as showing that the
-    trap is what fired. Every branch below that names a mechanism tests for it
-    first, and falls through to a plainer label when the test does not hold.
+    A branch that names a trap tests for it first and falls back to a plainer label.
     """
     if got == "NULL":
         return "dropped"
@@ -338,6 +335,8 @@ def classify(field, expected, got, language):
         if got in options:
             return "wrong option taken as ticked"
         return "answered with something that is not one of the options"
+    if field == "vehicle_model" and got == normalise(field, TRIM):
+        return "trim line taken instead of the badge"
     if field in ("policy_number", "vehicle_model"):
         same_length = len(got) == len(expected)
         return "character misread" if same_length else "value not found"
@@ -352,6 +351,7 @@ def expected_value(field, language):
 
 
 def main():
+    # 1. The drawn values
     print("=" * 78)
     print("--- 1. Forms whose values are known because they were written here ---")
     for field in FIELDS:
@@ -361,11 +361,13 @@ def main():
         else:
             print(f"  {field:<16} {TRUTH[field]}")
 
+    # 2. The traps
     print()
     print(f"--- 2. The {len(TRAPS)} traps on the page ---")
     for field, description in TRAPS.items():
         print(f"  {field:<16} {description}")
 
+    # 3. Three languages, then a photograph of each
     print()
     print("--- 3. Three languages, then a photograph of each ---")
     sources = {}
@@ -380,18 +382,20 @@ def main():
     print(f"the photograph is the same page rotated {PHOTO_ROTATION} degrees, blurred, "
           f"lit unevenly and saved at JPEG quality {PHOTO_QUALITY}")
 
+    # 4. One JSON object per image
     print()
     print("--- 4. Asking for one JSON object per image ---")
-    client = build_client()
-    print(f"model: {MODEL}")
+    client, model = build_client()
+    print(f"model: {model}")
     replies = {}
     for key, path in sources.items():
-        raw = ask(client, path)
+        raw = ask(client, model, path)
         parsed = parse_json(raw)
         replies[key] = parsed
         state = "parsed" if parsed else f"unparseable: {raw[:56]!r}"
         print(f"  {key[0]:<9} {key[1]:<7} {state}")
 
+    # 5. Scoring every field
     print()
     print("--- 5. Scoring every field against the value that was drawn ---")
     conditions = ("render", "photo")
@@ -424,6 +428,7 @@ def main():
         )
         print(f"  {language:<9} {parts}")
 
+    # 6. Kinds of mistake
     print()
     print("--- 6. What kind of mistakes they are ---")
     if not mistakes:
@@ -441,10 +446,13 @@ def main():
         by_condition = {
             condition: sum(1 for m in mistakes if m[1] == condition) for condition in conditions
         }
-        print(f"  by condition: " + ", ".join(f"{k} {v}" for k, v in by_condition.items()))
+        print("  by condition: " + ", ".join(f"{k} {v}" for k, v in by_condition.items()))
     print()
-    print("a reply that parses as JSON with every key present is not evidence of anything; "
-          "the score above needed the drawn values to exist")
+    complete = sum(1 for reply in replies.values() if reply and all(field in reply for field in FIELDS))
+    scored = sum(correct.values())
+    total = len(FIELDS) * len(sources)
+    print(f"{complete}/{len(sources)} replies parsed as JSON with all {len(FIELDS)} keys, "
+          f"and {scored}/{total} fields matched the drawn values")
     print("=" * 78)
 
 

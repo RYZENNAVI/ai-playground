@@ -1,14 +1,20 @@
-"""Label every pixel with a UNet, and measure what its skip connections and its resampling buy.
+"""This script labels every pixel of rendered shapes with a UNet, a network for semantic
+segmentation, and measures what its skip connections and its resampling buy. A UNet is an
+encoder-decoder: it halves the resolution three times on the way down and doubles it back on
+the way up, and its skip connections hand each encoder level's maps to the decoder level of
+the same resolution. Two variants each take one piece away: the same encoder and decoder
+without skips, and a network that never resamples. All three are scored against predicting
+background everywhere.
 
-Demonstrates how a segmentation network is built and how it should be scored:
+The run prints six parts:
     1. Render a segmentation dataset with exact masks and measure how much of it is background.
     2. Score the constant prediction every model has to beat, and say what each metric counts.
-    3. Build a UNet, the same encoder and decoder without skips, and a net that never resamples.
+    3. Build the three networks and compare their parameters and receptive fields.
     4. Train all three and report pixel accuracy, mean IoU and per-class IoU.
-    5. Score the three again only near class boundaries, where the skipped detail would show.
-    6. Repeat the comparison on Pascal VOC 2012, with its ignore label excluded from every count.
+    5. Score the three again within 3 px of a class boundary and in the interior.
+    6. Train the two UNets on Pascal VOC 2012, with its ignore label excluded from every count.
 
-Module 06: Multimodal Vision - Segmentation and Skip Connections.
+Part 6 needs --voc-root.
 """
 
 import argparse
@@ -76,11 +82,7 @@ def confusion(predicted, truth, classes, ignore=None):
 def metrics(matrix):
     """Pixel accuracy, mean IoU and per-class IoU from a confusion matrix.
 
-    Pixel accuracy is the share of pixels on the diagonal, so a class covering most
-    of the image sets its floor. IoU for a class divides its diagonal entry by every
-    pixel that is either labelled it or predicted it, which counts a class that is
-    never predicted as zero however small it is; mean IoU averages that over the
-    classes that appear.
+    Mean IoU averages over the classes present in the truth, so a present class never predicted counts as zero.
     """
     intersection = np.diag(matrix).astype(np.float64)
     union = matrix.sum(0) + matrix.sum(1) - intersection
@@ -140,9 +142,7 @@ def make_models(classes, in_channels=3):
     class FlatNet(nn.Module):
         """Convolutions at full resolution throughout: no pooling, no upsampling, no skips.
 
-        Its channel counts are held down by what full resolution costs: every layer
-        runs on sixty-four times the pixels the UNet's bottom layer does, so matching
-        the UNet's parameter count here would cost far more than matching its time.
+        Its channels stay narrow because every layer runs on 64 times the pixels of the UNet's bottom layer.
         """
 
         def __init__(self, base=48):
@@ -159,13 +159,9 @@ def make_models(classes, in_channels=3):
 
 
 def receptive_field(halvings, blocks_per_level=2, kernel=3):
-    """Approximately how far apart two input pixels can be and still reach the same output unit.
+    """Approximate width in input pixels of what one output unit sees, counting the 3x3 convolutions only.
 
-    Every 3x3 convolution adds two pixels to the field at the resolution it runs at,
-    and every halving doubles what one pixel at that resolution covers in the input.
-    Only the convolutions are counted: the 2x2 pooling windows and the transposed
-    convolutions widen the field a little more, so the figure is an illustrative
-    approximation of the real network's field, not an exact property of it.
+    The pooling windows and transposed convolutions widen the real field a little more.
     """
     field, jump = 1, 1
     for level in range(halvings + 1):
@@ -202,11 +198,9 @@ def score_model(model, x_test, y_test, classes, device, ignore=None, with_bounda
 
 
 def train_model(model, data, classes, epochs, device, ignore=None):
-    """Train one model with Adam and cross-entropy, returning its confusion matrices and history.
+    """Train one model with Adam and cross-entropy; return its confusion matrices, training time and history.
 
-    After every epoch the model is scored on the test set for the training curve.
-    Scoring changes no weights and draws no random numbers, and its time is kept out
-    of the reported training time.
+    The test scoring after each epoch changes no weights, draws no random numbers, and is kept out of the time.
     """
     import torch
     import torch.nn.functional as F
@@ -306,10 +300,8 @@ def tile_rows(rows):
     return np.vstack(stacked[:-1])
 
 
-# Main
-
 def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--voc-root", help="folder holding VOC2012/ (or the VOC2012 folder itself)")
     args = parser.parse_args()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -322,12 +314,12 @@ def main():
 
     torch.manual_seed(SEED)
     # cuDNN chooses a convolution algorithm per shape and some of them accumulate in a
-    # non-deterministic order, which moves mean IoU by a few points between runs.
+    # non-deterministic order; in one check that moved the UNet without skips from 0.769 to 0.888 mean IoU.
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # 1. Data
+    # 1. A segmentation dataset whose masks are exact
     print("--- 1. A segmentation dataset whose masks are exact ---")
     train = [render_segmentation(rng) for _ in range(TRAIN_IMAGES)]
     test = [render_segmentation(rng) for _ in range(TEST_IMAGES)]
@@ -346,7 +338,7 @@ def main():
          else enlarge(palette_image(label, len(SHAPE_CLASSES)), 3) for i, (_, label) in enumerate(train[:8])]]))
     print("  shapes_dataset.png: eight training images above their label maps")
 
-    # 2. Baseline
+    # 2. The constant prediction, and what each metric counts
     print("\n--- 2. The constant prediction, and what each metric counts ---")
     constant = np.zeros_like(test_labels)
     matrix = confusion(constant, test_labels, len(SHAPE_CLASSES))
@@ -357,7 +349,7 @@ def main():
     print("  whatever the model does; mean IoU gives every class the same weight, and a class")
     print("  the model never predicts scores zero.")
 
-    # 3. Models
+    # 3. Three architectures for the same task
     print("\n--- 3. Three architectures for the same task ---")
     models = make_models(len(SHAPE_CLASSES))
     for name, model in models.items():
@@ -388,7 +380,7 @@ def main():
     cv2.imwrite(str(OUT_DIR / "receptive_field.png"), field_canvas)
     print("  receptive_field.png: the approximate field of one output pixel for each design, on a test image")
 
-    # 4. Training
+    # 4. Training all three
     print("\n--- 4. Training all three ---")
     x_train = torch.from_numpy(np.stack([img for img, _ in train])).permute(0, 3, 1, 2).float().div(255)
     x_test = torch.from_numpy(np.stack([img for img, _ in test])).permute(0, 3, 1, 2).float().div(255)
@@ -403,9 +395,9 @@ def main():
         results[name] = (matrix, boundary, model)
         report(name, matrix, elapsed, sum(p.numel() for p in model.parameters()))
     print(f"  {'background everywhere':<22}{0:>11}{0:>8}s{accuracy:>16.2%}{miou:>11.3f}")
-    print(f"  {'class':<22}" + "".join(f"{name.split(',')[0][:11]:>13}" for name in results))
+    print(f"  {'class':<22}" + "".join(f"{name.replace('UNet ', '').split(',')[0]:>15}" for name in results))
     for index, name in enumerate(SHAPE_CLASSES):
-        print(f"  IoU {name:<18}" + "".join(f"{metrics(m)[2][index]:>13.3f}" for m, _, _ in results.values()))
+        print(f"  IoU {name:<18}" + "".join(f"{metrics(m)[2][index]:>15.3f}" for m, _, _ in results.values()))
 
     def plot_curves(history_by_model, title, path):
         """Training loss and test mean IoU after every epoch, one line per model."""
@@ -452,16 +444,32 @@ def main():
     print("  metrics_compare.png: pixel accuracy against mean IoU, and IoU per class, for every model")
     print("  and the constant prediction")
 
-    # 5. Boundaries
-    print(f"\n--- 5. The same models within {BOUNDARY_BAND} pixels of a class boundary ---")
-    print(f"  {'model':<22}{'boundary accuracy':>19}{'boundary mean IoU':>19}{'interior accuracy':>19}")
+    # 5. The same models near class boundaries and in the interior
+    print(f"\n--- 5. The same models within {BOUNDARY_BAND} pixels of a class boundary, and in the interior ---")
+    print(f"  {'model':<22}{'boundary accuracy':>19}{'boundary mean IoU':>19}{'interior accuracy':>19}"
+          f"{'interior mean IoU':>19}")
     for name, (matrix, boundary, _) in results.items():
         inside = matrix - boundary
         print(f"  {name:<22}{metrics(boundary)[0]:>19.2%}{metrics(boundary)[1]:>19.3f}"
-              f"{metrics(inside)[0]:>19.2%}")
-    print("  Away from the boundaries every model is close to perfect: the interior of a shape is")
-    print("  decided by colour alone. The skips carry the encoder's full-resolution maps across to")
-    print("  the decoder, and that is the information a boundary needs.")
+              f"{metrics(inside)[0]:>19.2%}{metrics(inside)[1]:>19.3f}")
+    print(f"  {'shape pixels inside':<22}{'given another shape':>19}{'given background':>19}")
+    interior_errors = {}
+    for name, (matrix, boundary, _) in results.items():
+        shapes = (matrix - boundary)[1:]
+        interior_errors[name] = ((shapes[:, 1:].sum() - np.trace(shapes[:, 1:])) / shapes.sum(),
+                                 shapes[:, 0].sum() / shapes.sum())
+        print(f"  {name:<22}{interior_errors[name][0]:>19.1%}{interior_errors[name][1]:>19.1%}")
+    inside = matrix - boundary
+    print(f"  Interior accuracy looks high for every model, but {inside[0].sum() / inside.sum():.1%} of the interior is")
+    print("  background; interior mean IoU weighs each class equally and shows what that hides.")
+    another, missed = interior_errors["UNet without skips"]
+    if another > missed:
+        print("  Without skips, a shape's interior is more often given another shape than background.")
+    if interior_errors["flat, no resampling"][1] > 0.5:
+        print(f"  The flat network, which sees about {receptive_field(0, blocks_per_level=6)} px, gives most "
+              "pixels inside shapes to background.")
+    print("  The skips carry the encoder's maps at each resolution across to the decoder, full")
+    print("  resolution included, and that is the information a boundary needs.")
     sample = x_test[:6].to(device)
     with torch.no_grad():
         model_predictions = {name: model(sample).argmax(1).cpu().numpy().astype(np.uint8)
@@ -500,7 +508,7 @@ def main():
     print("  shapes_predictions.png: six test images, their truth and each model's prediction;")
     print("  boundary_errors.png: four test images with the boundary band and where each model is wrong")
 
-    # 6. Pascal VOC
+    # 6. Pascal VOC 2012
     print("\n--- 6. Pascal VOC 2012 ---")
     if not args.voc_root:
         print("  pass --voc-root to repeat the comparison on the VOC 2012 segmentation split")
@@ -539,23 +547,24 @@ def main():
         with torch.no_grad():
             predicted = model(voc_data[2][:6].to(device)).argmax(1).cpu().numpy().astype(np.uint8)
         voc_rows.append(voc_row([palette_image(p, len(VOC_CLASSES)) for p in predicted], name))
+    print(f"  {'background everywhere':<22}{0:>11}{0:>8}s{base_accuracy:>16.2%}{base_miou:>11.3f}")
     cv2.imwrite(str(OUT_DIR / "voc_predictions.png"), tile_rows(voc_rows))
     plot_curves(voc_histories, "VOC 2012", OUT_DIR / "voc_training_curves.png")
-    print("  voc_predictions.png: six validation images, their truth and both UNets' predictions;")
-    print("  voc_training_curves.png: loss and validation mean IoU per epoch")
-    print(f"  {'background everywhere':<22}{0:>11}{0:>8}s{base_accuracy:>16.2%}{base_miou:>11.3f}")
-    print(f"  {'model':<22}{'boundary accuracy':>19}{'interior accuracy':>19}{'classes ever predicted':>24}")
+    print(f"  {'model':<22}{'boundary accuracy':>19}{'boundary mean IoU':>19}{'interior accuracy':>19}"
+          f"{'interior mean IoU':>19}{'classes predicted':>19}")
     for name, (matrix, boundary) in voc_results.items():
         predicted_classes = int((matrix.sum(0) > 0).sum())
-        print(f"  {name:<22}{metrics(boundary)[0]:>19.2%}{metrics(matrix - boundary)[0]:>19.2%}"
-              f"{predicted_classes:>24}")
+        print(f"  {name:<22}{metrics(boundary)[0]:>19.2%}{metrics(boundary)[1]:>19.3f}"
+              f"{metrics(matrix - boundary)[0]:>19.2%}{metrics(matrix - boundary)[1]:>19.3f}{predicted_classes:>19}")
     best = max(voc_results, key=lambda n: metrics(voc_results[n][0])[1])
     print(f"  highest mean IoU: {best}")
-    print("  Twenty object classes over 1464 images is a small amount of data for this many")
+    print(f"  Twenty object classes over {len(voc_train_x)} images is a small amount of data for this many")
     print("  parameters, and the numbers are far below what a pretrained encoder reaches; what is")
     print("  comparable here is the two architectures against each other and against the baseline.")
     print("  Pixel accuracy can even fall below the baseline while mean IoU rises: predicting an")
     print("  object class costs background pixels, and only one of the two numbers rewards it.")
+    print("  voc_predictions.png: six validation images, their truth and both UNets' predictions;")
+    print("  voc_training_curves.png: loss and validation mean IoU per epoch")
     print(f"\n  images written to {OUT_DIR}")
 
 

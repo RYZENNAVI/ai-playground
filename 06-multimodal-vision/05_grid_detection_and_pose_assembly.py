@@ -1,10 +1,9 @@
-"""Single-shot grid detection in the style of YOLO, and bottom-up pose assembly with part affinity fields.
-
-A small one-scale detector writes each box into the grid cell that holds its centre and the
-anchor that fits its shape best. It trains on rendered shapes, and its predictions are decoded,
-filtered by per-class non-maximum suppression and scored by mAP. For pose, confidence maps and
-affinity fields are drawn from keypoints, and limbs are paired by a line integral over the field
-or by distance alone.
+"""This script trains a one-scale grid detector in the style of YOLO on rendered shapes, and
+pairs keypoints into limbs with part affinity fields for bottom-up pose assembly. The detector
+writes each box into the grid cell that holds its centre and the anchor that fits its shape
+best. Its predictions are decoded, filtered by per-class non-maximum suppression and scored by
+mAP. For pose, confidence maps and affinity fields are drawn from keypoints, and limbs are
+paired by a line integral over the field or by distance alone.
 
 The run prints nine parts:
     1. Render a detection dataset whose every box is recorded, and cluster anchor shapes by IoU.
@@ -526,7 +525,7 @@ def print_assembly(totals):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--coco-root", help="COCO folder with annotations/ and, optionally, val2017/")
     args = parser.parse_args()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
