@@ -1,15 +1,15 @@
-"""Route a question twice before answering it, then check the page numbers the answer cites.
+"""This script answers questions about three company reports with a hosted chat model: query
+routing sends each question to a report and to an answer type, the model answers in
+structured JSON with page citations, and every cited page is checked against the pages it
+was given.
 
-Demonstrates the parts of a document question-answering system that sit outside retrieval:
+It covers the parts of a document question-answering system that sit outside retrieval:
     1. Hold a small set of reports whose pages carry deliberately non-contiguous numbers.
-    2. Route each question to the report it concerns, and score that routing.
-    3. Route it again to an answer type, and score that separately.
-    4. Answer under the schema the type calls for, with reasoning and page references.
-    5. Check every cited page against the pages the model was actually given.
-    6. Split a comparison question into one sub-question per report and recombine.
-    7. Report routing accuracy, schema conformance, answer accuracy and citation validity.
-
-Module 10: Applied Projects - Routing, Structured Answers, and Citations.
+    2. Route each question to a report and to an answer type, and score the two separately.
+    3. Answer under the schema the type calls for, and check every cited page.
+    4. Feed the checks a wrong route and an invented page, and see which one catches each.
+    5. Split a comparison question into one sub-question per report and recombine.
+    6. Report the six scores: two routings, schema, answers, comparisons and citations.
 """
 
 import json
@@ -116,12 +116,8 @@ TYPE_RULES = {
 }
 
 
-def pick_provider() -> tuple:
-    """Return (api_key, base_url, model) for whichever key is configured.
-
-    Every call here is chat completion over short text, so DeepSeek comes first and
-    the vision-capable provider is left for the scripts that need it.
-    """
+def pick_provider() -> tuple | None:
+    """Return (api_key, base_url, model) for whichever key is configured, DeepSeek first."""
     if os.getenv("DEEPSEEK_API_KEY"):
         return (os.getenv("DEEPSEEK_API_KEY"), "https://api.deepseek.com", "deepseek-chat")
     if os.getenv("GEMINI_API_KEY"):
@@ -129,12 +125,13 @@ def pick_provider() -> tuple:
                 "https://generativelanguage.googleapis.com/v1beta/openai/",
                 "gemini-3.1-flash-lite")
     if os.getenv("OPENAI_API_KEY"):
-        return (os.getenv("OPENAI_API_KEY"), os.getenv("OPENAI_BASE_URL"), "gpt-4o-mini")
+        return (os.getenv("OPENAI_API_KEY"), os.getenv("OPENAI_BASE_URL"),
+                os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
     return None
 
 
 def call_with_retry(client, **kwargs):
-    """Send one request, backing off when the provider answers with a rate limit."""
+    """Send one request, backing off when the provider is rate-limited, busy or timing out."""
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
             return client.chat.completions.create(**kwargs)
@@ -150,12 +147,9 @@ def call_with_retry(client, **kwargs):
 
 
 def ask_json(client, model: str, system: str, user: str) -> dict:
-    """Send one request and parse the JSON object out of the reply.
+    """Send one request and parse the JSON object in the reply.
 
-    The object is extracted with a regular expression rather than assumed to be the
-    whole reply, because a model that has been asked to reason will sometimes put a
-    sentence in front of it. Failing to parse is recorded as a schema failure below
-    rather than raised, since how often that happens is one of the things measured.
+    A reply that does not parse comes back as {"_raw": text} and scores as a schema failure.
     """
     response = call_with_retry(
         client, model=model, temperature=0,
@@ -173,11 +167,9 @@ def ask_json(client, model: str, system: str, user: str) -> dict:
 
 
 def route_to_report(client, model: str, question: str) -> str:
-    """Decide which report a question is about, before any of them is opened.
+    """Decide which report a question is about, so only that report is opened.
 
-    Routing first is what keeps the rest of the work small: one report is opened
-    instead of all of them. It also means a routing mistake cannot be recovered later,
-    because the correct pages are never in front of the model that answers.
+    A wrong pick cannot be repaired later: the answering call never sees the right pages.
     """
     system = (
         "You route a question to exactly one report. Reply with JSON only: "
@@ -210,9 +202,7 @@ def build_context(report: str) -> tuple:
 def answer_question(client, model: str, question: str, report: str, answer_type: str) -> dict:
     """Answer one question under the schema its type calls for, citing pages.
 
-    The reasoning field comes before the answer field on purpose: the model fills the
-    object in order, so putting the working first means the answer is written after it
-    rather than justified by it. The references field is what the next step checks.
+    Reasoning comes before answer, so the model writes the answer after its working.
     """
     context, _ = build_context(report)
     rule = TYPE_RULES.get(answer_type, TYPE_RULES["string"])
@@ -233,9 +223,7 @@ def answer_question(client, model: str, question: str, report: str, answer_type:
 def validate_references(result: dict, supplied: set) -> dict:
     """Split the cited pages into those that were supplied and those that were not.
 
-    A page number the model was never given cannot have been read, whatever the
-    answer says. Removing those is the cheapest correctness check in the system,
-    and it needs no judgement about whether the answer itself is right.
+    A page the model was never given cannot have been read, whether or not the answer is right.
     """
     cited = result.get("references", [])
     if not isinstance(cited, list):
@@ -259,26 +247,22 @@ def is_not_available(value) -> bool:
 def conforms(result: dict, answer_type: str) -> bool:
     """Check that the reply has all four keys and that the answer has its type's basic shape.
 
-    number must be a bare number and boolean must be yes or no. For name, names and
-    string the check is only that the answer is non-empty: it does not verify a single
-    name, a comma-separated list or one sentence, so conformance here is conformance
-    to this checker, not to every clause in TYPE_RULES.
-
-    The N/A reply is part of the schema rather than a violation of it. Scoring it as
-    a schema failure would penalise the one behaviour the prompt asks for when the
-    answer is absent, and would make the conformance figure unreadable.
+    For name, names and string the check is only that the answer is non-empty.
     """
     required = {"reasoning", "answer", "references", "confidence"}
     if not required.issubset(result):
         return False
     value = result["answer"]
+    # N/A is what the prompt asks for when the pages lack the answer, so it conforms.
     if is_not_available(value):
         return not result["references"]
     if answer_type == "number":
         return bool(re.fullmatch(r"-?\d+(\.\d+)?", str(value).strip()))
     if answer_type == "boolean":
         return str(value).strip().lower() in {"yes", "no"}
-    return isinstance(value, (str, list)) and bool(str(value).strip())
+    if isinstance(value, list):
+        return bool(value)
+    return isinstance(value, str) and bool(value.strip())
 
 
 def matches_expected(result: dict, expected: str, answer_type: str) -> bool:
@@ -292,7 +276,9 @@ def matches_expected(result: dict, expected: str, answer_type: str) -> bool:
             return abs(float(given) - float(wanted)) < 0.05
         except ValueError:
             return False
-    if answer_type in {"boolean", "name"}:
+    if answer_type == "boolean":
+        return given == wanted
+    if answer_type == "name":
         return wanted in given
     if answer_type == "names":
         parts = [part.strip() for part in wanted.split(",")]
@@ -303,12 +289,9 @@ def matches_expected(result: dict, expected: str, answer_type: str) -> bool:
 
 
 def answer_comparison(client, model: str, item: dict) -> dict:
-    """Answer a question spanning every report by asking each one separately first.
+    """Answer a question spanning the reports by asking each report separately first.
 
-    A comparison cannot be routed to a single report, so the routing step above has
-    nothing to choose. Splitting it restores the property the rest of the system
-    depends on: each sub-question has one report, one set of pages, and one citable
-    source. The final step compares answers rather than documents.
+    A comparison has no single report to route to; each sub-question has one, and its own pages.
     """
     parts = []
     for company in REPORTS:
@@ -342,16 +325,18 @@ def main() -> None:
     api_key, base_url, model = provider
     client = OpenAI(api_key=api_key, base_url=base_url)
 
+    # 1. The reports
     print("--- 1. The reports ---")
     for name, pages in REPORTS.items():
         print(f"    {name:<24}{len(pages)} pages, numbered {sorted(pages)}")
     all_pages = sorted({page for pages in REPORTS.values() for page in pages})
-    print(f"\n    No report is numbered from 1, and no two share a page number.")
+    print("\n    No report is numbered from 1, and no two share a page number.")
     print(f"    Any citation outside {all_pages} was invented rather than read.")
 
-    print(f"\n--- 2-3. Routing {len(QUESTIONS)} questions twice ---")
+    # 2. Routing each question to a report and to an answer type
+    print(f"\n--- 2. Routing {len(QUESTIONS)} questions twice ---")
     print(f"    model {model}, temperature 0\n")
-    print(f"    {'question':<52}{'report':>10}{'type':>8}")
+    print(f"    {'question':<66}{'report':>8}{'type':>8}")
     routed = []
     for item in QUESTIONS:
         report = route_to_report(client, model, item["question"])
@@ -359,13 +344,14 @@ def main() -> None:
         routed.append({"item": item, "report": report, "type": answer_type})
         report_mark = "ok" if report == item["report"] else "WRONG"
         type_mark = "ok" if answer_type == item["type"] else "WRONG"
-        print(f"    {item['question'][:50]:<52}{report_mark:>10}{type_mark:>8}")
+        print(f"    {item['question']:<66}{report_mark:>8}{type_mark:>8}")
     report_right = sum(1 for row in routed if row["report"] == row["item"]["report"])
     type_right = sum(1 for row in routed if row["type"] == row["item"]["type"])
     print(f"\n    report routing {report_right} of {len(QUESTIONS)}, "
           f"type routing {type_right} of {len(QUESTIONS)}")
 
-    print("\n--- 4-5. Answering under the schema, and checking the citations ---")
+    # 3. Answering under the schema, and checking the citations
+    print("\n--- 3. Answering under the schema, and checking the citations ---")
     scored = []
     for row in routed:
         item = row["item"]
@@ -386,21 +372,45 @@ def main() -> None:
             "citations": citations,
             "conforms": conforms(result, answer_type),
             "correct": matches_expected(result, item["answer"], answer_type),
-            "type_used": answer_type,
         }
         scored.append(record)
 
         print(f"\n    Q: {item['question']}")
         print(f"       expected {item['answer']!r} from pages {item['pages']}")
-        print(f"       answer   {str(result.get('answer'))[:80]!r}")
+        print(f"       answer   {str(result.get('answer'))!r}")
         print(f"       cited {citations['cited']}   valid {citations['kept']}"
               f"   invented {citations['dropped']}")
         print(f"       schema {'ok' if record['conforms'] else 'FAILED'}, "
               f"answer {'ok' if record['correct'] else 'WRONG'}, "
               f"confidence {result.get('confidence')}")
 
-    print("\n--- 6. Comparisons, split one report at a time ---")
+    # 4. A wrong route and an invented page, fed in on purpose
+    print("\n--- 4. A wrong route and an invented page, fed in on purpose ---")
+    probe = QUESTIONS[0]
+    wrong_report = next(name for name in REPORTS if name != probe["report"])
+    result = answer_question(client, model, probe["question"], wrong_report, probe["type"])
+    _, supplied = build_context(wrong_report)
+    misrouted = validate_references(result, supplied)
+    misrouted_right = matches_expected(result, probe["answer"], probe["type"])
+    print(f"    Q: {probe['question']}")
+    print(f"       answered from the pages of {wrong_report}")
+    print(f"       answer {str(result.get('answer'))!r}, "
+          f"answer {'ok' if misrouted_right else 'WRONG'}, "
+          f"invented {misrouted['dropped']}")
+    # One page the model was given, one from another report, one from no report.
+    invented_reply = {"references": [14, 11, 3]}
+    invented = validate_references(invented_reply, set(REPORTS[probe["report"]]))
+    print(f"\n    a reply citing {invented['cited']} for {probe['report']}: "
+          f"valid {invented['kept']}, invented {invented['dropped']}")
+    if not misrouted_right and not misrouted["dropped"]:
+        print("\n    The wrong route is caught by the answer key, not by the citation check.")
+    if invented["dropped"]:
+        print("    The invented pages are caught by the citation check, with no answer key.")
+
+    # 5. Comparisons, split one report at a time
+    print("\n--- 5. Comparisons, split one report at a time ---")
     comparison_right = 0
+    sourced = True
     for item in COMPARISONS:
         outcome = answer_comparison(client, model, item)
         print(f"\n    Q: {item['question']}")
@@ -408,6 +418,7 @@ def main() -> None:
             print(f"       {part['company']:<24}{str(part['answer']):>12}   "
                   f"pages {part['pages']}"
                   + (f"   invented {part['dropped']}" if part["dropped"] else ""))
+            sourced = sourced and bool(part["pages"]) and not part["dropped"]
         given = str(outcome["final"].get("answer", ""))
         right = item["answer"].lower() in given.lower()
         comparison_right += 1 if right else 0
@@ -416,25 +427,27 @@ def main() -> None:
         final_cites = outcome["final_citations"]
         print(f"       combined cites {final_cites['cited']}   valid {final_cites['kept']}"
               f"   invented {final_cites['dropped']}")
-    print("\n    Each sub-answer keeps its own citation, so the comparison inherits")
-    print("    sources rather than producing a claim no page supports.")
+    if sourced:
+        print("\n    Each sub-answer keeps its own citation, so the comparison inherits")
+        print("    sources rather than producing a claim no page supports.")
 
-    print("\n--- 7. What the run measured ---")
+    # 6. What the run measured
+    print("\n--- 6. What the run measured ---")
     total = len(QUESTIONS)
     conforming = sum(1 for row in scored if row["conforms"])
     correct = sum(1 for row in scored if row["correct"])
-    invented = sum(len(row["citations"]["dropped"]) for row in scored)
+    invented_count = sum(len(row["citations"]["dropped"]) for row in scored)
     cited = sum(len(row["citations"]["cited"]) for row in scored)
     print(f"    report routing        {report_right} of {total}")
     print(f"    answer type routing   {type_right} of {total}")
     print(f"    schema conformance    {conforming} of {total}")
     print(f"    answers correct       {correct} of {total}")
     print(f"    comparisons correct   {comparison_right} of {len(COMPARISONS)}")
-    print(f"    page citations        {cited} made, {invented} of them invented")
-    print("\n    Those are six separate numbers because they fail separately. A wrong")
-    print("    answer traced to routing is repaired in the router; one traced to the")
-    print("    schema is repaired in the prompt; an invented citation is caught without")
-    print("    knowing whether the answer was right at all.")
+    print(f"    page citations        {cited} made, {invented_count} of them invented")
+    print("\n    Six numbers, because each one points to a different fix. A wrong answer")
+    print("    traced to routing is repaired in the router; one traced to the schema is")
+    print("    repaired in the prompt; an invented citation is caught without knowing")
+    print("    whether the answer was right at all.")
 
 
 if __name__ == "__main__":

@@ -286,9 +286,9 @@ See [Low-Code-Platforms-What-The-Canvas-Runs.md](09-lowcode-platforms/Low-Code-P
 | 04 | `04_tool_return_shapes.py` | One question, five return shapes, scored against a computed answer: the shape that answers it is the smallest one |
 | 05 | `05_chart_criterion_and_index_alignment.py` | A chart rule reading rows where the axis needs distinct values, and a column that arrives mostly populated and entirely misdated |
 | 06 | `06_bollinger_and_spc_rules.py` | A rolling band reported with the numbers behind each flag, and eight control rules, seven of them run-based, that catch different days rather than more |
-| 07 | `07_label_leakage_and_importance_views.py` | A label one column and one threshold reproduce, and four importance measures that disagree on eleven features out of twelve |
+| 07 | `07_label_leakage_and_importance_views.py` | A label one column and one threshold reproduce, and four importance rankings checked against a column drawn independently of the label |
 | 08 | `08_association_rules_sample_unit.py` | The same holdings mined under three sample units, one of which makes every lift exactly 1.0 by construction |
-| 09 | `09_cohort_is_not_a_time_series.py` | Neighbouring points sharing none of their population, a shuffle test, and two seasonal terms with no observations under them |
+| 09 | `09_cohort_is_not_a_time_series.py` | Neighbouring points sharing none of their population, a shuffle test, and Prophet's weekly and yearly terms fitted where the data holds no such pattern |
 | 10 | `10_search_backends_and_ui.py` | Keyword and vector retrieval over one corpus, fused by RRF and by weighted sum, a cutoff in tokens rather than rows, and a failure isolated one layer at a time |
 | 11 | `11_answer_routing_and_citation.py` | Two routers before answering, a four-field schema, and every cited page checked against the pages actually supplied |
 

@@ -211,10 +211,6 @@ prophet>=1.1.0            # 04 -> the additive trend/seasonality/holiday model; 
 # the two tables and the prose document all live in data/ and are written in English.
 
 # --- 10-projects ---
-shap>=0.44.0              # 07 -> TreeExplainer, the mean absolute contribution ranking.
-#                         #   Optional: without it the script falls back to the booster's
-#                         #   own pred_contrib output, which decomposes a prediction the
-#                         #   same way, so the ranking is unchanged.
 gradio>=5.0.0             # 10 -> the Blocks page served by `--ui`. The default
 #                         #   command-line run never imports it.
 # lightgbm, scikit-learn, pandas, numpy, matplotlib, statsmodels, prophet, rank_bm25,

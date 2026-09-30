@@ -1,15 +1,16 @@
-"""Audit the numbers behind a dashboard, then move the work that produced them off the request path.
-
-Demonstrates why a dashboard can be internally consistent and still wrong:
+"""This script audits the metrics behind a dashboard built from the facility and customer
+tables (a reported ratio, the parts of a total, and customer bands with their labels), then
+precomputes the tiles into a file cache keyed on the sources' size and modification time, and
+tests which invalidation rule notices a change. Steps 1 to 4 show that a dashboard can be
+internally consistent and still wrong, and steps 5 to 7 are about the cache:
     1. Recompute a ratio the source table already reports, and compare the two.
     2. Check whether the parts of a total actually add up to the total.
     3. Bucket customers into bands and count how many the buckets lost.
-    4. Line the band labels up against the band edges they claim to describe.
+    4. Add an open top band, and print the smallest and largest balance under each label.
     5. Compute every tile once, and time how long a cold build takes.
-    6. Serve the same tiles from a cache, and time the warm path.
+    6. Read the same tiles back from the cache, time the warm path, and repeat the cold
+       build on 10 and 40 copies of the bed table.
     7. Change the source, and see which invalidation rule notices and which does not.
-
-Module 10: Applied Projects - Dashboard Metrics and Precomputation.
 """
 
 import json
@@ -47,13 +48,8 @@ def load_sources() -> tuple:
 
 
 def audit_reported_ratio(beds: pd.DataFrame) -> pd.DataFrame:
-    """Recompute the utilization ratio and compare it against the column already provided.
-
-    A dashboard that reads reported_utilization_pct straight through has no way to
-    notice that the upstream system clamps it. The clamp is invisible in isolation:
-    99 is a legal percentage. It only shows up when the ratio is recomputed from the
-    two columns it was supposedly derived from.
-    """
+    """Recompute the utilization ratio from the bed counts and compare it with the reported one.
+    99 is a legal percentage, so the clamp shows only in the recomputed ratio."""
     beds = beds.copy()
     beds["recomputed_pct"] = 100.0 * beds["occupied_beds"] / beds["total_beds"]
     beds["gap"] = beds["recomputed_pct"] - beds["reported_utilization_pct"]
@@ -70,13 +66,13 @@ def audit_reported_ratio(beds: pd.DataFrame) -> pd.DataFrame:
     if len(at_cap):
         print(f"\n    Among the rows reading {REPORTED_RATIO_CAP}%, the recomputed ratio runs from "
               f"{at_cap['recomputed_pct'].min():.1f}% to {at_cap['recomputed_pct'].max():.1f}%.")
-        print(f"    Only {len(clamped):,} of those {len(at_cap):,} were actually clamped "
-              f"(recomputed ratio rounds above {REPORTED_RATIO_CAP});")
-        print(f"    the other {len(at_cap) - len(clamped):,} merely rounded up to it. Reading "
-              f"the cap value is not")
-        print("    evidence of having been capped, and separating the two is the whole")
-        print("    check. What the clamp does cost is order: the facilities past it all")
-        print("    land on the same value and stop being distinguishable from each other.")
+        print(f"    Only {len(clamped):,} of those {len(at_cap):,} were clamped (recomputed "
+              f"ratio rounds above {REPORTED_RATIO_CAP}). "
+              f"The other {len(at_cap) - len(clamped):,}")
+        print(f"    only rounded to {REPORTED_RATIO_CAP}. Rounding moves a ratio by at most "
+              f"0.5, so the {len(disagree):,} rows that differ")
+        print(f"    by more than 0.5 are these clamped ones, each moved down by at most "
+              f"{clamped['gap'].abs().max():.1f} point.")
 
     print(f"\n    mean utilization, as reported   {beds['reported_utilization_pct'].mean():>7.2f}%")
     print(f"    mean utilization, recomputed    {beds['recomputed_pct'].mean():>7.2f}%")
@@ -84,13 +80,8 @@ def audit_reported_ratio(beds: pd.DataFrame) -> pd.DataFrame:
 
 
 def audit_parts_and_total(beds: pd.DataFrame) -> None:
-    """Check that occupied plus free reaches the total, and report the shortfall.
-
-    A tile reading "free beds" is answering the question "where can a patient go".
-    A tile reading "total minus occupied" answers a different question, because beds
-    out of service are in the total and available to nobody. The two tiles disagree
-    by exactly the out-of-service count, and neither one says so.
-    """
+    """Check that occupied plus free reaches the total, and compare two ways to count free beds.
+    Beds out of service are in the total but free to nobody."""
     parts = beds["occupied_beds"] + beds["free_beds"]
     shortfall = beds["total_beds"] - parts
     rows_short = int((shortfall > 0).sum())
@@ -109,13 +100,9 @@ def audit_parts_and_total(beds: pd.DataFrame) -> None:
           f"{naive_free - real_free:,} beds.")
 
 
-def audit_banding(customers: pd.DataFrame) -> pd.DataFrame:
+def audit_banding(customers: pd.DataFrame) -> None:
     """Bucket customers by assets and count how many fell outside every bucket.
-
-    pandas returns NaN for a value outside the outermost edges, and NaN rows are
-    dropped by value_counts without comment. The funnel then adds up to less than
-    the customer base, and the shortfall is the segment that matters most.
-    """
+    pd.cut gives NaN outside the edges, and value_counts drops NaN without comment."""
     banded = customers.copy()
     banded["band"] = pd.cut(
         banded["total_aum"], bins=AUM_BAND_EDGES, labels=AUM_BAND_LABELS
@@ -131,24 +118,18 @@ def audit_banding(customers: pd.DataFrame) -> pd.DataFrame:
 
     lost = banded["band"].isna().sum()
     above = int((banded["total_aum"] > AUM_BAND_EDGES[-1]).sum())
-    at_zero = int((banded["total_aum"] <= AUM_BAND_EDGES[0]).sum())
     print(f"\n    customers in no band at all            {lost:>11,}")
     print(f"        above the top edge                 {above:>11,}")
-    print(f"        at or below the bottom edge        {at_zero:>11,}")
-    print("    Those are the customers a wealth funnel exists to find, and the chart")
-    print("    that reads value_counts() never showed that they were missing.")
-    return banded
+    print(f"    A funnel built on value_counts() would show {counts.sum():,} customers "
+          "and no warning.")
 
 
 def audit_band_labels(customers: pd.DataFrame) -> None:
-    """Line each label up against the range of values that actually landed under it.
-
-    A label is a claim about a range. Once edges are edited and labels are not, the
-    two drift apart silently, because nothing checks that "High net worth" contains
-    the customers a reader would call high net worth.
-    """
+    """Add an open top band, and print the smallest and largest balance under each label.
+    The range is what a reader checks the label's name against."""
     fixed_edges = [0, 100_000, 500_000, 1_000_000, np.inf]
     fixed_labels = ["Mass", "Affluent", "High net worth", "Ultra high net worth"]
+    # include_lowest keeps a balance of exactly 0 in Mass; this file has none.
     banded = pd.cut(
         customers["total_aum"], bins=fixed_edges, labels=fixed_labels, include_lowest=True
     )
@@ -162,17 +143,12 @@ def audit_band_labels(customers: pd.DataFrame) -> None:
             continue
         print(f"    {label:<24}{len(group):>9,}{group.min():>16,.0f}{group.max():>16,.0f}")
     print(f"    {'total':<24}{int(banded.notna().sum()):>9,}")
-    print("\n    With an open top edge and include_lowest, the bands now hold everyone,")
-    print("    and each label's observed range can be read against the name it carries.")
+    print("\n    With an open top band, the bands now hold everyone.")
 
 
 def build_tiles(beds: pd.DataFrame, customers: pd.DataFrame) -> dict:
-    """Compute every dashboard tile from the source tables, the slow and honest way.
-
-    This is deliberately the whole computation, not a sample of it. What makes a
-    cache worth having is that the work it replaces is real; timing a cheap function
-    proves nothing about whether precomputing was the right call.
-    """
+    """Compute all the dashboard tiles from the loaded tables.
+    This is the work the cache replaces."""
     beds = beds.copy()
     beds["recomputed_pct"] = 100.0 * beds["occupied_beds"] / beds["total_beds"]
     return {
@@ -193,11 +169,8 @@ def build_tiles(beds: pd.DataFrame, customers: pd.DataFrame) -> dict:
 
 
 def source_fingerprint(paths: list) -> dict:
-    """Describe the sources by size and modification time, which is what this cache keys on.
-
-    It is cheap and catches an ordinary rewrite. It is not a content check: an edit
-    that kept the size and restored the timestamp would pass, which a hash would not.
-    """
+    """Key the cache on each source's size and modification time. An edit that kept the size
+    and restored the timestamp would pass; a hash of the bytes would not."""
     return {
         str(path.name): {"size": path.stat().st_size, "mtime": path.stat().st_mtime}
         for path in paths
@@ -205,11 +178,8 @@ def source_fingerprint(paths: list) -> dict:
 
 
 def write_cache(tiles: dict, paths: list) -> None:
-    """Write the tiles and the fingerprint of the sources they were built from.
-
-    Both files are written together. A cache that stores results without recording
-    what produced them can only answer "is there a cache", never "is it still valid".
-    """
+    """Write the tiles together with the fingerprint of the sources they came from.
+    Without the fingerprint, the cache can say it exists but never that it is still valid."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     with CACHE_FILE.open("wb") as handle:
         pickle.dump(tiles, handle)
@@ -237,26 +207,32 @@ def main() -> None:
     beds, customers = load_sources()
     sources = [DATA / "facility_beds.csv", DATA / "customers.csv"]
 
+    # 1. A ratio the source table already reports
     print("--- 1. A ratio the source table already reports ---")
     beds = audit_reported_ratio(beds)
 
+    # 2. Do the parts add up to the total?
     print("\n--- 2. Do the parts add up to the total? ---")
     audit_parts_and_total(beds)
 
+    # 3. Banding, and the customers it drops
     print("\n--- 3. Banding, and the customers it drops ---")
     audit_banding(customers)
 
+    # 4. Labels against the ranges they name
     print("\n--- 4. Labels against the ranges they name ---")
     audit_band_labels(customers)
 
+    # 5. Cold build: every tile computed from the sources
     print("\n--- 5. Cold build: every tile computed from the sources ---")
     for path in (CACHE_FILE, CACHE_META):
         path.unlink(missing_ok=True)
-    tiles, cold = timed("compute all tiles from the CSV files",
+    tiles, cold = timed("compute all tiles from the loaded tables",
                         lambda: build_tiles(beds, customers))
     write_cache(tiles, sources)
     print(f"    {len(tiles)} tiles cached to {CACHE_FILE.name}")
 
+    # 6. Warm path: the same tiles, read back
     print("\n--- 6. Warm path: the same tiles, read back ---")
     cached, warm = timed("load tiles from the cache",
                          lambda: pickle.load(CACHE_FILE.open("rb")))
@@ -281,6 +257,7 @@ def main() -> None:
     print(f"    The cache holds the same {len(tiles)} finished tiles whatever the source size,")
     print("    so reading it does not depend on how many rows built them.")
 
+    # 7. The source changes
     print("\n--- 7. The source changes ---")
     print(f"    'a cache file exists' says fresh:        {CACHE_FILE.exists()}")
     print(f"    'the fingerprint still matches' says:    {cache_is_fresh(sources)}")
@@ -295,19 +272,20 @@ def main() -> None:
     staffed = int(changed.loc[first, "total_beds"] - changed.loc[first, "out_of_service_beds"])
     was = int(changed.loc[first, "occupied_beds"])
     changed.loc[first, "occupied_beds"] = 0 if was else staffed
-    changed.to_csv(beds_path, index=False)
+    try:
+        changed.to_csv(beds_path, index=False)
 
-    print("\n    One row edited and written back to facility_beds.csv.")
-    print(f"    'a cache file exists' still says fresh:  {CACHE_FILE.exists()}")
-    print(f"    'the fingerprint still matches' says:    {cache_is_fresh(sources)}")
+        print("\n    One row edited and written back to facility_beds.csv.")
+        print(f"    'a cache file exists' still says fresh:  {CACHE_FILE.exists()}")
+        print(f"    'the fingerprint still matches' says:    {cache_is_fresh(sources)}")
 
-    rebuilt = build_tiles(pd.read_csv(DATA / "facility_beds.csv"), customers)
-    print(f"\n    mean utilization, stale cache  {cached['mean_utilization_pct']:.4f}%")
-    print(f"    mean utilization, rebuilt      {rebuilt['mean_utilization_pct']:.4f}%")
-    print("    A dashboard on the first rule would have served the stale figure with")
-    print("    no error and no warning, because the cache file was there the whole time.")
-
-    beds_path.write_bytes(original_bytes)
+        rebuilt = build_tiles(pd.read_csv(DATA / "facility_beds.csv"), customers)
+        print(f"\n    mean utilization, stale cache  {cached['mean_utilization_pct']:.4f}%")
+        print(f"    mean utilization, rebuilt      {rebuilt['mean_utilization_pct']:.4f}%")
+        print("    A dashboard on the first rule would have served the stale figure with")
+        print("    no error and no warning, because the cache file was there the whole time.")
+    finally:
+        beds_path.write_bytes(original_bytes)
     write_cache(build_tiles(pd.read_csv(beds_path), customers), sources)
     print(f"\n    Source file restored, cache rebuilt against it: {cache_is_fresh(sources)}")
 

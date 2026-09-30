@@ -1,12 +1,12 @@
-"""This script answers questions about an invented insurer's policy wording.
-The eight documents are written into the script, and each question names the
-document that answers it, so retrieval can be scored rather than judged. The
-same chunks go to a keyword index (BM25) and a vector index. Hybrid retrieval
-then fuses the two rankings, in two ways. Reciprocal rank fusion (RRF) adds
-1 / (60 + rank) from each backend and never looks at the scores. The weighted
-fusion rescales each backend's scores to 0 to 1 for the question and adds them
-half and half. Raw scores cannot be added: BM25 has no upper bound and cosine
-does.
+"""This script answers questions about an invented insurer's policy wording
+with hybrid retrieval over a keyword index (BM25) and a vector index. The
+eight documents are written into the script, and each question names the
+document that answers it, so retrieval can be scored rather than judged. Both
+indexes hold the same chunks, and the two rankings are fused in two ways.
+Reciprocal rank fusion (RRF) adds 1 / (60 + rank) from each backend and never
+looks at the scores. The weighted fusion rescales each backend's scores to 0
+to 1 for the question and adds them half and half. Raw scores cannot be added:
+BM25 has no upper bound and cosine does.
 
 The run prints six parts:
     1. The corpus, chunked. Windows of 60 words with 15 overlapping.
@@ -30,6 +30,7 @@ import argparse
 import os
 import re
 import sys
+import textwrap
 import time
 from pathlib import Path
 
@@ -140,8 +141,8 @@ QUESTIONS = [
 
 
 def chunk_documents() -> list:
-    """Split every document into overlapping windows of whole words, each tagged with its document.
-    The overlap keeps a sentence that straddles a boundary whole in one of the windows."""
+    """Split every document into overlapping windows of whole words, tagged with the document.
+    A sentence at a boundary stays whole only if at most CHUNK_OVERLAP of its words fall before it."""
     chunks = []
     for name, text in CORPUS.items():
         words = " ".join(text.split()).split(" ")
@@ -240,7 +241,7 @@ class HybridBackend:
 
 
 def call_with_retry(client, kind: str = "chat", **kwargs):
-    """Send one request, backing off when the provider answers with a rate limit.
+    """Send one request, backing off when the provider is rate-limited, busy or timing out.
     Indexing sends one request per chunk in a burst, which trips per-minute limits."""
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
@@ -299,7 +300,7 @@ def answer(client, question: str, hits: list) -> str:
     return response.choices[0].message.content.strip()
 
 
-def pick_client() -> OpenAI:
+def pick_client() -> OpenAI | None:
     """Return a Gemini client for both embeddings and chat, or None without a key.
     One provider means one key and one quota to check when something fails."""
     key = os.getenv("GEMINI_API_KEY")
@@ -368,19 +369,25 @@ def build_ui(backends: dict, client):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--ui", action="store_true", help="serve the web interface")
     parser.add_argument("--share", action="store_true", help="expose the interface publicly")
     args = parser.parse_args()
 
     client = pick_client()
-    if client is None:
-        print("(no GEMINI_API_KEY; this script needs it for both the embeddings and the answers)")
+    chunks = chunk_documents()
+    if args.ui:
+        ui_backends = {"keyword": KeywordBackend(chunks)}
+        if client is not None:
+            ui_backends["vector"] = VectorBackend(chunks, client)
+            for method in ("rrf", "weighted"):
+                ui_backends[method] = HybridBackend(
+                    ui_backends["keyword"], ui_backends["vector"], method)
+        build_ui(ui_backends, client).launch(share=args.share)
         return
 
     # 1. The corpus, chunked
 
-    chunks = chunk_documents()
     print("--- 1. The corpus, chunked ---")
     print(f"    documents {len(CORPUS)}, chunks {len(chunks)}, "
           f"window {CHUNK_WORDS} words with {CHUNK_OVERLAP} overlapping")
@@ -388,6 +395,10 @@ def main() -> None:
     print(f"    chunk length in characters: min {min(lengths)}, max {max(lengths)}, "
           f"mean {sum(lengths) / len(lengths):.0f}")
     print(f"    estimated tokens in the whole corpus: {estimate_tokens(chunks):,}")
+
+    if client is None:
+        print("\n(no GEMINI_API_KEY; parts 2 to 6 need it for the embeddings and the answers)")
+        return
 
     # 2. Two indexes and two fusions
 
@@ -436,9 +447,9 @@ def main() -> None:
                 print(f"      {name}: {QUESTIONS[i][0]}")
             if not lost:
                 print(f"      {name}: nothing lost on this run")
-        print("    Fusion pays only when each backend finds what the other misses.")
+        print("    Fusion adds a hit only when each backend finds what the other misses.")
         if missed[weak]:
-            print(f"    Step 6 traces the {weak} miss to its cause.")
+            print(f"    Part 6 traces the {weak} miss to its cause.")
 
     # 4. Two ways to cut the context
 
@@ -465,6 +476,7 @@ def main() -> None:
 
     print("\n--- 5. Answers from the keyword and vector backends ---")
     replies = {}
+    declined = []
     for i, (question, expected, kind) in enumerate(QUESTIONS):
         print(f"\n    Q: {question}   (expected source: {expected})")
         for name in ("keyword", "vector"):
@@ -472,7 +484,13 @@ def main() -> None:
             replies[name, i] = " ".join(answer(client, question, hits).split())
             sources = ", ".join(dict.fromkeys(hit["document"] for hit in hits))
             print(f"        {name:<9} retrieved [{sources}]")
-            print(f"        {'':<9} {replies[name, i][:150]}")
+            for line in textwrap.wrap(replies[name, i], 70):
+                print(f"        {'':<9} {line}")
+            refused = replies[name, i].lower().startswith("not in the retrieved context")
+            if refused and expected in sources.split(", "):
+                declined.append((name, question))
+    for name, question in declined:
+        print(f"\n    {name} retrieved the expected source but declined: {question}")
 
     # 6. Peeling a failure back
 
@@ -518,27 +536,16 @@ def main() -> None:
     print(f"    Layer 4, the tokens      : the question has "
           f"{', '.join(repr(word[:-1]) for word in stuck)}, the chunk has "
           f"{', '.join(repr(word) for word in stuck)}")
+    inside = plain_rank is not None and plain_rank <= TOP_K
     print(f"                               without sentence-final dots the chunk ranks "
-          f"{plain_rank} of {len(chunks)}")
+          f"{plain_rank} of {len(chunks)}" + (f", inside the top {TOP_K}" if inside else ""))
+    if not inside:
+        print("\n    The dots explain part of the gap, not all of it.")
+        return
     print("\n    Neither the answer nor BM25 was the problem. The tokenizer keeps the dot")
     print("    in clause numbers such as 7.3, and with it every sentence-final dot, so")
     print("    these words never match. Nothing raised an error; the chunk just ranked lower.")
 
 
 if __name__ == "__main__":
-    parsed = argparse.ArgumentParser(add_help=False)
-    parsed.add_argument("--ui", action="store_true")
-    parsed.add_argument("--share", action="store_true")
-    known, _ = parsed.parse_known_args()
-    if known.ui:
-        client = pick_client()
-        chunks = chunk_documents()
-        ui_backends = {"keyword": KeywordBackend(chunks)}
-        if client is not None:
-            ui_backends["vector"] = VectorBackend(chunks, client)
-            for method in ("rrf", "weighted"):
-                ui_backends[method] = HybridBackend(
-                    ui_backends["keyword"], ui_backends["vector"], method)
-        build_ui(ui_backends, client).launch(share=known.share)
-    else:
-        main()
+    main()

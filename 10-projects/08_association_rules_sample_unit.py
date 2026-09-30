@@ -1,15 +1,14 @@
-"""Mine the same product holdings three times, changing only what one row is taken to mean.
+"""This script mines association rules (support, confidence and lift) from the customers'
+product holdings three times, by counting every combination of up to three products. The
+three runs differ only in what one row stands for: a customer, a distinct combination, or a
+distinct combination weighted by its customer count.
 
-Demonstrates that an association rule reports on the sample unit, not on the customers:
     1. Turn the customer table into one basket per customer and count what is in them.
-    2. Mine frequent itemsets and rules from those baskets with a small implementation.
-    3. Drop duplicate baskets, the way a table of combinations is usually prepared.
-    4. Mine the deduplicated table and read the supports that come back.
-    5. Restore the counts as weights and confirm the first result comes back.
-    6. Put the lift of every rule side by side under the three sample units.
-    7. Check the wealth-to-fund rule against the same lift computed directly from the baskets.
-
-Module 10: Applied Projects - Sample Units in Association Mining.
+    2. Mine frequent itemsets and rules with one row per customer.
+    3. Drop duplicate baskets and mine the rows that are left.
+    4. Restore the counts as weights and check that the rules match step 2.
+    5. Put the lift of every rule side by side under the three sample units.
+    6. Check the wealth-to-fund rule against the probabilities 01 draws it from.
 """
 
 import sys
@@ -33,14 +32,15 @@ PRODUCTS = {
 MIN_SUPPORT = 0.05
 MIN_CONFIDENCE = 0.30
 MAX_ITEMSET_SIZE = 3
+# 01 draws fund with probability 0.22, times 2.6 for customers who hold a wealth product.
+FUND_BASE_RATE = 0.22
+WEALTH_TO_FUND_MULTIPLIER = 2.6
 
 
 def build_baskets() -> pd.DataFrame:
     """Turn each customer into one row of true and false, one column per product.
 
-    A basket is a customer here, because the question is which products a person
-    holds together. Naming the unit out loud is the whole point of this script: every
-    number below is a proportion of something, and this is the something.
+    A basket is a customer, because the question is which products a person holds together.
     """
     path = DATA / "customers.csv"
     if not path.exists():
@@ -55,10 +55,7 @@ def frequent_itemsets(baskets: pd.DataFrame, weights: np.ndarray,
                       min_support: float) -> pd.DataFrame:
     """Return every product combination whose weighted support clears the threshold.
 
-    Support is the share of total weight in which every item of the set appears. The
-    weights argument is what lets the same routine express all three sample units:
-    ones for one row per basket, ones again for one row per distinct combination, and
-    the observed counts for the deduplicated table restored to its real proportions.
+    Support is the share of total weight in rows holding every item of the set.
     """
     total = float(weights.sum())
     columns = list(baskets.columns)
@@ -77,10 +74,7 @@ def frequent_itemsets(baskets: pd.DataFrame, weights: np.ndarray,
 def association_rules(itemsets: pd.DataFrame, min_confidence: float) -> pd.DataFrame:
     """Split every frequent itemset into antecedent and consequent, and score the split.
 
-    Confidence is how often the consequent shows up among the baskets that already
-    hold the antecedent. Lift compares that against how often the consequent shows up
-    at all, so lift is the number that says whether the two are related rather than
-    merely both common. Lift of one means no relationship was found.
+    Lift is confidence over the consequent's own support; 1 means the two are independent.
     """
     support_of = dict(zip(itemsets["items"], itemsets["support"]))
     rows = []
@@ -134,6 +128,7 @@ def print_rules(rules: pd.DataFrame, limit: int = 6) -> None:
 
 
 def main() -> None:
+    # 1. One basket per customer
     baskets = build_baskets()
 
     print("--- 1. One basket per customer ---")
@@ -145,6 +140,7 @@ def main() -> None:
     print(f"\n    distinct combinations  {len(distinct):>8}  "
           f"out of {2 ** len(baskets.columns)} possible")
 
+    # 2. Mined with one row per customer
     print("\n--- 2. Mined with one row per customer ---")
     weights_all = np.ones(len(baskets))
     itemsets_all = frequent_itemsets(baskets, weights_all, MIN_SUPPORT)
@@ -153,7 +149,8 @@ def main() -> None:
     print()
     print_rules(rules_all)
 
-    print("\n--- 3-4. Mined after dropping duplicate baskets ---")
+    # 3. Mined after dropping duplicate baskets
+    print("\n--- 3. Mined after dropping duplicate baskets ---")
     print(f"    {len(baskets):,} rows collapse to {len(distinct)} rows.")
     print("    The table still holds every combination that occurs. What it no longer")
     print("    holds is how many customers each combination stands for.")
@@ -173,7 +170,8 @@ def main() -> None:
         print("    exactly 1. The deduplicated table is independent by construction, and")
         print("    that result would be identical whatever the customers actually did.")
 
-    print("\n--- 5. The deduplicated table with its counts restored ---")
+    # 4. The deduplicated table with its counts restored
+    print("\n--- 4. The deduplicated table with its counts restored ---")
     counted = (
         baskets.groupby(list(baskets.columns), as_index=False)
         .size()
@@ -189,7 +187,7 @@ def main() -> None:
     print(f"    largest group {int(weights_counted.max()):,} customers, "
           f"smallest {int(weights_counted.min()):,}")
     # Identical means the same rules, paired by antecedent and consequent, with the
-    # same support, confidence and lift - not merely the same list of lift values.
+    # same support, confidence and lift. The same list of lift values is not enough.
     paired = rules_all.merge(rules_counted, on=["antecedent", "consequent"], how="outer",
                              suffixes=("_all", "_counted"), indicator=True)
     matches = bool(
@@ -198,9 +196,11 @@ def main() -> None:
                 for measure in ("support", "confidence", "lift"))
     )
     print(f"    rules identical to the one-row-per-customer result: {matches}")
-    print("    The fix is not to avoid deduplicating. It is to carry the count.")
+    if matches:
+        print("    The fix is not to avoid deduplicating. It is to carry the count.")
 
-    print("\n--- 6. Lift under the three sample units ---")
+    # 5. Lift under the three sample units
+    print("\n--- 5. Lift under the three sample units ---")
     key = ["antecedent", "consequent"]
     merged = (
         rules_all[key + ["lift"]].rename(columns={"lift": "per customer"})
@@ -217,37 +217,59 @@ def main() -> None:
         for value in (row[3], row[4], row[5]):
             values.append(f"{value:.4f}" if pd.notna(value) else "-")
         print(f"    {label:<38}{values[0]:>14}{values[1]:>17}{values[2]:>17}")
+    print("    - means the rule did not clear the thresholds under that unit")
 
     spread_distinct = rules_distinct["lift"].max() - rules_distinct["lift"].min()
     spread_all = rules_all["lift"].max() - rules_all["lift"].min()
     print(f"\n    lift ranges over {spread_all:.4f} per customer and "
           f"{spread_distinct:.4f} per combination")
 
-    print("\n--- 7. Against the relationship the data was built with ---")
+    # 6. Against the probabilities 01 draws fund from
+    print("\n--- 6. Against the probabilities 01 draws fund from ---")
     wealth = baskets["wealth"].to_numpy()
     fund = baskets["fund"].to_numpy()
+    insurance = baskets["insurance"].to_numpy()
     with_wealth = fund[wealth].mean()
     without_wealth = fund[~wealth].mean()
     measured = (fund & wealth).mean() / (fund.mean() * wealth.mean())
-    print(f"    P(fund | wealth)      {with_wealth:.4f}")
-    print(f"    P(fund | not wealth)  {without_wealth:.4f}")
+    drawn_with = FUND_BASE_RATE * WEALTH_TO_FUND_MULTIPLIER
+    print(f"    P(fund | wealth)      {with_wealth:.4f}   drawn at {drawn_with:.4f}")
+    print(f"    P(fund | not wealth)  {without_wealth:.4f}   drawn at {FUND_BASE_RATE:.4f}")
     print(f"    lift(wealth -> fund)  {measured:.4f}")
     found = rules_all[
         (rules_all["antecedent"] == "wealth") & (rules_all["consequent"] == "fund")
     ]
-    if not found.empty:
+    if found.empty:
+        print("    the mined rules: wealth -> fund not mined")
+    else:
         print(f"    the mined rule reports  {found['lift'].iloc[0]:.4f}   (match: "
               f"{np.isclose(found['lift'].iloc[0], measured)})")
     deduped = rules_distinct[
         (rules_distinct["antecedent"] == "wealth") & (rules_distinct["consequent"] == "fund")
     ]
-    if not deduped.empty:
+    if deduped.empty:
+        print("    the deduplicated table: wealth -> fund not mined")
+    else:
         print(f"    the deduplicated table reports {deduped['lift'].iloc[0]:.4f}")
-    print("\n    01_build_project_datasets.py prints this same lift, measured on the table it")
-    print("    generated; the generator itself was given a 2.6 multiplier on the fund")
-    print("    probability, not a lift. Both come from these baskets, so matching it checks")
-    print("    the mining arithmetic, and failing to match is what the deduplicated run")
-    print("    should have shown.")
+    top = rules_all.iloc[0]
+    top_has_deposit = "deposit" in f"{top['antecedent']} {top['consequent']}"
+    if not found.empty:
+        gap = top["lift"] - found["lift"].iloc[0]
+        print(f"    highest mined lift: {top['antecedent']} -> {top['consequent']} "
+              f"{top['lift']:.4f}, {gap:.4f} above wealth -> fund")
+    support_fi = (fund & insurance).mean()
+    lift_fi = support_fi / (fund.mean() * insurance.mean())
+    if support_fi < MIN_SUPPORT:
+        print(f"    fund + insurance: support {support_fi:.4f}, below MIN_SUPPORT {MIN_SUPPORT}, "
+              f"lift {lift_fi:.4f}, not mined")
+
+    print("\n    01 sets the two probabilities, not the lift, so the lift is measured on the draw.")
+    if top_has_deposit:
+        print("    01 draws deposit on its own, so the rules that add deposit to")
+        print("    wealth -> fund differ from it only by noise.")
+    if support_fi < MIN_SUPPORT:
+        print("    01 also lowers insurance among fund holders. A minimum support keeps only")
+        print("    common combinations, so this link never reaches the rule table.")
 
 
 if __name__ == "__main__":

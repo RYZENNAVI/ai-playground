@@ -1,15 +1,17 @@
-"""Generate the five data sources the rest of this module reads, from known ground truth.
-
-Demonstrates how to build project data whose every later claim can be checked:
-    1. Draw two years of daily prices for four instruments from an explicit random walk.
-    2. Plant one trading halt and one shock in those prices, and record where they are.
-    3. Draw a customer table whose product holdings are correlated on purpose.
-    4. Draw a staff table and a review table that stand in a one-to-many relation.
-    5. Draw a district table that carries both a daily count and a running total.
-    6. Draw a facility table whose reported ratio is capped and whose parts do not sum.
-    7. Print the ground truth behind every file, so later scripts can be scored against it.
-
-Module 10: Applied Projects - Dataset Construction.
+"""This script generates the five data sources the rest of this module reads as synthetic
+data with known ground truth: daily prices for four instruments drawn from a geometric
+random walk into SQLite, and customer, staff and review, district and facility tables as
+CSV files. Each source has one property planted on purpose, and the script prints it:
+    1. Draw two years of weekday prices for four instruments, and plant one trading halt
+       and one three-day shock in them.
+    2. Draw a customer table in which a wealth product makes a fund holding more likely.
+    3. Draw a staff table and a review table that stand in a one-to-many relation.
+    4. Draw a district table that carries both a daily count and a running total.
+    5. Draw a facility table whose reported ratio is capped and whose parts do not sum.
+       The ratio is taken against total beds, so it never exceeds 100 and the cap only
+       hides the top half-percent.
+    6. Print the ground truth for prices, holdings, districts and facilities, so later
+       scripts can be scored against it.
 """
 
 import sqlite3
@@ -26,7 +28,6 @@ sys.stdout.reconfigure(encoding="utf-8")
 DATA = Path(__file__).parent / "data"
 SEED = 20260828
 
-# --- Market data ---------------------------------------------------------------
 # Four invented instruments. Nothing here is a real listed company.
 INSTRUMENTS = {
     "ARB": {"name": "Arbor Technologies", "start": 142.0, "drift": 0.00042, "vol": 0.0165},
@@ -37,39 +38,36 @@ INSTRUMENTS = {
 MARKET_START = date(2023, 1, 2)
 MARKET_END = date(2024, 12, 31)
 
-# One instrument stops trading for a stretch. A gap in a daily series is what makes
-# "row 1 to row N" and "first date to last date" stop meaning the same thing.
+# One instrument stops trading for eleven weekdays, so the four series do not have the
+# same number of rows.
 HALT_TICKER = "CLD"
 HALT_START = date(2024, 5, 13)
 HALT_DAYS = 11
 
 # Each instrument gets one sharp move, so a band drawn from a rolling mean and
-# standard deviation has something to actually flag.
+# standard deviation has something to flag.
 SHOCK_DAY_INDEX = {"ARB": 168, "CLD": 402, "MRD": 291, "SVN": 96}
 SHOCK_SIZE = {"ARB": 0.091, "CLD": -0.118, "MRD": 0.067, "SVN": -0.083}
 SHOCK_LENGTH = 3
 
-# --- Customer data -------------------------------------------------------------
 CUSTOMER_ROWS = 10000
 CUSTOMER_OPEN_FIRST = date(2019, 1, 1)
 CUSTOMER_OPEN_LAST = date(2024, 12, 31)
 
 # Base probability that a customer holds each product at all.
 HOLDING_BASE = {"deposit": 0.93, "wealth": 0.34, "fund": 0.22, "insurance": 0.17}
-# Holding wealth management makes a fund holding far more likely. This single
-# number is the entire signal an association rule can recover.
+# Holding a wealth product makes a fund holding far more likely. This is the one
+# positive link an association rule should recover.
 WEALTH_TO_FUND_MULTIPLIER = 2.6
 # Holding insurance is mildly discouraged among fund holders.
 FUND_TO_INSURANCE_MULTIPLIER = 0.72
 
-# --- Staff data ----------------------------------------------------------------
 STAFF_ROWS = 480
 REVIEW_YEARS = (2023, 2024)
 REVIEW_QUARTERS = (1, 2, 3, 4)
 DEPARTMENTS = ["Claims", "Underwriting", "Operations", "Compliance", "Technology"]
 GRADES = ["Associate", "Senior", "Lead", "Principal"]
 
-# --- District data -------------------------------------------------------------
 DISTRICT_YEAR = 2024
 DISTRICTS = [
     "Ashfield", "Barrowgate", "Clifton Vale", "Dunmore", "Eastmoor", "Fenwick",
@@ -77,7 +75,6 @@ DISTRICTS = [
     "Netherby", "Oakhaven", "Pinecrest", "Quarryside", "Rosslare", "Thornbury",
 ]
 
-# --- Facility data -------------------------------------------------------------
 FACILITY_COUNT = 250
 FACILITY_MONTHS = 12
 FACILITY_YEAR = 2024
@@ -98,12 +95,7 @@ def business_days(first: date, last: date) -> list:
 
 def build_market_table(rng: np.random.Generator) -> pd.DataFrame:
     """Walk four price series forward one weekday at a time, then cut the halt out.
-
-    The walk is multiplicative, so a price never goes negative and a percentage
-    move means the same thing at any level. The shock is applied as extra return
-    on consecutive days rather than as a single spike, because a one-day spike
-    leaves a rolling mean almost untouched and would flag nothing.
-    """
+    The walk is multiplicative, so a price never goes negative."""
     calendar = business_days(MARKET_START, MARKET_END)
     halt_dates = set()
     if HALT_DAYS:
@@ -123,7 +115,7 @@ def build_market_table(rng: np.random.Generator) -> pd.DataFrame:
         returns[shock_start:shock_start + SHOCK_LENGTH] += per_day
 
         closes = spec["start"] * np.exp(np.cumsum(returns))
-        # Intraday range hangs off the close, so high >= max(open, close) always.
+        # The spread is added outside both open and close, so high and low always bracket them.
         prev_close = np.concatenate([[spec["start"]], closes[:-1]])
         opens = prev_close * (1 + rng.normal(0, spec["vol"] / 3, size=n))
         spread = np.abs(rng.normal(0, spec["vol"] / 2, size=n)) * closes
@@ -150,11 +142,7 @@ def build_market_table(rng: np.random.Generator) -> pd.DataFrame:
 
 
 def write_market_db(market: pd.DataFrame) -> Path:
-    """Write the price table into a SQLite file that later scripts query with SQL.
-
-    The file is deleted first rather than appended to, so a second run of this
-    script leaves exactly the same database instead of a doubled one.
-    """
+    """Write the prices into SQLite, deleting any old file so a rerun does not double it."""
     path = DATA / "market.sqlite"
     if path.exists():
         path.unlink()
@@ -178,13 +166,8 @@ def write_market_db(market: pd.DataFrame) -> Path:
 
 
 def build_customers(rng: np.random.Generator) -> pd.DataFrame:
-    """Draw a customer base whose product holdings are linked to each other on purpose.
-
-    Assets are drawn lognormal, so a small share of customers sits above the one
-    million mark and the rest do not. Holdings are drawn conditionally: the fund
-    probability is multiplied when a wealth product is already held. That single
-    multiplier is the whole reason an association rule can find anything here.
-    """
+    """Draw customers whose fund holding depends on whether they hold a wealth product.
+    Assets are lognormal, so a small share sits above one million."""
     n = CUSTOMER_ROWS
     total_aum = np.round(rng.lognormal(mean=12.75, sigma=0.95, size=n), 2)
 
@@ -237,13 +220,8 @@ def build_customers(rng: np.random.Generator) -> pd.DataFrame:
 
 def build_staff(rng: np.random.Generator) -> tuple:
     """Draw one row per employee, and one review row per employee per quarter worked.
-
-    These two tables exist to make a grain mismatch visible. The master table has
-    one row per person; the review table has up to eight. The count is not the same
-    for everyone: someone hired halfway through has fewer reviews, and salary rises
-    with years of service. Those two facts together are what makes a join at the
-    wrong grain shift an average rather than merely duplicate rows.
-    """
+    Later hires have fewer reviews and lower salaries, so a join at review grain shifts
+    the average salary."""
     hire_year = rng.integers(2012, REVIEW_YEARS[-1] + 1, size=STAFF_ROWS)
     hire_quarter = rng.integers(1, 5, size=STAFF_ROWS)
     years_of_service = (REVIEW_YEARS[-1] + 1) - hire_year
@@ -278,12 +256,8 @@ def build_staff(rng: np.random.Generator) -> tuple:
 
 
 def build_districts(rng: np.random.Generator) -> pd.DataFrame:
-    """Draw a per-district daily table holding both a daily count and a running total.
-
-    Both columns are written out because that is what an upstream reporting system
-    usually hands over. Only one of them can be added across rows without turning
-    into nonsense, and nothing in the column names says which.
-    """
+    """Draw a per-district daily table holding both a daily count and running totals.
+    Only new_cases can be summed across rows."""
     first = date(DISTRICT_YEAR, 1, 1)
     last = date(DISTRICT_YEAR, 12, 31)
     days = [first + timedelta(days=i) for i in range((last - first).days + 1)]
@@ -309,16 +283,8 @@ def build_districts(rng: np.random.Generator) -> pd.DataFrame:
 
 
 def build_facilities(rng: np.random.Generator) -> pd.DataFrame:
-    """Draw a monthly bed table with a clamped ratio column and beds out of service.
-
-    Two properties are planted here. The reported ratio is rounded to a whole
-    percent and then clamped at 99, so the busiest facilities all read the same
-    value and stop being orderable. Occupancy is drawn against staffed beds while
-    the ratio is taken against total beds, so the ratio never reaches 104 percent
-    or anything above 100: what the clamp removes here is the top half-percent,
-    not an overflow. And occupied plus free does not reach the total, because
-    some beds are out of service and counted in neither.
-    """
+    """Draw a monthly bed table with a rounded ratio clamped at 99, and beds out of service.
+    Those beds are in neither occupied nor free, so the parts fall short of the total."""
     facilities = [f"Facility {i:03d}" for i in range(1, FACILITY_COUNT + 1)]
     departments = ["Cardiology", "General Medicine", "Orthopaedics", "Paediatrics", "Surgery"]
 
@@ -348,8 +314,8 @@ def build_facilities(rng: np.random.Generator) -> pd.DataFrame:
 
 def report_market_truth(market: pd.DataFrame) -> None:
     """Print the yearly move of every instrument, computed from first and last close."""
-    print("\n--- 7. Ground truth: yearly move per instrument ---")
-    print("A later script asks a model this same question. These are the answers.")
+    print("\n--- 6. Ground truth: yearly move per instrument ---")
+    print("Script 04 asks a model for the 2024 moves. These are the answers.")
     market = market.copy()
     market["year"] = market["trade_date"].str.slice(0, 4)
     print(f"{'ticker':<8}{'year':<7}{'first date':<13}{'last date':<13}"
@@ -364,13 +330,16 @@ def report_market_truth(market: pd.DataFrame) -> None:
     halted = market[market["ticker"] == HALT_TICKER]["trade_date"]
     print(f"\n{HALT_TICKER} is missing {HALT_DAYS} trading days starting {HALT_START.isoformat()}: "
           f"{len(halted)} rows against {len(market[market['ticker'] == 'ARB'])} for ARB.")
-    weekend_rows = int((pd.to_datetime(market["trade_date"]).dt.weekday >= 5).sum())
-    print(f"Weekends were never generated; Saturday and Sunday rows counted: {weekend_rows}.")
+    calendar = business_days(MARKET_START, MARKET_END)
+    print(f"Planted shocks, {SHOCK_LENGTH} weekdays each:")
+    for ticker, start in SHOCK_DAY_INDEX.items():
+        print(f"    {ticker:<8}{calendar[start].isoformat()} to "
+              f"{calendar[start + SHOCK_LENGTH - 1].isoformat()}  {SHOCK_SIZE[ticker]:+.1%}")
 
 
 def report_customer_truth(customers: pd.DataFrame) -> None:
     """Print the holding rates and the co-holding structure that was planted."""
-    print("\n--- 7. Ground truth: product holdings ---")
+    print("\n--- 6. Ground truth: product holdings ---")
     flags = pd.DataFrame({
         "deposit": customers["deposit_balance"] > 0,
         "wealth": customers["wealth_balance"] > 0,
@@ -391,7 +360,7 @@ def report_customer_truth(customers: pd.DataFrame) -> None:
     distinct = flags.drop_duplicates()
     print(f"\n    rows in the table                 {len(flags)}")
     print(f"    distinct holding combinations     {len(distinct)}")
-    print("    Those two numbers are what an analysis of this table has to choose between.")
+    print("    Script 08 counts rules both ways: per customer and per combination.")
 
     above_million = (customers["total_aum"] >= 1_000_000).mean()
     print(f"\n    share with total_aum >= 1,000,000 {above_million:.4f}")
@@ -399,7 +368,7 @@ def report_customer_truth(customers: pd.DataFrame) -> None:
 
 def report_district_truth(districts: pd.DataFrame) -> None:
     """Print the total that is correct and the total that adding the wrong column gives."""
-    print("\n--- 7. Ground truth: district totals ---")
+    print("\n--- 6. Ground truth: district totals ---")
     true_total = int(districts["new_cases"].sum())
     max_of_cumulative = int(districts.groupby("district")["cumulative_cases"].max().sum())
     sum_of_cumulative = int(districts["cumulative_cases"].sum())
@@ -411,11 +380,8 @@ def report_district_truth(districts: pd.DataFrame) -> None:
 
 def report_facility_truth(facilities: pd.DataFrame) -> None:
     """Print how often the reported ratio reads the cap value and how often the parts fall short.
-
-    Reading the cap is not the same as being clamped: a ratio that merely rounds to
-    the cap reads it too. Script 03 separates the two.
-    """
-    print("\n--- 7. Ground truth: facility beds ---")
+    Reading 99 is not the same as being clamped; script 03 separates the two."""
+    print("\n--- 6. Ground truth: facility beds ---")
     rows_at_cap = (facilities["reported_utilization_pct"] >= REPORTED_RATIO_CAP).sum()
     parts_short = (facilities["occupied_beds"] + facilities["free_beds"]
                    < facilities["total_beds"]).sum()
@@ -432,17 +398,20 @@ def main() -> None:
     DATA.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(SEED)
 
-    print("--- 1-2. Daily prices for four instruments ---")
+    # 1. Daily prices
+    print("--- 1. Daily prices for four instruments ---")
     market = build_market_table(rng)
     db_path = write_market_db(market)
     print(f"{len(market):,} rows across {market['ticker'].nunique()} instruments -> {db_path.name}")
 
-    print("\n--- 3. Customer base ---")
+    # 2. Customer base
+    print("\n--- 2. Customer base ---")
     customers = build_customers(rng)
     customers.to_csv(DATA / "customers.csv", index=False)
     print(f"{len(customers):,} rows -> customers.csv")
 
-    print("\n--- 4. Staff master and quarterly reviews ---")
+    # 3. Staff master and quarterly reviews
+    print("\n--- 3. Staff master and quarterly reviews ---")
     staff, reviews = build_staff(rng)
     staff.to_csv(DATA / "staff.csv", index=False)
     reviews.to_csv(DATA / "staff_reviews.csv", index=False)
@@ -454,16 +423,19 @@ def main() -> None:
           f"{int((per_employee == per_employee.max()).sum())} of {len(staff)} have all "
           f"{per_employee.max()})")
 
-    print("\n--- 5. District daily counts ---")
+    # 4. District daily counts
+    print("\n--- 4. District daily counts ---")
     districts = build_districts(rng)
     districts.to_csv(DATA / "district_daily.csv", index=False)
     print(f"{len(districts):,} rows -> district_daily.csv")
 
-    print("\n--- 6. Facility bed occupancy ---")
+    # 5. Facility bed occupancy
+    print("\n--- 5. Facility bed occupancy ---")
     facilities = build_facilities(rng)
     facilities.to_csv(DATA / "facility_beds.csv", index=False)
     print(f"{len(facilities):,} rows -> facility_beds.csv")
 
+    # 6. Ground truth
     report_market_truth(market)
     report_customer_truth(customers)
     report_district_truth(districts)

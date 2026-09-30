@@ -1,1774 +1,610 @@
-# Applied Projects: The Errors That Do Not Raise
+# Applied projects: the errors that do not raise
 
-Every other module in this repository is about making something work. This one is about
-what happens after it works.
+These eleven scripts build small, complete pieces of the systems the earlier modules covered
+one layer at a time. Script 01 generates every data source with its answer written down first.
+Scripts 02 to 09 work on tables: a join, a dashboard, a tool handing rows to a model, a chart
+helper, control rules, a classifier label, association rules and a forecast. Scripts 10 and 11
+retrieve and answer from documents. Each script runs cleanly and prints a plausible number
+that is wrong in a way no exception reports, then prints the intermediate quantity that shows
+it. This document explains what each script does and the ideas it relies on.
 
-Eleven scripts here build small, complete pieces of the kind of system the earlier modules
-each covered one layer of: a table joined and aggregated for a dashboard, a tool handing
-query results to a model, a classifier with a label somebody had to invent, an association
-rule, a forecast, two retrieval backends, an answering pipeline that cites its sources.
-None of them introduce a technique. Each one runs correctly, prints a plausible number,
-and is wrong in a way that raises no exception.
+| # | Script | What it shows |
+| :---: | :--- | :--- |
+| 01 | `01_build_project_datasets.py` | Five synthetic sources, each with one planted property, and the ground truth later scripts are scored against |
+| 02 | `02_join_grain_and_aggregation_audit.py` | A join at the wrong grain that shifts a mean, and a year total 197x the truth that also reorders the districts |
+| 03 | `03_dashboard_metrics_and_cache.py` | A clamped ratio column, parts that do not sum, a band list that drops 1,276 customers, and two cache rules that disagree |
+| 04 | `04_tool_return_shapes.py` | One question and one query, five return shapes, scored against a computed answer |
+| 05 | `05_chart_criterion_and_index_alignment.py` | A chart rule that counts rows where the axis needs distinct values, and a column attached by index that is entirely misdated |
+| 06 | `06_bollinger_and_spc_rules.py` | A rolling band reported with the numbers behind each flag, and eight Nelson rules that catch different days rather than more |
+| 07 | `07_label_leakage_and_importance_views.py` | A label one column and one threshold reproduce, and four importance rankings checked against an independent column |
+| 08 | `08_association_rules_sample_unit.py` | The same holdings mined under three sample units, one of which makes every lift exactly 1 |
+| 09 | `09_cohort_is_not_a_time_series.py` | A cohort series whose neighbours share no one, a shuffle test, and Prophet terms with no data under them |
+| 10 | `10_search_backends_and_ui.py` | Hybrid retrieval with BM25 and vectors, RRF and weighted fusion, a cutoff in tokens, and a failure traced one layer at a time |
+| 11 | `11_answer_routing_and_citation.py` | Query routing to a report and an answer type, structured JSON answers, and every cited page checked |
 
-The module's single proposition is that this class of error has one countermeasure, and it
-is not code review:
+## Shared setup
 
-> **Print an intermediate quantity and put it next to a value computed some other way.**
+*   Script 01 writes everything the others read, so it runs first. It is seeded
+    (`SEED = 20260828`) and rewrites every file identically. `data/` holds its output
+    (`market.sqlite`, `customers.csv`, `staff.csv`, `staff_reviews.csv`, `district_daily.csv`,
+    `facility_beds.csv`) plus the cache script 03 builds, and git ignores it. `outputs/` holds
+    the three figures scripts 05 and 06 draw, and those are tracked.
+*   Scripts 04 and 11 call a chat model. They read `DEEPSEEK_API_KEY`, `GEMINI_API_KEY` or
+    `OPENAI_API_KEY` from `.env`, in that order (the OpenAI key also reads `OPENAI_BASE_URL`
+    and `OPENAI_MODEL`). Script 10 needs embeddings as well as answers and stays on Gemini, so
+    it reads `GEMINI_API_KEY` only. All three back off and retry on a rate limit. The other
+    eight scripts make no network call.
+*   The dependencies are pandas, numpy, matplotlib, statsmodels, prophet, lightgbm,
+    scikit-learn, rank_bm25, openai and python-dotenv, plus gradio for `--ui` in script 10.
 
-Everything below is an instance of that, and every number quoted is one the scripts print.
+## Script 01: Data with the answer written down first
 
----
+Every later claim needs a number to be checked against, so the data is generated from an
+explicit specification and the script prints the truth next to it.
 
-## 1. What this module is about
+| Part | Source | What is planted | What the run prints |
+| :---: | :--- | :--- | :--- |
+| 1 | `daily_price` in `market.sqlite` | Four instruments on a geometric random walk over two years of weekdays; CLD halted for 11 sessions from 2024-05-13; one three-day shock per instrument | CLD has 511 rows against 522 for ARB; the shocks (MRD +6.7% from 2024-02-13); the 2024 move of each instrument |
+| 2 | `customers.csv` | Holdings drawn conditionally: fund at 0.22, times `WEALTH_TO_FUND_MULTIPLIER = 2.6` for wealth holders; insurance lowered among fund holders | P(fund given wealth) 0.5733, not wealth 0.2240, lift 1.6734; 10,000 rows and 16 distinct holding combinations |
+| 3 | `staff.csv`, `staff_reviews.csv` | One row per employee against one per quarter worked; salary rises with years of service | 480 employees, of whom 421 hold the full 8 reviews |
+| 4 | `district_daily.csv` | A daily count `new_cases` beside a running total `cumulative_cases` | The year total 459,458, and 90,522,763 from summing the running total |
+| 5 | `facility_beds.csv` | A reported ratio rounded and then clamped at `REPORTED_RATIO_CAP = 99`; out-of-service beds in the total | 184 rows reading exactly 99; 2,595 rows where occupied plus free falls short of the total |
 
-### 1.1 The shape of the failures
+*   Part 1 draws each price as a percentage step from the one before, so a price never goes
+    negative. Weekends are never generated. Part 6 prints the truth table for 2024:
 
-Nine of the eleven scripts end up demonstrating the same shape from a different angle:
+| Ticker | First close | Last close | Change |
+| :--- | ---: | ---: | ---: |
+| ARB | 137.45 | 150.60 | 9.57% |
+| CLD | 39.60 | 51.52 | 30.10% |
+| MRD | 101.90 | 131.46 | 29.01% |
+| SVN | 31.67 | 18.80 | -40.64% |
 
-| Where | What it looks like | What it is |
-| :--- | :--- | :--- |
-| A join | A valid table with more rows | An average silently reweighted |
-| An aggregation | A total of the right magnitude | The wrong column added up, **197x** the truth |
-| A dashboard band | A clean funnel | **1,276 customers** in no band at all |
-| A ratio column | Percentages between 0 and 99 | A cap, hiding everything above it |
-| A tool's return value | A ten-row preview | One instrument's January and another's December |
-| A computed column | Mostly populated | **197 of 197** filled cells carrying another row's value |
-| A label | AUC **0.9987** | A threshold on one column, reproduced |
-| An association rule | Support 0.5, lift 1.0 | Arithmetic on 16 rows, not 10,000 customers |
-| A forecast | A smooth curve | A series whose neighbouring points share **0.0000** of their population |
+*   SVN at -40.64% is the largest absolute move of 2024, and script 04 asks a model for it.
+*   Part 3 makes the review count uneven, but not as a gradient over tenure. The review table
+    spans 8 quarters, so only the 59 most recent hires hold fewer than 8. Script 02 relies on
+    that.
+*   Part 5 rounds first and clamps second, so the 184 rows reading 99 are two populations:
+    95 were clamped, and 89 have a true ratio between 98.5 and 99.5 and only round to 99.
+    Python rounds an exact half to the even neighbour, so 98.5 reads 98 and 99.5 reads 100.
+*   No later script uses the CLD halt; it only means the four series have different lengths.
 
-In none of these cases does the program stop. In none of them is the output malformed.
-The only thing that separates the right answer from the wrong one is whether somebody
-printed the count, the overlap, the distribution, or the second estimate.
+## Script 02: Join grain and a total that agrees with nothing
 
-### 1.2 Why the data is synthetic
+*   Part 1 counts rows per key. The staff table has 1.0 row per `staff_id`, the review table
+    7.5. Joining onto a master table keeps its grain only when the other side holds at most
+    one row per key; the master side being unique is not enough.
+*   Part 2 runs `staff.merge(reviews, on="staff_id", how="left")`. 480 rows become 3,608 with
+    no warning. A one-to-many join is right when review-level rows are what the question
+    wants; the mistake is reading employee-level answers from it.
+*   Parts 3 and 4 fix it two ways, and both return 480 rows. Narrowing the reviews to 2024Q4
+    answers a question about one period; aggregating to one row per employee answers one
+    about the whole period.
+*   Part 5 measures the damage on a quantity with a known answer. Mean base salary belongs to
+    the master table, so any change means the grain changed:
 
-`01_build_project_datasets.py` generates all five sources from an explicit specification and
-prints the specification alongside them. That is not a convenience — it is what makes the
-rest of the module measurable:
+| Table | Mean base salary |
+| :--- | ---: |
+| staff master only | 69,732.50 |
+| after the naive join | 70,318.90 |
+| after narrow then join | 69,732.50 |
+| after aggregate then join | 69,732.50 |
 
-- The yearly move of every instrument is computed and printed, so a model's answer to the
-  same question has a number to be scored against.
-- The relationship the customer table was drawn with (`WEALTH_TO_FUND_MULTIPLIER = 2.6`)
-  produces a known lift of **1.6734**, so an association rule either recovers it or does not.
-- The district table carries both a daily count and a running total, and the correct year
-  total is printed next to the one that adding the wrong column gives.
-- The bed table's reported ratio is clamped at `REPORTED_RATIO_CAP = 99` on purpose, and the
-  number of rows that read exactly 99 is printed — which counts the clamped rows together
-  with the ones that merely round to 99 (section 2.6 separates them).
+*   The naive mean is weighted by review count. The 421 employees with all 8 reviews average
+    70,930.40 and the other 59 average 61,184.75. Because the count is capped at 8, the join
+    does not up-weight long service. It down-weights the 59 recent hires, who earn less.
+    Headcount by department shows the same with no statistics: the total reads 3,608.
+*   Parts 6 and 7 add up a year of district cases three ways. Only `new_cases` is a daily
+    count; `cumulative_cases`, `recovered_total` and `deaths_total` are running totals.
 
-The generator is seeded (`SEED = 20260828`) and idempotent: rerunning it reproduces every
-file exactly. Nothing in `data/` is source material — it is all output of script 01.
+| Method | Year total |
+| :--- | ---: |
+| sum of `new_cases` | 459,458 |
+| sum of each district's maximum `cumulative_cases` | 459,458 |
+| sum of `cumulative_cases` over all rows | 90,522,763 (197.0x) |
 
-### 1.3 What is deliberately not here
+*   The first two agree by construction, since 01 builds the running total from the daily
+    column. The third counts a January case again on every later day. Which aggregation is
+    right depends on what one row means, which the dtype does not say.
+*   Part 8 shows the wrong total is not just a wrong scale: 13 of 18 districts change rank.
+    Summing a running total weights a district by how early its cases came. Thornbury (mean
+    case day 160) overtakes Dunmore (182), and Kirkburn, the latest at day 197, drops out of
+    the top 8.
 
-Two things a reader might expect are absent, and both absences are decisions rather than
-omissions.
+## Script 03: Dashboard metrics and a cache
 
-**No external search service.** Script 10 compares two retrieval backends. A production
-search engine would be the natural home for both, and it is what a system at real scale
-would use — one engine that serves inverted-index scoring and vector similarity from the
-same store, with a documented ceiling around 2.1 billion documents per index. It is also
-several hundred megabytes and a resident JVM. The comparison the script is making is
-between *what the two scoring methods retrieve*, and that comparison does not need the
-service: both indexes are built in process, over the same fifteen chunks, so the only
-variable is the scoring. What the script gives up is throughput and persistence; what it
-keeps is the measurement.
-
-**No agent framework.** Scripts 04 and 11 call a chat completion endpoint directly. Agent
-loops, tool registration and protocol-level tool servers are the subject of module 04 and
-are not restated here. What survives into this module is the one thing those modules do not
-measure: what the tool *returns*, and what the model can therefore answer.
-
----
-
-## 2. Data with the answer written down first
-
-`01_build_project_datasets.py` writes five files and prints the ground truth behind each.
-
-### 2.1 Prices with two planted features
-
-Four invented instruments walk forward one weekday at a time under a multiplicative random
-walk, so a price never goes negative and a percentage move means the same thing at any level:
-
-```python
-INSTRUMENTS = {
-    "ARB": {"name": "Arbor Technologies", "start": 142.0, "drift": 0.00042, "vol": 0.0165},
-    "CLD": {"name": "Calder Energy",      "start": 58.5,  "drift": -0.00011, "vol": 0.0231},
-    "MRD": {"name": "Meridian Foods",     "start": 91.2,  "drift": 0.00018, "vol": 0.0104},
-    "SVN": {"name": "Severn Logistics",   "start": 27.4,  "drift": 0.00035, "vol": 0.0192},
-}
-```
-
-Two properties are planted rather than left to chance:
-
-**A trading halt.** `HALT_TICKER = "CLD"` loses `HALT_DAYS = 11` sessions from
-`HALT_START = date(2024, 5, 13)`. The run prints the consequence:
-
-```
-CLD is missing 11 trading days starting 2024-05-13: 511 rows against 522 for ARB.
-```
-
-A gap is what makes "row 1 to row N" and "first date to last date" stop being the same
-question — which matters the moment a downstream tool takes the head and tail of a result.
-
-**A shock per instrument**, applied as extra return across `SHOCK_LENGTH = 3` consecutive
-days rather than as a single spike. A one-day spike leaves a rolling mean almost untouched
-and would flag nothing; a three-day run does not, which is the contrast script 06 measures.
-
-Weekends are never generated. That fact — zero Saturday and Sunday rows — is printed here
-and becomes the whole point of section 13.2.
-
-### 2.2 The truth table every later script is scored against
+*   Part 1 recomputes the reported utilisation ratio from the bed counts. 99 is a legal
+    percentage, so a clamp only shows when the ratio is computed another way:
 
 ```
-ticker  year   first date   last date        first     last   change %
-ARB     2024   2024-01-01   2024-12-31      137.45   150.60      9.57%
-CLD     2024   2024-01-01   2024-12-31       39.60    51.52     30.10%
-MRD     2024   2024-01-01   2024-12-31      101.90   131.46     29.01%
-SVN     2024   2024-01-01   2024-12-31       31.67    18.80    -40.64%
-```
-
-`SVN` at **−40.64%** is the largest absolute move of 2024. Script 04 asks a model exactly
-this question and scores its five answers against this table.
-
-### 2.3 Customers, with one relationship planted
-
-Holdings are drawn conditionally, and that conditioning is the entire signal an association
-rule can later recover:
-
-```python
-HOLDING_BASE = {"deposit": 0.93, "wealth": 0.34, "fund": 0.22, "insurance": 0.17}
-WEALTH_TO_FUND_MULTIPLIER = 2.6
-FUND_TO_INSURANCE_MULTIPLIER = 0.72
-```
-
-The run prints what that produces:
-
-```
-    P(fund | wealth)     0.5733
-    P(fund | not wealth) 0.2240
-    lift(wealth -> fund) 1.6734   <- the number an association rule should recover
-
-    rows in the table                 10000
-    distinct holding combinations     16
-    Those two numbers are what an analysis of this table has to choose between.
-```
-
-The last two lines are placed there on purpose. `10000` and `16` are both true descriptions
-of the same table, and section 11 is about which one a mining routine ends up counting.
-
-### 2.4 Two tables built to be joined wrongly
-
-`staff.csv` holds one row per employee; `staff_reviews.csv` holds one row per employee per
-quarter *worked*. The count is deliberately uneven — someone hired partway through has fewer
-reviews — and salary rises with years of service:
-
-```python
-"base_salary": np.round(
-    rng.normal(58_000 + 1_650 * years_of_service, 8_500, size=STAFF_ROWS), -2
-),
-```
-
-Those two facts together are what make a join at the wrong grain *shift an average* rather
-than merely duplicate rows. Without the correlation, a uniform duplication would leave every
-mean untouched and the demonstration would prove nothing.
-
-The unevenness is **not a gradient over tenure**, and it is worth being precise about that,
-because the obvious reading of the shift is wrong. The review table spans a fixed number of
-quarters, so tenure stops buying reviews once someone has been there for all of them:
-**421 of the 480 employees hold the full 8 reviews.** Only the 59 most recent hires hold
-fewer.
-
-### 2.5 A daily count and a running total in the same table
-
-The district table carries `new_cases` and `cumulative_cases` side by side, because that is
-what an upstream reporting system usually hands over. Only one of them can be added across
-rows. Nothing in the column names says which:
-
-```
-    sum of new_cases                             459,458
-    sum of per-district max(cumulative)          459,458
-    sum of cumulative_cases over all rows     90,522,763   (197.0x the truth)
-```
-
-The first two agree by construction — the running total is generated as the cumulative sum
-of the daily column — so their agreement here shows what a consistent pair looks like
-rather than testing one. The third figure agrees with neither.
-
-### 2.6 A clamped ratio and parts that do not sum
-
-```python
-"reported_utilization_pct": min(REPORTED_RATIO_CAP, round(true_ratio)),
-```
-
-and beds that are in the total but available to nobody:
-
-```
-    rows                                     3,000
-    rows reading exactly 99%                   184
-    rows where occupied + free < total       2,595
-```
-
-Note the order of operations in that one line: it **rounds first and clamps second**, so the
-184 rows reading 99 are two different populations. Only **95** of them were clamped; the
-other **89** have a true ratio above 98.5 and below 99.5 and merely round to 99 (Python rounds
-an exact half to the even neighbour, so 98.5 itself reads 98 and 99.5 reads 100). Section 4.1
-separates them.
-
----
-
-## 3. Join grain, and a total that agrees with nothing
-
-`02_join_grain_and_aggregation_audit.py`
-
-### 3.1 Grain is a count, not a column name
-
-Joining onto a master table keeps its grain only when the other table holds at most one row
-per key. The master side being unique is not enough — here it is, and the join below still
-multiplies. A one-to-many join is the right operation when review-level rows are what the
-question wants; the mistake is wanting employee-level answers from it. Reading the column
-names does not tell you which grain you have; counting does:
-
-```
-    staff master              480 rows     480 distinct staff_id    1.0 rows per key
-    quarterly reviews       3,608 rows     480 distinct staff_id    7.5 rows per key
-```
-
-### 3.2 The join that looks correct
-
-```python
-def naive_join(staff: pd.DataFrame, reviews: pd.DataFrame) -> pd.DataFrame:
-    return staff.merge(reviews, on="staff_id", how="left")
-```
-
-Nothing about this call is malformed. Pandas does exactly what it was asked: it pairs every
-left row with every matching right row.
-
-```
-    480 master rows joined to reviews -> 3,608 rows (7.5x)
-    No warning was raised. The result is a valid table, of the wrong thing.
-```
-
-### 3.3 What breaks, measured on a quantity with a known answer
-
-Average base salary is a property of the master table. It cannot depend on how many reviews
-someone happened to receive:
-
-```
-    mean base_salary, computed on each table:
-        staff master only            69,732.50
-        after the naive join         70,318.90
-        after narrow-then-join       69,732.50
-        after aggregate-then-join    69,732.50
-```
-
-**+586.40**, and the sign is not an accident — but the mechanism is not the one that first
-suggests itself. The average is weighted by each employee's review count, and that count is
-capped:
-
-```
-    421 of 480 employees have the full 8 reviews, averaging  70,930.40
-    the other 59 have fewer, averaging                       61,184.75
-```
-
-So the join does not *up*-weight long-serving staff — nearly everyone sits at the cap. It
-**down-weights the 59 recent hires**, who are also the ones paid least. Same sign, different
-cause, and only the second one survives being checked against the data.
-
-Headcount per department shows the same thing without any statistics at all — every
-department is inflated, and the total reads 3,608 where the answer is 480.
-
-### 3.4 Two fixes, and why the order matters
-
-```python
-def narrow_then_join(staff: pd.DataFrame, reviews: pd.DataFrame) -> pd.DataFrame:
-def aggregate_then_join(staff: pd.DataFrame, reviews: pd.DataFrame) -> pd.DataFrame:
-```
-
-Both return 480 rows. The choice between them is the question being asked — one period, or
-the whole period — not a matter of taste. What is not optional is that the narrowing happens
-*before* the join: filtering afterwards means the wrong-grain table already existed, and
-anything written out from it is wrong.
-
-### 3.5 The same total, three ways
-
-```
-    sum of new_cases                                   459,458
-    sum of per-district max(cumulative_cases)          459,458
-    sum of cumulative_cases across all rows         90,522,763    197.0x the truth
-```
-
-`sum` and `max` are both valid; both run; both return a number of a plausible magnitude.
-Which one is correct depends on **what one row means**, and that information lives in the
-column's semantics, not in its dtype.
-
-The reconciliation is the check that makes the first two trustworthy:
-
-```
-    districts where the daily column and the running total disagree: 0
-```
-
-In this dataset that 0 is guaranteed, not earned: script 01 builds `cumulative_cases` as
-the running sum of `new_cases`. It shows what a consistent pair looks like, and it is the
-check to run on a real upstream feed, where the two columns can drift apart — but here it
-cannot fail, so it proves nothing about either column beyond the construction.
-
-### 3.6 A wrong total that also reorders the answer
-
-A wrong total that only changed the scale would still rank the districts the same way, and a
-chart built on it would still point at the right places. This one does not:
-
-```
-        #   by sum(new_cases)        cases    by sum(cumulative)   true rank
-        1   Dunmore                 45,017    Thornbury                    2
-        2   Thornbury               41,939    Clifton Vale                 3
-        3   Clifton Vale            40,660    Dunmore                      1
-        ...
-    13 of 18 districts sit at a different rank under the two totals.
-```
-
-Adding a running total across rows weights a district by *how early its cases arrived*. An
-early outbreak outranks a larger late one, and the ranking is what a reader acts on.
-
----
-
-## 4. A ratio the source already reports, and a band that drops people
-
-`03_dashboard_metrics_and_cache.py`
-
-### 4.1 Recomputing a column that was handed to you
-
-A dashboard that reads `reported_utilization_pct` straight through has no way to notice that
-the upstream system clamps it. The clamp is invisible in isolation — 99 is a legal
-percentage. It shows up only when the ratio is recomputed from the two columns it was
-supposedly derived from:
-
-```
-    rows                                      3,000
     rows reporting exactly 99%                  184
     rows where the two ratios differ > 0.5       95
-
-    Among the rows reading 99%, the recomputed ratio runs from 98.5% to 100.0%.
-    Only 95 of those 184 were actually clamped (recomputed ratio rounds above 99);
-    the other 89 merely rounded up to it.
-```
-
-**Reading the cap value is not evidence of having been capped.** The upstream system rounds
-before it clamps, so a facility genuinely at 98.6% arrives as 99 alongside one that was cut
-down to it. Half the rows at the cap were never clamped at all, and separating the two is the
-whole of the check — a count of rows reading 99 would have overstated the damage by 94%.
-
-The aggregate barely moves — 77.13% reported against 77.17% recomputed — which is exactly
-why the aggregate is the wrong place to look. What the clamp does cost is **order**: the
-facilities past it land on the same value and stop being distinguishable from each other.
-
-### 4.2 Parts that do not reach the total
-
-```
-    total beds                              521,400
-    occupied + free                         504,643
-    difference                               16,757   = out_of_service_beds (16,757)
-```
-
-This is not a defect in the data; it is a fact about it that needs stating. But a tile
-reading "free beds" and a tile computed as "total minus occupied" answer different questions
-and differ by exactly that count:
-
-```
-    'free' tile computed as total - occupied   120,484
-    'free' tile read from the free column      103,727
-    A dashboard showing the first number overstates availability by 16,757 beds.
-```
-
-Neither figure is wrong. What is wrong is publishing one without saying which question it
-answers.
-
-### 4.3 A band list that reads as if it covers everyone
-
-```python
-AUM_BAND_EDGES = [0, 100_000, 500_000, 1_000_000]
-AUM_BAND_LABELS = ["Mass", "Affluent", "High net worth"]
-```
-
-`pd.cut` returns NaN for a value outside the outermost edges, and `value_counts()` drops NaN
-without comment:
-
-```
-    Mass                (0 , 100,000]                   1,010
-    Affluent            (100,000 , 500,000]             5,496
-    High net worth      (500,000 , 1,000,000]           2,218
-    sum of the bands                                    8,724
-    customers in the file                              10,000
-
-    customers in no band at all                  1,276
-        above the top edge                       1,276
-```
-
-The funnel adds up to less than the customer base, and **the shortfall is precisely the
-segment a wealth funnel exists to find.**
-
-The repair is an open top edge plus `include_lowest`, and then a check that the labels
-describe the ranges that actually landed under them:
-
-```
-    label                       count      min assets      max assets
-    Mass                        1,010          10,058          99,927
-    Affluent                    5,496         100,010         499,496
-    High net worth              2,218         500,048         999,933
-    Ultra high net worth        1,276       1,000,880       8,400,884
-    total                      10,000
-```
-
-A label is a claim about a range. Printing the observed range next to the name is what turns
-that claim into something checkable.
-
-**The general rule:** before any chart that groups by a category, print
-`df[col].value_counts()` and assert that the group sizes sum to the row count.
-
----
-
-## 5. Moving the work off the request path
-
-`03_dashboard_metrics_and_cache.py`, second half
-
-### 5.1 A cache that records what it was built from
-
-```python
-def source_fingerprint(paths: list) -> dict:
-    return {
-        str(path.name): {"size": path.stat().st_size, "mtime": path.stat().st_mtime}
-        for path in paths
-    }
-```
-
-Both the tiles and the fingerprint are written together. **A cache that stores results
-without recording what produced them can only answer "is there a cache", never "is it still
-valid".** Size and modification time are a cheap fingerprint, not a content check: an edit
-that kept the size and restored the timestamp would pass it, where a hash of the bytes would
-not.
-
-### 5.2 The ratio on its own is a weak argument
-
-```
-    compute all tiles from the CSV files              3.7 ms
-    load tiles from the cache                         0.1 ms
-    the cache answers the request 31x faster
-    Nothing got faster. The work moved off the request and onto a build step.
-```
-
-At three thousand rows the cold build is already cheap, so 31x proves very little. What
-matters is which side grows with the data, and the script measures that directly:
-
-```
-           3,000 bed rows -> cold build      3.4 ms   warm read    0.1 ms
-          30,000 bed rows -> cold build     11.0 ms   warm read    0.1 ms
-         120,000 bed rows -> cold build     34.3 ms   warm read    0.1 ms
-```
-
-The cold column grows with the row count, though not in proportion to it: forty times the
-rows took about ten times the time in this run (3.4 ms to 34.3 ms), since part of the build is
-fixed overhead. The warm column is not three measurements. It is the single read timed a step
-earlier, printed on every line — the cache holds the same nine finished tiles whatever the
-source size, so there is nothing about that read for the row count to change.
-
-### 5.3 Two rules that disagree the moment the source changes
-
-```
-    'a cache file exists' says fresh:        True
-    'the fingerprint still matches' says:    True
-
-    One row edited and written back to facility_beds.csv.
-    'a cache file exists' still says fresh:  True
-    'the fingerprint still matches' says:    False
-
-    mean utilization, stale cache  77.1712%
-    mean utilization, rebuilt      77.1388%
-```
-
-A service on the first rule would have served the stale figure with no error and no warning,
-because the file was there the whole time. The edit the script makes flips the first row
-between empty and full precisely so that it is a real change whatever the file currently
-holds — an edit that happened to be a no-op would leave the two figures identical and prove
-nothing. The source is restored and the cache rebuilt before the script exits, so a second
-run reports the same numbers.
-
----
-
-## 6. What a tool returns decides what a model can answer
-
-`04_tool_return_shapes.py`
-
-This is the only script in the module where a language model is the subject rather than a
-participant. One question, one query, five ways of packaging the result.
-
-### 6.1 The setup
-
-The query is correct SQL. It selects exactly the rows the question is about:
-
-```sql
-SELECT ticker, trade_date, close
-FROM daily_price
-WHERE trade_date LIKE '2024%'
-ORDER BY ticker, trade_date
-```
-
-1,037 rows across four instruments, sorted by ticker then date. The question is phrased to
-remove any ambiguity about what "moved the furthest" means:
-
-> Of the instruments in this data, which one moved the furthest over 2024 in percentage
-> terms, measured as the largest absolute percentage change? A fall counts as a move, so a
-> drop of 40 percent is a larger move than a rise of 30.
-
-### 6.2 Five shapes
-
-| Shape | What it is |
-| :--- | :--- |
-| `head(10)` | The preview a result viewer usually shows |
-| `head(5) + tail(5)` | The usual fix for the shape above |
-| `head(5) + tail(5) + describe()` | Summary statistics added on top |
-| first and last row per ticker | Rows chosen **per group** |
-| endpoints with change computed | The arithmetic moved into the tool |
-
-### 6.3 The result
-
-```
-    shape                               ticker  named right   claimed    truth    error
-    head(10)                               ARB           no     -3.80    +9.57    13.37
-    head(5) + tail(5)                      ARB           no     -4.35    +9.57    13.92
-    head(5) + tail(5) + describe()         ARB           no     -2.90    +9.57    12.47
-    first and last row per ticker          SVN          yes    -40.60   -40.64     0.04
-    endpoints with change computed         SVN          yes    -40.64   -40.64     0.00
-```
-
-In that run the split is sharp, and it is not about size:
-
-```
-    shape                               characters  named right
-    head(10)                                   455           no
-    head(5) + tail(5)                          455           no
-    head(5) + tail(5) + describe()             710           no
-    first and last row per ticker              379          yes
-    endpoints with change computed             527          yes
-```
-
-**The shape that answers the question is the smallest one.** What changed is that its rows
-were chosen per group rather than off the ends of a flat table.
-
-### 6.4 The middle shape is the interesting one
-
-`head(5) + tail(5)` looks like the strict improvement it is normally taken for: the digest
-now reaches both ends of the result. But the result is sorted by ticker first:
-
-```
-    head(10) covers tickers       : ['ARB']
-    head(5)+tail(5) covers tickers: ['ARB', 'SVN']
-```
-
-Both are ten rows. The second reaches two instruments and neither of them completely — the
-head is one instrument's January and the tail is a different instrument's December. The
-ticker column does name both; what the digest lacks is any instrument shown with both its
-first and its last close, so no instrument's move can be read off it.
-
-This is why the fix is worse than what it replaced. A later run printed each reply's stated
-basis:
-
-```
-    1. head(10)
-       says ARB       -3.80%   Only ARB data is provided, showing a decline from 137.45 to 132.23, ab
-    2. head(5) + tail(5)
-       says SVN       -0.63%   SVN's first close of 2024 (18.92) to last close (18.8) is a -0.63% mov
-    3. head(5) + tail(5) + describe()
-       says ARB      -86.30%   ARB fell from 137.45 to 18.8, a larger absolute move than any other in
-```
-
-With `head(10)` the reply says outright that it has only ARB. The two shapes that reach both
-ends do not: shape 2 takes a late-December SVN close as SVN's first close of the year, and
-shape 3 pairs ARB's first close with SVN's last one and reports the difference as ARB's move.
-Neither printed basis mentions that the data was partial.
-
-> **A repair that moves an error from visible to invisible is not an improvement.**
-> Judging a fix by whether the output looks right is what lets this through; judging it by
-> whether the *input* was right does not.
-
-### 6.5 Two notes on reading these numbers
-
-**The reply is non-deterministic at temperature 0, and not only in its numbers.** The later
-run scored:
-
-```
-    shape                               ticker  named right   claimed    truth    error
-    head(10)                               ARB           no     -3.80    +9.57    13.37
-    head(5) + tail(5)                      SVN          yes     -0.63   -40.64    40.01
-    head(5) + tail(5) + describe()         ARB           no    -86.30    +9.57    95.87
-    first and last row per ticker          SVN          yes    -40.64   -40.64     0.00
-    endpoints with change computed         SVN          yes    -40.64   -40.64     0.00
-```
-
-Shape 2 named the right instrument this time, with a change forty points off. So which
-instrument shapes 1–3 name is not stable across runs. What held in both recorded runs is
-narrower: only shapes 4 and 5 were right about the instrument **and** within 0.04 points on
-its change. Quote that, not a specific error and not the `named right` column on its own.
-
-**The scoring separates two questions.** `named right` asks whether the reply picked the
-instrument that actually moved most; `error` is measured against the truth for whichever
-instrument the reply *named*. A reply can therefore be precise about the wrong subject, or
-name the right subject with the wrong number — shape 2's `yes` beside an error of 40.01 is
-the second case. Shape 5's `0.00` is copied rather than computed: its table carries the same
-endpoint arithmetic the truth table uses.
-
----
-
-## 7. Choosing a chart from the wrong count
-
-`05_chart_criterion_and_index_alignment.py`
-
-### 7.1 Two rules, one threshold
-
-```python
-def by_row_count(frame: pd.DataFrame) -> str:
-    return "line" if len(frame) > ROW_THRESHOLD else "bar"
-
-def by_distinct_x(frame: pd.DataFrame, x_column: str) -> str:
-    return "line" if frame[x_column].nunique() > ROW_THRESHOLD else "bar"
-```
-
-The row rule is right about the thing it was tested on: a long single series should not be
-drawn as bars. It reads the row count as a stand-in for how many positions the axis needs,
-which is the same number **only while every row carries a distinct x value.**
-
-```
-    result                           rows   distinct dates  instruments
-    one instrument, one month          21               21            1
-    one instrument, one year          262              262            1
-    four instruments, ten days         40               10            4
-```
-
-```
-    result                           by row count   by distinct x   agree
-    one instrument, one month                line            line     yes
-    one instrument, one year                 line            line     yes
-    four instruments, ten days               line             bar      NO
-```
-
-Forty rows, ten dates. The row rule sees `40 > 20` and picks a line; the axis needs ten
-positions, and the same threshold applied to those picks a bar. That is the verdict of this
-script's own rule, not a claim that every ten-date result belongs in bars. Both pictures are
-drawn to `outputs/` by the same flat helper, which plots all forty rows by position — so the
-bar picture shows the other rule's choice, not a ten-position axis. The first rows of the
-frame show why the line zigzags:
-
-```
-trade_date ticker  close
-2024-03-01    ARB 139.15
-2024-03-01    CLD  47.75
-2024-03-01    MRD 106.21
-2024-03-01    SVN  29.67
-2024-03-04    ARB 139.26
 ```
-
-Consecutive positions are different instruments on the same date, not one instrument over
-time.
-
-### 7.2 Thinning has the same defect
-
-`np.linspace` over row positions is even over time only for one series:
-
-```
-    one instrument, one year         262 rows -> 10 points, covering 1 instrument(s) and 10 date(s)
-    four instruments, ten days        40 rows -> 10 points, covering 4 instrument(s) and 10 date(s)
-```
-
-On the interleaved result it walks across instruments while appearing to sample evenly.
-
-> **When a parameter's criterion is a row count, ask what one row represents.** Once that
-> meaning shifts with the query, the row count stops being a stable criterion.
-
-### 7.3 A column that arrives mostly populated and entirely misdated
-
-Every pandas operation preserves the index it was given. That is the behaviour that makes
-alignment work, and it is also the behaviour that misfiles a column when the two sides were
-never meant to line up.
-
-```
-    rows selected for the window         239
-    index of that selection runs      23 to 261
-    values in the moving average         220
-
-    new frame built from a list, index runs 0 to 238
-    index values the two sides share     216
-    values that arrived in the column    197 of 239
-```
-
-The partial overlap is the dangerous case. A total miss leaves an obviously empty column; a
-partial one leaves a column that looks fine:
-
-```
-    cells holding a value                       197
-    cells whose value belongs to another row    197
-
-    Take report row 42. It is labelled 2024-04-01 and holds 141.8560,
-    which is the average computed for 2024-02-28 — the row that carried
-    index 42 in the frame the average came from.
-```
-
-**Every populated cell holds another date's value.** No exception, no warning.
-
-Three attachments that work, all returning `220 of 239 arrived, 0 misplaced`. The count
-alone would not show that — step 6 had a count that looked fine — so each variant is also
-checked cell by cell against the average looked up by date. The same check on the step-6
-column reports all 197 filled cells misplaced, so it is a check that can fail. `.to_numpy()`
-is correct here only because the report was built from the window in the same row order;
-positional attachment is right exactly when position carries the same meaning on both sides.
-
-```python
-variants = {
-    ".to_numpy()": moving_average.to_numpy(),
-    ".reset_index(drop=True)": moving_average.reset_index(drop=True),
-    ".set_axis(report.index)": moving_average.set_axis(report.index),
-}
-```
-
-And the tell for the same problem in a concatenation:
-
-```
-    concat of a slice and a reindexed slice -> 6 rows, 9 empty cells
-    same concat after reset_index on both   -> 3 rows, 0 empty cells
-```
-
-Two three-row frames that stack into more than three rows never shared an index in the first
-place. **The row count is the check.**
-
----
-
-## 8. Control limits, and a rule set that is not a larger net
-
-`06_bollinger_and_spc_rules.py`
-
-### 8.1 A band that moves with the series
-
-```python
-frame["centre"] = frame["close"].rolling(WINDOW).mean()
-frame["spread"] = frame["close"].rolling(WINDOW).std()
-frame["upper"]  = frame["centre"] + BAND_SIGMA * frame["spread"]
-frame["lower"]  = frame["centre"] - BAND_SIGMA * frame["spread"]
-frame["sigmas"] = (frame["close"] - frame["centre"]) / frame["spread"]
-```
-
-The centre moves with the series, so the band asks whether today is unusual *against the
-recent past* rather than against the whole history. That is what makes it usable on a series
-that trends: a price can be at a two-year high and still be ordinary relative to last month.
-
-```
-    rows                                 522
-    rows with a full window behind them  503
-    flagged days     54   above 38   below 16
-    that is 10.7% of the days the band could judge
-```
-
-Ten percent, not five — and not because of fat tails. The generator draws daily returns from
-a normal distribution, and they measure as one (excess kurtosis 0.004, lag-1 autocorrelation
-of absolute returns −0.056). The 95% figure assumes each point is an independent draw around
-a fixed mean. A close is neither: it is the next step of a random walk, compared with a
-trailing twenty-day mean and spread that the walk keeps drifting away from.
-
-### 8.2 A flag reported without its numbers is unreadable
-
-```
-    The dearest day flagged as below the band closed at 126.51.
-    The cheapest day flagged as above it closed at 96.35.
-```
-
-Reported as date and price alone, those two rows contradict each other. With the centre line
-beside them they do not — each was judged against its own recent window, and the windows were
-at different levels. The script therefore prints all four numbers per flag:
-
-```
-    date         side       close   centre    upper    lower  sigmas
-    2023-02-27   above      97.67    96.24    97.63    94.85    2.06
-    2023-03-29   below      97.48   100.58   103.65    97.51   -2.02
-```
-
-**A relative measure reported without its baseline reads as an error.**
-
-### 8.3 Eight rules on a standardised series
-
-The band is a single-point rule at two sigma. Of the eight rules below, rule 1 is also
-single-point but at three sigma; the other seven look at runs or windows rather than single
-points. The series is standardised against its own band so all eight are stated on that one
-column:
-
-```
-    rule  description                                  days    share
-    1     one point beyond 3 sigma                        0     0.0%
-    2     nine in a row on one side of centre           230    45.7%
-    3     six in a row rising or falling                 48     9.5%
-    4     fourteen in a row alternating direction         0     0.0%
-    5     two of three beyond 2 sigma, same side         46     9.1%
-    6     four of five beyond 1 sigma, same side        173    34.4%
-    7     fifteen in a row inside 1 sigma                 4     0.8%
-    8     eight in a row all beyond 1 sigma              63    12.5%
-    any   flagged by at least one rule                  309    61.4%
-```
-
-### 8.4 Reading the share per rule is what makes the baseline visible
-
-Rules 2 and 6 count how long the series stays on one side of centre, and rule 8 how long it
-stays more than one sigma away from centre on either side. They were written for
-a process **held at a fixed target**. Here the centre is a 20-day mean that follows the
-series, and 61% of days sit above it, so a trend alone keeps those counters running.
-
-> Their high share is a property of the baseline they were given, not of anything unusual in
-> the data. Printing per-rule share is what surfaces that; a single "flagged / not flagged"
-> column would hide it.
-
-Rule 7 is the one worth remembering in general. Fifteen consecutive points inside one sigma
-looks like the best possible outcome, and it is improbable enough to be evidence of
-something: roughly `0.68^15`, under half a percent, if the points were independent — which,
-for the reason in 8.1, they are not here. **"Too good" is a signal too** — a
-score that never moves, a test suite that is always green, a metric pinned at 100% all
-deserve suspicion of the measurement before celebration of the result.
-
-### 8.5 Days are not events
-
-```
-    band rule            54 days ->   22 events, longest run 6 days
-    all eight rules     309 days ->   20 events, longest run 58 days
-```
-
-One excursion produces a flag on every day it lasts. Counting days answers a question about
-rows; counting events answers the question a person asked.
-
-### 8.6 A rule set catches different days, not more days
-
-```
-                            caught by the band   caught by the 8 rules
-    top 3 single-day moves              1 of 3                  0 of 3
-    top 3 three-day moves               3 of 3                  0 of 3
-```
-
-The band separates the two lists cleanly — sustained three-day displacement is caught, isolated
-one-day jumps mostly are not; it catches 4 of the 6 moves, and **2 of them never crossed it at
-all**. The six moves fall on five distinct days, because 2024-05-02 tops both lists. The eight
-rules touch neither list. Seven of them count runs or windows, so they need an excursion that
-lasts several days; a move that is large on one day and gone the next leaves those counters
-short, whether or not that day crossed the band. Rule 1 does look at single points, but at
-three sigma it is stricter than the band and fired on no day of the whole series.
-
-The script picks these moves by size, not from the generator's record of where the shock was
-planted. Checked against that record, the largest three-day move, 2024-02-15, is the last day
-of the shock script 01 planted in MRD (rows 291–293, 2024-02-13 to 2024-02-15): the band
-caught it, and no rule did.
-
-> **A rule set is not a strictly larger net than the rule it extends.** It catches different
-> days, and here it catches none of the six that the simpler rule was asked about.
-
----
-
-## 9. A label recovered from one column
-
-`07_label_leakage_and_importance_views.py`
-
-### 9.1 The label a project writes when the outcome has not happened yet
-
-```python
-growth = rng.uniform(GROWTH_LOW, GROWTH_HIGH, size=len(frame))
-frame["future_aum"] = frame[GENERATING_FEATURE] * growth
-frame["label"] = (frame["future_aum"] >= LABEL_THRESHOLD).astype(int)
-```
-
-Nothing here is careless in isolation. The growth factor is random, the threshold is a
-business rule, and the resulting rate looks reasonable:
-
-```
-    rows 10,000, positives 1,464 (0.1464)
-```
-
-What makes it unusable is that the only column feeding it is already a feature.
-
-### 9.2 One column and one comparison reproduce it
-
-```
-    best single threshold on total_aum   >= 942,865
-    accuracy of that one comparison        0.9864
-    accuracy of always answering 'no'      0.8536
-    AUC of the raw column, no model at all 0.9990
-    rows the growth factor can still decide 0.0572   (total_aum between 833,333 and 1,052,632)
-```
-
-The arithmetic is forced. Below `1,000,000 / 1.20` no row can reach the threshold; above
-`1,000,000 / 0.95` every row does. Only the band between them is decided by the random
-factor, and the script counts it: 5.72% of the table. **Whatever a model scores from here is
-mostly a measurement of that fact.**
-
-```
-    features 12, boosting rounds 200
-    held-out AUC       0.9987
-    held-out accuracy  0.9840
-    raw total_aum AUC on the same held-out rows 0.9989
-```
-
-The model scores slightly *below* the raw column. The 0.9990 above is over all 10,000 rows,
-so the comparison that counts is the one on the same 2,500 held-out rows: 0.9987 for twelve
-features and two hundred boosting rounds, 0.9989 for one column and no model.
-
-### 9.3 The result that is easiest to misread
-
-```
-    features 11
-    held-out AUC       0.9869   (-0.0119)
-    held-out accuracy  0.9520   (-0.0320)
-```
-
-A drop of one point sounds like a small leak. It is not a measurement of the leak at all:
-
-```
-        |corr(deposit_balance, total_aum)| = 0.893
-        |corr(monthly_txn_amount, total_aum)| = 0.657
-        |corr(fund_balance, total_aum)| = 0.471
-        |corr(monthly_txn_count, total_aum)| = 0.460
-```
-
-The balance columns were drawn from the same quantity the label was drawn from.
-
-> **Dropping one column cannot undo a label defined by that column while its proxies remain.**
-> The only repair is a label that comes from an observed outcome rather than from a feature
-> already in the table.
-
-### 9.4 The two lines the script prints, and a third that does not apply here
-
-The script prints two diagnostics before it trains anything:
-
-1. the positive rate;
-2. **the score reachable with the single strongest feature and one threshold**.
-
-The second is the cheaper of the two and catches the most. If one column and one comparison
-already reach an AUC of 0.99, the model is not the thing being measured.
-
-A third check belongs on this list in general and is deliberately absent here: **the entity
-overlap between train and test**. It matters whenever one entity contributes more than one
-row — a random row-level split then puts the same entity on both sides, and rows from one
-entity are correlated, so the held-out score is not held out. `train_test_split` gives no
-warning, and a grouped split is the repair.
-
-It does not apply to this table. `customers.csv` holds one row per customer — 10,000 rows,
-10,000 distinct ids — so a row split is an entity split. Which is worth knowing rather than
-assuming: **whether the check is needed is itself something to check**, and the answer is one
-`nunique()` away.
-
----
-
-## 10. Four rankings of the same features
-
-`07_label_leakage_and_importance_views.py`, second half
 
-Four measures, one fitted model, one held-out set:
+*   Rounding moves a ratio by at most 0.5, so the 95 rows that differ by more are the clamped
+    ones, each moved down by at most one point. The other 89 only rounded to 99. Counting rows
+    that read 99 would have overstated the damage by 94%. On this data the clamp is small:
+    the mean is 77.13% reported against 77.17% recomputed.
+*   Part 2 checks that the parts reach the total. Occupied plus free is 504,643 against
+    521,400 total beds, and the difference is exactly the 16,757 out-of-service beds. A free
+    beds tile computed as total minus occupied (120,484) and one read from the free column
+    (103,727) answer different questions. Neither is wrong; publishing one without saying
+    which question it answers is.
+*   Part 3 bands customers by assets with `pd.cut` on edges 0, 100,000, 500,000 and
+    1,000,000. A value outside the outermost edges becomes NaN, and `value_counts()` drops NaN
+    without comment. The three bands sum to 8,724 of 10,000 customers, and all 1,276 missing
+    ones sit above the top edge, the segment a wealth funnel exists to find.
+*   Part 4 repairs it with an open top band and prints the observed range under each label:
+
+| Label | Count | Min assets | Max assets |
+| :--- | ---: | ---: | ---: |
+| Mass | 1,010 | 10,058 | 99,927 |
+| Affluent | 5,496 | 100,010 | 499,496 |
+| High net worth | 2,218 | 500,048 | 999,933 |
+| Ultra high net worth | 1,276 | 1,000,880 | 8,400,884 |
+
+*   A label is a claim about a range, and the printed range makes it checkable. The code also
+    passes `include_lowest`, which would keep a balance of exactly 0 in Mass; this file has
+    none.
+*   Part 5 computes the nine tiles and writes them to a cache together with a fingerprint of
+    the source files (size and modification time). Without the fingerprint a cache can only
+    answer whether it exists, not whether it is still valid. Size and time are a cheap check,
+    not a content check: an edit that kept both would pass where a hash would not.
+*   Part 6 reads the tiles back. The cold build took 2.9 ms from tables already in memory and
+    the read 0.1 ms, but six runs gave ratios between 23x and 80x, so the ratio alone is weak.
+    What matters is which side grows with the data:
+
+| Bed rows | Cold build | Warm read |
+| ---: | ---: | ---: |
+| 3,000 | 2.3 ms | 0.1 ms |
+| 30,000 | 7.3 ms | 0.1 ms |
+| 120,000 | 25.0 ms | 0.1 ms |
+
+*   Forty times the rows took about eleven times the build. The warm column is the one read
+    timed earlier, printed on every line, because the cache holds the same nine tiles whatever
+    the source size. Nothing got faster; the work moved off the request.
+*   Part 7 edits one row of `facility_beds.csv`. "A cache file exists" still says fresh,
+    while "the fingerprint still matches" says stale, and the mean utilisation moves from
+    77.1712% in the stale cache to 77.1388% rebuilt. The edit flips the first row between
+    empty and full, so it is a real change whatever the file holds, and it runs inside
+    `try` and `finally`, so the source is restored and a second run prints the same numbers.
+
+## Script 04: What a tool returns decides what a model can answer
+
+*   Part 1 computes the answer from the database: the instrument with the largest absolute
+    percentage move over 2024 is SVN at -40.64%. Part 2 runs one correct query (every 2024
+    close, 1,037 rows, sorted by ticker then date) and packages the result five ways. Part 3
+    asks the model the same question against each shape, at temperature 0.
+*   The question removes any doubt about "moved the furthest": the largest absolute
+    percentage change, where a fall of 40 percent is a larger move than a rise of 30.
+*   Part 4 scores each reply against the truth table. Three runs on 2026-09-30 gave this
+    table every time:
+
+| Shape | Named | Right instrument | Claimed | Truth | Error | Characters |
+| :--- | :--- | :--- | ---: | ---: | ---: | ---: |
+| `head(10)` | ARB | no | -3.80 | +9.57 | 13.37 | 455 |
+| `head(5) + tail(5)` | SVN | yes | -0.63 | -40.64 | 40.01 | 455 |
+| `head(5) + tail(5) + describe()` | ARB | no | -86.30 | +9.57 | 95.87 | 710 |
+| first and last row per ticker | SVN | yes | -40.64 | -40.64 | 0.00 | 379 |
+| endpoints with change computed | SVN | yes | -40.64 | -40.64 | 0.00 | 527 |
+
+*   Only shapes 4 and 5 are right about the instrument and its move, and shape 4 is the
+    smallest. Its rows are chosen per group rather than off the ends of a flat table.
+*   The scoring asks two questions. "Right instrument" is whether the reply picked the one
+    that moved most. The error is measured against the truth for whichever instrument the
+    reply named. Shape 2 names SVN and is 40.01 points off, so that column alone proves
+    nothing. Shape 5's 0.00 is copied, not computed: its table carries the same endpoint
+    arithmetic the truth table uses.
+*   Part 5 parses the two ten-row shapes and checks them against the truth table's first and
+    last dates. `head(10)` reaches only ARB; `head(5) + tail(5)` reaches ARB and SVN. Neither
+    holds any instrument's first and last close together, because the head is ARB's first
+    week and the tail SVN's last.
+*   The replies show what the model did instead. With `head(10)` it says outright that it
+    has only ARB. Shape 2 takes a late-December SVN close as SVN's first close of the year,
+    and shape 3 pairs ARB's first close with SVN's last and reports the gap as ARB's move.
+    Neither mentions that the data was partial. The fix that reaches both ends removed the
+    warning without making the number more trustworthy.
+*   Which instrument shapes 1 to 3 name is not stable across runs, even at temperature 0. An
+    earlier recorded run named ARB for all three, with errors of 13.37, 13.92 and 12.47, and
+    shape 4 claimed -40.60. What held in every recorded run is narrower: only shapes 4 and 5
+    were right about the instrument and within 0.04 points on its move.
+
+## Script 05: A chart criterion on the wrong count, and index alignment
+
+*   Parts 1 and 2 give a chart helper three results and two rules with the same threshold of
+    20. One picks a line when there are more than 20 rows, the other when there are more than
+    20 distinct x values. The row count stands in for the axis positions only while every row
+    carries its own x value:
+
+| Result | Rows | Distinct dates | Instruments | By row count | By distinct x |
+| :--- | ---: | ---: | ---: | :--- | :--- |
+| one instrument, one month | 21 | 21 | 1 | line | line |
+| one instrument, one year | 262 | 262 | 1 | line | line |
+| four instruments, ten days | 40 | 10 | 4 | line | bar |
+
+*   Forty rows over ten dates: the row rule sees 40 and picks a line, and the same threshold
+    on the ten positions picks a bar. That is the verdict of this script's own rule, not a
+    claim that every ten-date result belongs in bars. Consecutive rows are different
+    instruments on the same date, so the line zigzags.
+*   Part 3 draws both pictures to `outputs/` with the same flat helper, and says that both
+    plot all 40 rows by position, so the bar picture shows the other rule's choice, not 10
+    date positions.
+*   Part 4 thins each result to 10 points with `np.linspace` over row positions. On the
+    interleaved result the points fall one per date, but they come from four series in the
+    order ARB, ARB, ARB, CLD, CLD, CLD, MRD, MRD, MRD, SVN. The points switch instrument 3
+    times, and the close drops from about 140 to about 49 where ARB hands over to CLD.
+*   Part 5 attaches a 20-day moving average to a report frame. The date filter keeps 239 rows
+    whose index runs 23 to 261, and the average has 220 values. The report is built from a
+    list, so its index runs 0 to 238. Assignment matches the index, not the row order: the two
+    sides share 216 index values and 197 of 239 cells arrive. All 197 hold another row's
+    value. Report row 42, dated 2024-04-01, holds 141.8560, the average for 2024-02-28, the
+    row that carried index 42 in the source frame. A total miss would leave an empty column;
+    a partial overlap leaves one that looks fine.
+*   Part 6 attaches the same average three ways that work (`.to_numpy()`,
+    `.reset_index(drop=True)`, `.set_axis(report.index)`). Each gives 220 of 239 arrived and
+    0 misplaced, checked cell by cell against the average looked up by date. The same check
+    reports all 197 of Part 5's cells misplaced, so it can fail. Positional attachment is
+    right here only because the report was built from the window in the same row order.
+*   Part 6 also stacks two three-row frames. With mismatched indexes `concat` gives 6 rows
+    and 9 empty cells; after `reset_index` on both it gives 3 rows and 0. Two three-row
+    frames that stack into more than three rows never shared an index.
+
+## Script 06: A rolling band and eight control rules
+
+*   Part 1 builds a Bollinger band on MRD: a 20-day rolling mean as centre, plus and minus
+    two rolling standard deviations. The centre moves with the series, so the band asks
+    whether today is unusual against the recent past. That is what makes it usable on a
+    series that trends.
+*   Part 2 counts the flags. Of 522 rows, 503 have a full window behind them, and 54 of those
+    fall outside the band (38 above, 16 below), 10.7% rather than 5%. The returns are not fat
+    tailed: they measure as normal (excess kurtosis 0.004, lag-1 autocorrelation of absolute
+    returns -0.056). The 95% figure assumes independent draws around a fixed mean, and a
+    close is the next step of a random walk compared with a trailing mean and spread.
+*   Part 3 prints each flag with its centre, bounds and distance in sigmas, then the two rows
+    that look contradictory as date and price alone:
+
+| Date | Side | Close | Centre | Upper | Lower | Sigmas |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| 2024-11-07 | below | 126.51 | 130.42 | 134.02 | 126.82 | -2.17 |
+| 2023-06-01 | above | 96.35 | 94.06 | 95.81 | 92.30 | 2.62 |
+
+*   The dearer close is flagged low and the cheaper one high. With the centre beside them
+    there is no contradiction: each was judged against its own window.
+*   Part 4 standardises the series against its band and applies the eight Nelson rules. Rule
+    1 is single-point at three sigma; the other seven look at runs or windows.
+
+| Rule | Description | Days | Share |
+| :--- | :--- | ---: | ---: |
+| 1 | one point beyond 3 sigma | 0 | 0.0% |
+| 2 | nine in a row on one side of centre | 230 | 45.7% |
+| 3 | six in a row rising or falling | 48 | 9.5% |
+| 4 | fourteen in a row alternating | 0 | 0.0% |
+| 5 | two of three beyond 2 sigma, same side | 46 | 9.1% |
+| 6 | four of five beyond 1 sigma, same side | 173 | 34.4% |
+| 7 | fifteen in a row inside 1 sigma | 4 | 0.8% |
+| 8 | eight in a row beyond 1 sigma, both sides | 0 | 0.0% |
+| any | at least one rule | 309 | 61.4% |
+
+*   Rules 2 and 6 were written for a process held at a fixed target. Here the centre is a
+    mean that follows the series and 61% of days sit above it, so a trend alone keeps those
+    counters running. The per-rule share shows that; a single flagged column would hide it.
+*   Rule 8 needs its eight points on both sides of centre. Without that condition it flagged
+    63 days, every one already flagged by another rule.
+*   Rule 7 flags a series that is too quiet. Fifteen points inside one sigma would have a
+    probability of about 0.68 to the 15th, under half a percent, if the points were
+    independent, which here they are not.
+*   Part 5 merges consecutive flagged days into events. The band's 54 days form 22 events
+    (mean run 2.5 days, longest 6). The eight rules' 309 days form 20 events (mean 15.4,
+    longest 58). A count of days says how long the series stayed unusual; a count of events
+    says how often it became so.
+*   Part 6 ranks the largest one-day and three-day moves, only on the 503 days the band can
+    judge. The largest one-day move of the series, 2023-01-06, falls on row 5, before the
+    first full window.
+
+| List | Date | Move | Band | Rules that day | Next 3 days |
+| :--- | :--- | ---: | :--- | :--- | :--- |
+| one day | 2024-08-01 | 2.91% | inside | none | none |
+| one day | 2024-05-02 | 2.83% | outside | none | +1: 5 |
+| one day | 2024-02-13 | 2.81% | inside | none | none |
+| three days | 2024-02-15 | 5.90% | outside | none | +2: 5, 6 |
+| three days | 2024-05-02 | 5.22% | outside | none | +1: 5 |
+| three days | 2024-12-13 | 5.08% | outside | none | +1: 5 |
+
+*   The band catches 4 of the 6 moves, on 5 distinct days. The eight rules fire on none of
+    the 5 days, and after 3 of them they fire within 3 days. Rule 1 is stricter than the band
+    and fired on no day of the series; the other seven report an excursion once it has
+    lasted. A rule set catches different days, and on the largest moves it answers later.
+*   Rows 291 to 293 (2024-02-13 to 2024-02-15) are the shock 01 planted in MRD. Its first day
+    is the one-day move the band left inside; its last is the largest three-day move, caught
+    by the band that day and by rules 5 and 6 two days later.
+
+## Script 07: A label recovered from one column, and four importance rankings
+
+*   Part 1 builds the label the way a project does when the outcome has not happened yet:
+    `future_aum` is `total_aum` times a random growth factor between 0.95 and 1.20, and the
+    label is `future_aum >= 1,000,000`. The positive rate is 0.1464. The only column feeding
+    the label is already a feature, which is target leakage.
+*   Part 2 recovers the label with one threshold on `total_aum`:
+
+| Check | Value |
+| :--- | ---: |
+| best threshold on `total_aum` | >= 942,865 |
+| accuracy of that one comparison | 0.9864 |
+| accuracy of always answering no | 0.8536 |
+| AUC of the raw column, no model | 0.9990 |
+| rows the growth factor can still decide | 0.0572 |
+
+*   Below 1,000,000 / 1.20 no row can reach the threshold, and above 1,000,000 / 0.95 every
+    row does. Only the band between them, 5.72% of the table, is left to chance.
+*   Part 3 trains LightGBM on 12 features for 200 rounds: held-out AUC 0.9987 and accuracy
+    0.9840. The raw column scores 0.9989 on the same 2,500 held-out rows, so the model is
+    slightly below one column and no model.
+*   Part 4 drops `total_aum`. AUC falls to 0.9869 (-0.0119) and accuracy to 0.9520, an error
+    rate going from 1.60% to 4.80%. The small AUC drop does not mean the leak is gone: 01
+    draws the balance and transaction columns from `total_aum` (correlations 0.893 for
+    deposits, 0.657 for monthly transaction amount), and they stay in the table. Only a label
+    from an observed outcome repairs it.
+*   Parts 5 and 6 rank the features of each model four ways:
 
 | Measure | What it counts | Measured on |
 | :--- | :--- | :--- |
 | split | how often the column was cut on | training |
 | gain | how much those cuts improved the objective | training |
-| permutation | what breaks when the column is shuffled | **held-out** |
-| contribution | how far the column moved individual predictions | **held-out** |
+| permutation | the AUC drop when the column is shuffled, 5 repeats | held-out |
+| contribution | mean absolute SHAP value from LightGBM's `pred_contrib` | held-out |
+
+*   `age` is the control. 01 draws it on its own, so any rank it earns is noise. In Part 5
+    it ranks split 3, gain 4, permutation 4 and contribution 4; in Part 6 split 3, gain 4,
+    permutation 11 and contribution 7. Contribution is measured on held-out rows, but it
+    follows what the model uses, not whether that helps.
+*   Part 5 prints the permutation standard deviation. With `total_aum` in the model, only 3
+    of 12 permutation means clear twice their sd, so ranks 2 to 12 are an order among noise.
+    Without it, 9 of 11 do.
+
+| Rank correlation | Part 5 | Part 6 |
+| :--- | ---: | ---: |
+| split and gain | 0.99 | 0.84 |
+| split and permutation | 0.55 | 0.36 |
+| gain and permutation | 0.58 | 0.64 |
+| contribution and permutation | 0.69 | 0.80 |
+
+*   In Part 6 split even picks a different first place (`monthly_txn_amount`, against
+    `deposit_balance` for the other three). A continuous column offers many cut points and
+    collects splits whether or not they help: `age`, with 54 values, ranks third by split in
+    both models. Split and gain describe the fit, not the data.
+*   The permutation measure needs a scikit-learn estimator, so the booster is wrapped in a
+    class inheriting `ClassifierMixin, BaseEstimator`, the mixin first so its classifier tag
+    wins. Current scikit-learn checks estimator tags before it scores anything.
+
+## Script 08: The sample unit decides the answer
+
+*   Support, confidence and lift are proportions, and the question is what they are
+    proportions of. The script counts every combination of up to three of four products,
+    with `MIN_SUPPORT = 0.05` and `MIN_CONFIDENCE = 0.30`.
+*   Part 1 builds one basket per customer: 10,000 baskets, and all 16 possible combinations
+    occur. Part 2 mines them; wealth to fund has support 0.1947, confidence 0.5733 and lift
+    1.6734.
+*   Part 3 drops duplicate baskets. 10,000 rows collapse to 16, which still hold every
+    combination but no longer how many customers each stands for. Every product then has
+    support exactly 0.5, every pair 0.25 and every rule lift 1.0000. With each combination
+    present once, every product is in half of them and every pair in a quarter, so
+    independence holds by construction whatever the customers did.
+*   Part 4 groups the baskets and keeps the count as a weight: 16 rows carrying 10,000
+    customers, the largest group 3,875 and the smallest 11. The rules are identical to Part
+    2's, checked rule by rule on support, confidence and lift. The same check between Part 2
+    and Part 3 returns False (12 rules against 24), so it can fail. Deduplicating was not the
+    problem; discarding the count was.
+*   Part 5 puts the three units side by side. Lift ranges over 0.6716 per customer and 0.0000
+    per combination.
+*   Part 6 checks the planted pair against 01's probabilities:
+
+| Quantity | Measured | Drawn at |
+| :--- | ---: | ---: |
+| P(fund given wealth) | 0.5733 | 0.5720 |
+| P(fund given no wealth) | 0.2240 | 0.2200 |
+| lift of wealth to fund, direct count | 1.6734 | |
+| lift of the mined rule | 1.6734 | |
+| lift in the deduplicated table | 1.0000 | |
+
+*   01 sets probabilities, not a lift, so the lift is measured on the draw. The highest mined
+    lift, deposit and fund to wealth at 1.6748, is only 0.0013 above the planted pair, because
+    01 draws deposit on its own. 01 also lowers insurance among fund holders (lift 0.7887),
+    but that pair's support is 0.0438, below the minimum, so it never reaches the rule table.
+
+## Script 09: A cohort is not a time series
+
+*   Part 1 groups customers by the month they opened their account: 72 points from 2019-01
+    to 2024-12, one mean per month, no gaps. That is the shape a forecasting library accepts.
+*   Part 2 counts the customers two neighbouring months share: 0 of 71 pairs share any.
+    Each customer has one open date, so this is 0 by construction. Part 3 loads MRD's daily
+    closes for contrast, 522 points in which every neighbour is the same instrument because
+    the query filters on it.
+*   A line between two points asserts that something moved from one value to the other, and
+    that needs both points to be about the same thing. The zero shows these months are
+    different customers. It does not show that every aggregate with changing members lacks
+    temporal structure.
+*   Part 4 runs a shuffle test, a form of permutation test that needs no identity column: fit
+    ARIMA(1,1,1) to the values as given and to 30 random orders, and compare the errors. The
+    order is fixed, so a shuffled fit differs only in the data.
+
+| Series | Error as given | Shuffled mean | Ratio | Shuffles as good |
+| :--- | ---: | ---: | ---: | ---: |
+| cohort by join month | 55,116.27 | 54,864.61 | 1.00 | 16 of 30 |
+| MRD daily close | 0.83 | 9.35 | 11.29 | 0 of 30 |
+
+*   01 builds each close on the one before, so order is part of the data. 01 draws each
+    customer's assets without regard to the join month, so there is no order to find. This is
+    a statement about ARIMA(1,1,1) on this series, not a proof that no model could find one.
+*   Part 5 fits Prophet to the daily series. There are no weekend rows in training; the only
+    four come from the 14 forecast days after the data. The weekly term is still defined at
+    all seven days:
+
+| Day | Training rows | Weekly term |
+| :--- | ---: | ---: |
+| Mon | 105 | 1.3361 |
+| Tue | 105 | 1.3462 |
+| Wed | 104 | 1.2234 |
+| Thu | 104 | 1.3154 |
+| Fri | 104 | 1.3871 |
+| Sat | 0 | -3.3041 |
+| Sun | 0 | -3.3041 |
+
+*   The seven values sum to 0.0000, so Saturday and Sunday take what the weekdays leave: the
+    weekdays add up to 6.6082 and the weekend to -6.6082. No weekend row stands behind
+    -3.3041. The weekdays are no better. 01 plants no weekly pattern, so their spread of
+    0.1637 is noise.
+*   Part 6 fits the yearly term on the first year and on both. One year (260 rows, 361 days)
+    gives a curve with a range of 7.92; two years (522 rows, 729 days) give 11.27, and the two
+    curves correlate at +0.4937. 01 draws MRD as a random walk with no yearly pattern, so both
+    curves describe noise and trend, and more data made the invented season wider.
+*   Prophet warns three times that yearly seasonality is enabled with less than 730 days of
+    history: once for Part 5 and once for each fit here. The two-year span is 729 days, so by
+    the library's own rule even the longer fit is short. The span is not in the plot; it has
+    to be printed.
+
+## Script 10: Hybrid retrieval, fusion and a limit in the wrong unit
+
+*   Part 1 chunks eight short policy documents written into the script into windows of 60
+    words overlapping by 15: 15 chunks of 101 to 437 characters, about 1,011 estimated tokens
+    in all. Every question names its source document, so retrieval is scored, not judged. The
+    overlap keeps a sentence at a boundary whole only if at most 15 of its words fall before
+    the boundary; 3 of the 35 sentences are whole in no window, none of them one a question
+    asks about.
+*   Part 2 builds a BM25 keyword index and a vector index (`gemini-embedding-001` at 768
+    dimensions) over the same chunks, so the only variable is the scoring. Truncated
+    embeddings are not unit length, so cosine is taken explicitly. It fuses the two rankings
+    two ways. Reciprocal rank fusion (RRF) adds 1 / (60 + rank) from each backend. The
+    weighted fusion rescales each backend's scores to 0 to 1 per question and adds them with
+    a keyword weight of 0.5. Raw scores cannot be added: BM25 has no upper bound, and the
+    cosine scores here sit between about 0.46 and 0.75.
+*   Part 3 sends the five questions through all four backends, top 3:
+
+| Question | Kind | Keyword | Vector | RRF | Weighted |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| What does Clause 7.3 cover? | exact term | 1 | 1 | 1 | 1 |
+| What is the aggregate limit under Clause 4.1? | exact term | 1 | 2 | 2 | 2 |
+| Someone stole my suitcase at the airport. Am I covered? | paraphrase | missed | 1 | missed | missed |
+| I got sick on holiday and had to be flown home. Who pays? | paraphrase | 3 | 1 | 2 | 2 |
+| How long does the insurer have to decide on my claim? | paraphrase | 2 | 1 | 1 | 1 |
+
+*   The vector backend finds everything the keyword backend finds, so fusion has no hit to
+    add; it can only pull one down. On the suitcase question the keyword backend ranks the
+    right chunk 12th of 15, which drags it out of both fused top 3s. Fusion adds a hit only
+    when each backend finds what the other misses.
+*   The weighted result depends on the weight. A trial with keyword weights of 0.3, 0.5 and
+    0.7 kept the suitcase question only at 0.3, which lost the first place on Clause 4.1.
+    Choosing the weight on these five questions would be tuning on the test set. Three trial
+    corpora with near-identical schedules that differ only in a reference code also failed to
+    give the keyword side a win, so the script keeps the original corpus.
+*   Part 4 cuts the vector backend's top 8 for each question to three chunks and to a budget
+    of 220 estimated tokens (characters divided by 4, not a tokenizer count):
+
+| Question | Fixed count: chunks | Tokens | Budget: chunks | Tokens |
+| :--- | ---: | ---: | ---: | ---: |
+| What does Clause 7.3 cover? | 3 | 215 | 3 | 215 |
+| What is the aggregate limit under Clause 4.1? | 3 | 220 | 3 | 220 |
+| Someone stole my suitcase at the airport. Am I covered? | 3 | 186 | 3 | 186 |
+| I got sick on holiday and had to be flown home. Who pays? | 3 | 243 | 2 | 209 |
+| How long does the insurer have to decide on my claim? | 3 | 182 | 4 | 213 |
+
+*   The budget never passes 220 and varies between two and four chunks; the fixed count
+    reaches 243. Three chunks cost whatever those three hold, so a count does not track the
+    unit a context window limits. The budget loop stops before the first chunk that would
+    exceed it but always keeps one, so a first chunk larger than the budget is kept whole.
+    No chunk here is that large.
+*   Part 5 answers each question from the keyword and the vector backend, using each one's
+    top 3 from Part 3 trimmed by the same budget, so the context never holds more than 3
+    chunks. It prints one extra line when a backend retrieved the expected source and still
+    declined: the vector backend on the suitcase question, the same in three separate calls.
+    The clause covers checked baggage in a carrier's custody, and the question does not say
+    where the suitcase was, so the refusal may be defensible. It is a decision at the answer
+    layer that no change to retrieval reaches.
+*   Part 6 takes the first question a backend missed and goes down one layer at a time:
 
 ```
-    feature                 split   gain   perm  contrib     gain value   perm value
-    total_aum                   1      1      1        1         30,916      0.30597
-    monthly_txn_amount          2      2      3        2            433      0.00016
-    deposit_balance             4      3      5        3            383      0.00004
-    age                         3      4      4        4            347      0.00013
-    ...
-    features whose rank is not the same under all four measures: 11 of 12
-```
-
-With the generating column removed the disagreement is total, and the four measures no longer
-even agree on first place:
-
-```
-    features whose rank is not the same under all four measures: 11 of 11
-        ranked first by split         monthly_txn_amount
-        ranked first by gain          deposit_balance
-        ranked first by permutation   deposit_balance
-        ranked first by contribution  deposit_balance
-```
-
-**Split is the one that dissents, and it dissents for a structural reason.** A continuous
-column offers many places to cut and collects splits whether or not they helped; a
-low-cardinality column can be cut once, but that one cut can be decisive. Split count is
-therefore partly a measure of cardinality.
-
-⇒ Do not present split count as feature importance. Use gain, or one of the two measured on
-held-out rows — and note that only those two answer the question a reader thinks the chart
-is answering.
-
-Two implementation details worth naming, because both are version-sensitive:
-
-- The permutation measure needs a scikit-learn estimator, so the fitted booster is wrapped in
-  a small facade inheriting `ClassifierMixin, BaseEstimator` — the mixin first, so its
-  classifier tag wins. Current scikit-learn inspects estimator tags before it will score
-  anything, and a bare duck-typed object is rejected.
-- The contribution column uses SHAP when it is importable and falls back to the booster's own
-  `pred_contrib` output otherwise. Both decompose a prediction into one number per feature
-  plus a baseline, so the ranking is the same object either way.
-
----
-
-## 11. The sample unit decides the answer
-
-`08_association_rules_sample_unit.py`
-
-Support, confidence and lift are proportions. **Of what** is the entire question.
-
-### 11.1 The correct unit: one basket per customer
-
-```python
-PRODUCTS = {
-    "deposit": "deposit_balance",
-    "wealth": "wealth_balance",
-    "fund": "fund_balance",
-    "insurance": "insurance_balance",
-}
-MIN_SUPPORT = 0.05
-MIN_CONFIDENCE = 0.30
-MAX_ITEMSET_SIZE = 3
-```
-
-```
-    baskets                  10,000
-        holds deposit       0.9311
-        holds wealth        0.3396
-        holds fund          0.3426
-        holds insurance     0.1621
-
-    distinct combinations        16  out of 16 possible
-```
-
-Every one of the sixteen possible combinations occurs. That is what makes the next section
-possible, and it is printed here so the reader sees it coming.
-
-```
-        rule                                     support   confidence     lift
-        deposit + fund -> wealth                  0.1820       0.5687   1.6748
-        ...
-        fund -> wealth                            0.1947       0.5683   1.6734
-        wealth -> fund                            0.1947       0.5733   1.6734
-```
-
-### 11.2 One line, and the answer becomes arithmetic
-
-```python
-distinct = baskets.drop_duplicates()
-```
-
-```
-    10,000 rows collapse to 16 rows.
-    The table still holds every combination that occurs. What it no longer
-    holds is how many customers each combination stands for.
-```
-
-```
-        itemset                             size     support
-        deposit                                1    0.500000
-        wealth                                 1    0.500000
-        fund                                   1    0.500000
-        insurance                              1    0.500000
-        deposit + wealth                       2    0.250000
-        ...
-        rule                                     support   confidence     lift
-        deposit -> wealth                         0.2500       0.5000   1.0000
-        ...(every rule, 1.0000)
-```
-
-**Exactly 0.5, exactly 0.25, exactly 1.0 — and it has to be.** With all sixteen combinations
-present once each, every product is in half of them and every pair in a quarter, so
-`P(A∩B) = P(A)·P(B)` holds identically and lift is one by construction.
-
-> The deduplicated table is independent **by construction**. That result would be identical
-> whatever the customers actually did.
-
-### 11.3 The repair is not "stop deduplicating"
-
-```
-    16 rows carrying a customer count each, 10,000 customers in total
-    largest group 3,875 customers, smallest 11
-    rules identical to the one-row-per-customer result: True
-```
-
-Group and keep the count as a weight, and the collapsed table reproduces the full result
-exactly. "Identical" is checked rule by rule: the two rule sets are paired on antecedent and
-consequent, every rule must appear in both, and support, confidence and lift must each agree.
-The same check between the per-customer rules and the deduplicated ones returns `False` —
-12 rules against 24 — so it is a check that can fail. **The unit was never the problem; discarding the multiplicity was.**
-
-### 11.4 Scored against the lift measured directly on the generated baskets
-
-```
-    P(fund | wealth)      0.5733
-    P(fund | not wealth)  0.2240
-    lift(wealth -> fund)  1.6734
-    the mined rule reports  1.6734   (match: True)
-    the deduplicated table reports 1.0000
-```
-
-Script 01 prints `lift(wealth -> fund) 1.6734`, measured on the table it generated. The
-generator's own parameter is not a lift: it is `WEALTH_TO_FUND_MULTIPLIER = 2.6` on the fund
-probability, and 1.6734 is the lift that multiplier produced in this draw. Both scripts
-compute it from the same 10,000 baskets, so the match checks the mining code rather than
-the data. The rule checked is the planted pair, not the highest lift — that is
-`deposit + fund -> wealth` at 1.6748. Recovering it is what tells you the mining worked. **Failing to recover it is what the
-deduplicated run should have shown, and instead it reported a clean, plausible, entirely
-manufactured 1.0000.**
-
-### 11.5 The tell
-
-```
-    lift ranges over 0.6716 per customer and 0.0000 per combination
-```
-
-> **Supports landing on exact powers of two, or every lift equal to 1.0, are not evidence
-> that the data has no structure. Count the rows going in.** One print before mining and one
-> after is the whole check.
-
----
-
-## 12. A cohort is not a time series
-
-`09_cohort_is_not_a_time_series.py`
-
-### 12.1 A series that passes every shape check
-
-```python
-customers["cohort"] = customers["account_open_date"].dt.to_period("M")
-grouped = customers.groupby("cohort")
-```
-
-```
-    points 72, running 2019-01 to 2024-12
-    period      customers    mean assets
-    2019-01           135        547,623
-    2019-02           128        434,737
-    2019-03           128        567,743
-```
-
-Dates on the x axis, one value per month, no gaps. This is the shape a forecasting library
-accepts, which is exactly why the question of whether it *should* be forecast never gets
-asked.
-
-### 12.2 The question the chart hides
-
-```
-    mean share of a month's customers who also appear in the next month: 0.0000
-    highest such share across all 71 pairs: 0.0000
-```
-
-Against a genuine series:
-
-```
-    points 522, running 2023-01-02 to 2024-12-31
-    every point is the same instrument, MRD, so the share of one point's
-    subject that appears in the next is 1 by construction of the query.
-```
-
-A line drawn between two points asserts that something moved from one value to the other.
-That assertion needs the two points to be about the same thing. **Zero and one is the whole
-argument** — the zero measured across 71 pairs of cohorts, the one true by definition for a
-query on a single instrument. A zero here shows these monthly points are different customers;
-it does not show that every aggregate whose members change lacks temporal structure.
-
-### 12.3 The shuffle test
-
-The overlap check needs an identity column. When there is not one, there is a test that
-needs nothing but the numbers: refit the same model to the same values in random orders.
-
-```python
-ARIMA_ORDER = (1, 1, 1)
-SHUFFLE_TRIALS = 30
-```
-
-```
-    series                    error as given   shuffled mean    ratio  shuffles as good
-    cohort by join month           55,116.27       54,864.61     1.00          16 of 30
-    MRD daily close                     0.83            9.35    11.29           0 of 30
-```
-
-If order carries information, destroying it should make the fit worse. On the daily series it
-does, by a factor of eleven, and not one of thirty shuffles matches the real ordering. On the
-cohort series the shuffled fits land in the same place and **sixteen of thirty do at least as
-well as the real one** — this fixed-order model was never reading time out of it. It was
-describing the spread of seventy-two group means, and any permutation shares that spread.
-That is a statement about ARIMA(1,1,1) on this series, not a proof that no model could find
-structure in the order of cohort vintages; it is the question of whether consecutive points
-are one subject changing over time that the overlap in 12.2 answers.
-
-The order is fixed rather than searched deliberately: holding it constant is what makes this a
-comparison of the data rather than of two different models.
-
-> `groupby` keys divide into *observation time* and *entity attribute time*. An opening date,
-> a birth date, a registration date are attributes. Grouping by them produces cohort analysis;
-> forecasting the result extrapolates group means and means nothing.
-
----
-
-## 13. Two terms with no data under them
-
-`09_cohort_is_not_a_time_series.py`, second half
-
-### 13.1 An additive decomposition on the daily series
-
-The market never trades at the weekend, and script 01 never generated those rows. The weekly
-term is still defined there:
-
-```
-    day     training rows   weekly term
-    Mon               105        1.3361
-    Tue               105        1.3462
-    Wed               104        1.2234
-    Thu               104        1.3154
-    Fri               104        1.3871
-    Sat                 0       -3.3041
-    Sun                 0       -3.3041
-
-    weekend training rows 0, weekend weekly term 6.6082
-```
-
-The weekly term is a periodic function fitted at five of seven positions and then evaluated
-at all seven. Friday and the following Monday have to be joined up, and the curve between
-them takes whatever value smoothness dictates. **−3.3041 is the shape of the curve, not a
-property of the data.**
-
-The weekday fit shapes that curve, so the weekend values are not unconstrained — but no
-weekend observation constrains them directly, and nothing in the component plot marks them. A
-reader who takes the chart at face value concludes that weekends behave differently, which is
-true only in the sense that they do not exist.
-
-### 13.2 One pass through the calendar cannot identify a yearly term
-
-```
-    one year of data     rows   260   span 361 days (0.99 years)   term ranges     7.92
-    two years of data    rows   522   span 729 days (2.00 years)   term ranges    11.27
-
-    correlation between the two yearly terms: +0.4937
-```
-
-Both fits succeed. Both print a clean seasonal curve. **The two curves agree at 0.49** — if a
-real annual pattern were being recovered, the two estimates would be close. There is none to
-recover: script 01 draws these prices from a random walk with no calendar effect, so both
-yearly terms are describing noise and trend.
-
-With one pass through the calendar, the split between "trend" and "season" is not identified:
-the same curve can be read as a falling trend with a flat season or a flat trend with a
-falling season, and the fitted answer reflects the regulariser rather than the data. The
-library says so itself, in a warning the run prints:
-
-```
-Yearly seasonality is enabled with less than 730 days (approximately 2 years) of history.
-The model may be under-identified, and the trend/seasonality decomposition can be unstable...
-```
-
-The warning fires three times in the run: on the daily fit in 13.1 and on both fits here. The
-"two years" span is 729 days, one short of the 730 the library asks for, so by the library's
-own rule even the longer fit is not enough. What the comparison shows is that one pass is
-clearly too few; it does not show that two passes is enough to trust a yearly term.
-
-**The number that separates the two cases is not in the plot. It is how much of the calendar
-the data spans, and it has to be printed on purpose.**
-
-> These two, the misdated column in section 7.3, and the thinning in 7.2 are one shape:
-> **the output is complete-looking, and part of it has nothing underneath.**
-
----
-
-## 14. Two backends, their fusion, and a limit in the wrong unit
-
-`10_search_backends_and_ui.py`
-
-### 14.1 One corpus, two indexes
-
-Eight short policy documents written into the script, so there are no data files, and every question has
-a known correct source:
-
-```python
-CHUNK_WORDS = 60
-CHUNK_OVERLAP = 15
-TOP_K = 3
-TOKEN_BUDGET = 220
-```
-
-```
-    documents 8, chunks 15, window 60 words with 15 overlapping
-    chunk length in characters: min 101, max 437, mean 271
-    estimated tokens in the whole corpus: 1,011
-    keyword index built over 15 chunks
-    vector index built with gemini-embedding-001 at 768 dimensions
-    rrf fuses the two rankings with k=60; weighted rescales both scores
-    to 0 to 1 per query and gives keyword a weight of 0.5
-```
-
-Both indexes are built over the same fifteen chunks, so the only variable is the scoring.
-
-One detail in the vector index that repeats a point from module 02: truncated embeddings are
-not unit length, so cosine is taken explicitly rather than read off a dot product.
-
-```python
-matrix = np.asarray(vectors, dtype=float)
-return matrix / np.linalg.norm(matrix, axis=1, keepdims=True)
-```
-
-### 14.2 Fusing the two, and what it costs here
-
-The script fuses the two rankings two ways. BM25 scores have no upper bound, while the cosine
-scores here sit between about 0.46 and 0.75 for every chunk, so adding them raw would let BM25
-decide alone.
-
-*   **Reciprocal rank fusion (RRF)** uses only ranks. Each backend adds `1 / (60 + rank)` to a
-    chunk. There is no weight to tune and no scale to align.
-*   **Weighted fusion** rescales each backend's scores to 0 to 1 for the query (min-max), then
-    adds them with a keyword weight of 0.5.
-
-```
-    question                                  kind           keyword    vector       rrf  weighted
-    What does Clause 7.3 cover?               exact term      rank 1    rank 1    rank 1    rank 1
-    What is the aggregate limit under Clause  exact term      rank 1    rank 2    rank 2    rank 2
-    Someone stole my suitcase at the airport  paraphrase      missed    rank 1    missed    missed
-    I got sick on holiday and had to be flow  paraphrase      rank 3    rank 1    rank 2    rank 2
-    How long does the insurer have to decide  paraphrase      rank 2    rank 1    rank 1    rank 1
-    found, all                                                   4/5       5/5       4/5       4/5
-    found, exact term                                            2/2       2/2       2/2       2/2
-    found, paraphrase                                            2/3       3/3       2/3       2/3
-
-    The vector backend finds everything the keyword backend finds, so fusion
-    has no hit to add. It can only pull a hit down:
-      rrf: Someone stole my suitcase at the airport. Am I covered?
-      weighted: Someone stole my suitcase at the airport. Am I covered?
-    Fusion pays only when each backend finds what the other misses.
-    Step 6 traces the keyword miss to its cause.
-```
-
-The vector backend misses nothing, so fusion has no hit to add. On the suitcase question the
-keyword backend ranks the right chunk 12th of 15, and that rank pulls it out of the fused top
-three under both methods. The 12th place comes from a tokenizer that keeps sentence-final dots
-(section 15). With it fixed, the keyword backend and both fusions find all five. Fusion only helps when each backend finds something the other misses;
-the five questions were written to pull in opposite directions, but the keyword side never
-wins a question the vector side loses.
-
-The weighted result depends on the weight. A trial run with keyword weights of 0.3, 0.5 and 0.7
-kept the suitcase question only at 0.3, and at 0.3 it lost the first place on the Clause 4.1
-question. Choosing the weight on these five questions would be tuning on the test set.
-
-Three trial corpora tried to give the keyword side its case: five near-identical regional
-schedules that differ only in a reference code, first `RX-41` to `RX-45`, then codes that are
-the same digits in another order (`MA-4172`, `MA-4127`, `MA-1472`). The vector backend put the
-right schedule first every time. The script keeps the original corpus.
-
-### 14.3 Three chunks is not a limit on anything the model cares about
-
-```
-    question                                           fixed count            token budget
-                                                chunks      tokens      chunks      tokens
-    What does Clause 7.3 cover?                      3         215           3         215
-    What is the aggregate limit under Clau           3         220           3         220
-    Someone stole my suitcase at the airpo           3         186           3         186
-    I got sick on holiday and had to be fl           3         243           2         209
-    How long does the insurer have to deci           3         182           4         213
-
-    Tokens are estimated as characters / 4, not counted by a tokenizer.
-    Budget 220: the largest budgeted context is 220, the largest fixed-count one 243.
-```
-
-These are estimated tokens (characters divided by four), not a count from the model's
-tokenizer. Against that estimate the budgeted column reaches the budget and never passes it,
-while varying between two and four chunks; the fixed count passes it at 243. Chunks here run
-from 101 to 437 characters, so three chunks cost whatever those three hold, and the count
-does not track the unit being limited.
-
-> **"Three results" and "220 estimated tokens" are not the same kind of limit.** Three chunks can be
-> three fragments or three long sections. The constraint downstream is a context window,
-> measured in tokens, so that is the unit the cutoff belongs in.
-
-The budgeting loop is deliberately conservative: it stops *before* the first chunk that
-would exceed the budget, and always keeps at least one. That second property means the budget
-limits what is added rather than guaranteeing a fit: a first chunk larger than the budget is
-kept whole. No chunk in this corpus is that large, so the run never shows it.
-
-```python
-for hit in hits:
-    cost = max(1, len(hit["text"]) // CHARS_PER_TOKEN)
-    if kept and spent + cost > budget:
-        break
-    kept.append(hit)
-    spent += cost
-```
-
-The comparison above applies the budget to the top 8 chunks. The answers in step 5 apply it to
-each backend's top 3 from step 3, so their context never holds more than 3 chunks.
-
-### 14.4 A web interface over the same backends
-
-`--ui` serves a small Blocks page: a question box, a selector for the four backends, a cutoff selector, and
-panes for the retrieved chunks, the context size and the answer. It calls the same
-`search` / `by_token_budget` / `answer` functions the command-line path uses, so the interface
-is a second front end rather than a second implementation.
-
-Both are worth having for opposite reasons. The command-line run produces a scored table that
-can be compared between runs; the interface makes the retrieved chunks visible next to the
-answer, which is what turns "the answer is wrong" into "the right chunk was never retrieved".
-
----
-
-## 15. Peeling a failure back one layer at a time
-
-`10_search_backends_and_ui.py`, step 6
-
-When a question fails end to end, the useful first move is not to guess which component is
-broken. It is to establish **which layer** the failure lives in. Step 6 takes the first
-question a backend missed and goes down one layer at a time:
-
-```
-    Taking the keyword backend on: Someone stole my suitcase at the airport. Am I covered?
     Layer 1, the answer      : not in the retrieved context.
     Layer 2, the retrieval   : expected baggage-loss, got ['property-allrisks', 'medical-abroad', 'medical-abroad']
     Layer 3, the raw scoring : the expected document's best chunk sits at rank 12 of 15
-                               top score 2.3210, expected document's best 0.7815
     Layer 4, the tokens      : the question has 'covered', the chunk has 'covered.'
-                               without sentence-final dots the chunk ranks 3 of 15
-
-    Neither the answer nor BM25 was the problem. The tokenizer keeps the dot
-    in clause numbers such as 7.3, and with it every sentence-final dot, so
-    these words never match. Nothing raised an error; the chunk just ranked lower.
+                               without sentence-final dots the chunk ranks 3 of 15, inside the top 3
 ```
 
 | Layer | If the failure is here | The repair |
 | :--- | :--- | :--- |
-| **The answer** | The right chunks were retrieved and the reply is still wrong | prompt, schema, model |
-| **The retrieval** | The right document exists but did not make the cutoff | scoring, k, budget, a second backend |
-| **The raw scoring** | The document is not in the index at all | ingestion, chunking, parsing |
-| **The tokens** | Query and chunk share a word, but not as the same token | the tokenizer |
+| The answer | The right chunks were retrieved and the reply is still wrong | prompt, schema, model |
+| The retrieval | The right document exists but did not make the cutoff | scoring, k, budget, a second backend |
+| The raw scoring | The document's best chunk ranks far down, or is not in the index at all | the scoring; if it is missing, ingestion, chunking, parsing |
+| The tokens | Query and chunk share a word, but not as the same token | the tokenizer |
 
-The first three layers alone would stop at "rank 12 of 15" and blame the scoring. The fourth
-shows why the score is low. The tokenizer, `[a-z0-9.]+`, keeps the dot so that clause numbers
-such as `7.3` stay whole, and so every sentence-final word keeps its dot as well: 39 of the 650
-tokens in the corpus end in one. The baggage clause ends a sentence with `not covered.`, the
-question asks `Am I covered?`, and the two never match. With the dots stripped, the same BM25
-puts the baggage chunk third.
+*   Three layers alone would stop at rank 12 and blame the scoring. The tokenizer
+    `[a-z0-9.]+` keeps the dot so clause numbers such as `7.3` stay whole, and so every
+    sentence-final word keeps its dot too: 39 of the 650 tokens end in one. The clause says
+    `not covered.` and the question `Am I covered?`, and the two never match. With the dots
+    stripped, the same BM25 ranks the chunk third, and the keyword backend and both fusions
+    find all five questions. The script keeps the tokenizer because this is the failure Part
+    6 exists to find.
+*   `--ui` serves the same backends behind a small Gradio page with a backend selector, a
+    cutoff selector and panes for the chunks, the context size and the answer. It calls the
+    same `search`, `by_token_budget` and `answer` functions, so it is a second front end, not
+    a second implementation.
 
-The script keeps this tokenizer on purpose, as the failure step 6 exists to find: nothing
-raises, the keyword backend just ranks the right chunk lower. It is also what drags both
-fusions down in 14.2. With the fixed tokenizer the keyword backend finds all five questions,
-and so do both fusions.
+## Script 11: Query routing, structured answers and checked citations
 
-When no chunk of the expected document appears anywhere in the ranking, the third layer says
-so and points upstream rather than failing on an empty list.
-
-The keyword backend's reply on this question is the right behaviour for its input: it declined
-rather than answer from unrelated clauses. A refusal alone does not locate the failure,
-though. On the same question the vector backend retrieved the right clause first and still
-declined:
-
-```
-        vector    retrieved [baggage-loss, travel-delay]
-                  Not in the retrieved context.
-```
-
-The clause covers baggage stolen while in a carrier's custody, and the question does not say
-where the suitcase was, so the refusal may be defensible. It is a decision made at the answer
-layer, and no change to retrieval reaches it. That is the first row of the table above, in the
-same run as the fourth.
-
----
-
-## 16. Routing twice before answering, and checking every citation
-
-`11_answer_routing_and_citation.py`
-
-### 16.1 Page numbers chosen to make invention detectable
-
-```python
-# Page bodies elided here; the page numbers are the ones in the script.
-REPORTS = {
-    "Alderway Foods":       {14: ..., 29: ..., 47: ..., 63: ...},
-    "Brightlane Logistics": {11: ..., 38: ..., 52: ..., 71: ...},
-    "Coldharbour Energy":   { 9: ..., 26: ..., 44: ..., 58: ...},
-}
-```
-
-```
-    No report is numbered from 1, and no two share a page number.
-    Any citation outside [9, 11, 14, 26, 29, 38, 44, 47, 52, 58, 63, 71] was invented rather than read.
-```
-
-Sparse, non-contiguous numbering is the point. In a corpus numbered 1, 2, 3 a guessed page
-number would very likely exist and pass as read; here most guesses land on a page that was
-never supplied.
-
-### 16.2 Two routers, scored separately
-
-```python
-def route_to_report(client, model: str, question: str) -> str:
-def route_to_type(client, model: str, question: str) -> str:
-```
-
-```
-    report routing 6 of 6, type routing 6 of 6
-```
-
-The two are separate calls and separate scores because they fail separately, and because the
-second one changes the instructions the answering call receives:
-
-```python
-TYPE_RULES = {
-    "number": "answer must be a bare number with no units, no thousands separators "
-              "and no words.",
-    "boolean": 'answer must be exactly "yes" or "no".',
-    "name": "answer must be a single proper name and nothing else.",
-    "names": "answer must be the names only, separated by commas, in the order the "
-             "source gives them.",
-    "string": "answer must be one short sentence.",
-}
-```
-
-Routing to a type is what lets each answering call carry **one** set of formatting rules
-instead of five. More rules in a single request means more chances to break one.
-
-Routing first also means a routing mistake cannot be recovered later: the correct pages are
-never put in front of the model that answers. The script therefore answers from **whatever
-the router chose**, not from the correct report, so a routing error propagates into answering
-rather than being silently corrected. It usually surfaces as a wrong answer, but not always —
-a question whose correct answer is `N/A` can still come back `N/A` from the wrong pages, or
-from none — which is one more reason routing is scored on its own. That includes a reply naming no known report: it
-opens no pages. An earlier version fell back to the expected report in that case, which fed
-the answer key into the system it was scoring.
-
-### 16.3 The four fields, in order
-
-```
-{"reasoning": "...", "answer": ..., "references": [...], "confidence": 0..1}
-```
-
-Reasoning comes first on purpose. The model fills the object in order, so the working is
-written before the answer rather than after it — the difference between reasoning and
-justifying a conclusion already reached.
-
-The schema also carries the escape hatch that makes the whole thing honest:
-
-> If the pages do not contain the answer, set answer to "N/A", references to an empty list,
-> and confidence to 0.
-
-### 16.4 Checking the citations
-
-```python
-def validate_references(result: dict, supplied: set) -> dict:
-    kept = [number for number in numbers if number in supplied]
-    dropped = [number for number in numbers if number not in supplied]
-```
-
-A page number the model was never given cannot have been read, whatever the answer says.
+*   Part 1 holds three company reports of four pages each, numbered sparsely and never
+    shared (Alderway 14, 29, 47, 63; Brightlane 11, 38, 52, 71; Coldharbour 9, 26, 44, 58).
+    In a corpus numbered 1, 2, 3 a guessed page would very likely exist and pass as read;
+    here most guesses land on a page that was never supplied.
+*   Part 2 routes each question twice, to a report and to an answer type (number, boolean,
+    name, names, string), and scores the two separately: 6 of 6 each. The type decides which
+    formatting rule the answering call receives. The answer is produced from whatever report
+    the router chose, so a routing error reaches the answer instead of being silently
+    corrected, and a reply naming no known report opens no pages.
+*   Part 3 answers under a four-field JSON schema: reasoning, answer, references and
+    confidence, in that order, so the model writes the answer after its working. The
+    DeepSeek replies keep that order. If the pages lack the answer, the schema asks for
+    `N/A`, no references and confidence 0.
+*   Part 3 then checks every cited page against the pages the model was given. A page it was
+    never given cannot have been read, whatever the answer says. The check needs no answer
+    key, and it checks provenance, not support: a supplied page can still fail to say what
+    the answer claims.
+*   One question asks for a dividend the reports never mention. Its type is `number`, so it
+    separates routing to the right type from finding an answer. The model answered `N/A` with
+    no references and confidence 0. The scoring treats `N/A` as conforming, since it is what
+    the prompt asks for, but an `N/A` with references still fails. The checker is strict only
+    for `number` (a bare number) and `boolean` (exactly yes or no); for the other types it
+    checks that the answer is non-empty.
+*   Part 4 gives each check a failure, since Parts 2 and 3 produced none:
 
 ```
     Q: What was Alderway Foods' revenue in 2024?
-       expected '812.4' from pages [14]
-       answer   '812.4'
-       cited [14]   valid [14]   invented []
+       answered from the pages of Brightlane Logistics
+       answer 'N/A', answer WRONG, invented []
+
+    a reply citing [14, 11, 3] for Alderway Foods: valid [14], invented [11, 3]
 ```
 
-**This is the cheapest correctness check in the pipeline, and it needs no judgement about
-whether the answer itself is right.** It checks provenance, not support: a cited page that
-was supplied can still fail to say what the answer claims, and this check would pass it.
+*   From the wrong pages the model declines and cites nothing, so only the answer key catches
+    the wrong route. The hand-made reply cites one supplied page, one of another report and
+    one of no report; the citation check drops the last two with no answer key.
+*   Part 5 splits each comparison into one sub-question per report, since a comparison has no
+    single report to route to. The revenue question gets 812.4, 1204.7 and 640.1 with one
+    valid page each, and the combined reply names Brightlane Logistics, citing page 11. The
+    combined reply's references are checked against the pages the sub-answers kept, the only
+    pages it saw. The headcount question names two companies, but all three are asked, so
+    Brightlane's 9,940 (the largest) reaches the combining call too; it answered Alderway
+    Foods in all four runs.
+*   Part 6 prints six scores, because each points to a different fix: a routing error is
+    repaired in the router, a schema error in the prompt, and an invented citation is caught
+    without knowing whether the answer was right.
 
-### 16.5 The question with no answer in the corpus
-
-```
-    Q: What dividend per share did Coldharbour Energy declare?
-       expected 'N/A' from pages []
-       answer   'N/A'
-       cited []   valid []   invented []
-       schema ok, answer ok, confidence 0
-```
-
-Its type is `number` — the *shape* of the question is numeric even though the corpus has no
-answer for it. That separates "routed to the right type" from "found an answer", which a
-question answerable from the pages cannot do.
-
-The scoring has to treat `N/A` as schema-conformant rather than as a numeric-format failure;
-otherwise the conformance figure penalises the one behaviour the instructions ask for. The
-check is explicit about it:
-
-```python
-if is_not_available(value):
-    return not result["references"]
-```
-
-An `N/A` with citations attached is still a failure — if there is no answer there is no source.
-
-The checker is strict only where it is cheap to be: `number` must be a bare number and
-`boolean` must be yes or no. For `name`, `names` and `string` it checks that the answer is
-non-empty, not that it is a single name, a comma-separated list or one sentence. `schema
-conformance 6 of 6` is conformance to that checker.
-
-### 16.6 Comparisons: split, answer, recombine
-
-A comparison spans every report, so the router has nothing to choose. Splitting restores the
-property the rest of the pipeline depends on: each sub-question has one report, one set of
-pages, one citable source.
-
-```
-    Q: Which of the three companies had the highest revenue in 2024?
-       Alderway Foods                 812.4   pages [14]
-       Brightlane Logistics          1204.7   pages [11]
-       Coldharbour Energy             640.1   pages [9]
-       combined -> 'Brightlane Logistics'   expected 'Brightlane Logistics'   ok
-       combined cites [11]   valid [11]   invented []
-```
-
-Each sub-answer keeps its own citation, so the comparison **inherits** sources rather than
-producing a claim no page supports. The combined reply also returns references of its own,
-and those are checked too — against the pages the sub-answers kept, the only pages it could
-have seen. An earlier version validated the sub-answers but never the combined reply. The final call is told explicitly to compare figures that
-have already been extracted, not to reason about the companies.
-
-### 16.7 Six numbers, because they fail separately
-
-```
-    report routing        6 of 6
-    answer type routing   6 of 6
-    schema conformance    6 of 6
-    answers correct       6 of 6
-    comparisons correct   2 of 2
-    page citations        5 made, 0 of them invented
-```
-
-> A wrong answer traced to routing is repaired in the router; one traced to the schema is
-> repaired in the prompt; an invented citation is caught **without knowing whether the answer
-> was right at all**. Collapsing these into one accuracy figure throws away the only
-> information that says what to fix.
-
-As in section 6.5, the model is not deterministic across runs even at temperature 0: type
-routing has come back 5 of 6 on other runs, with `names` misrouted. The structure of the
-measurement is the deliverable, not any single run's tally.
-
----
-
-## 17. What all of these have in common
-
-### 17.1 Nine failures, one countermeasure
-
-| Script | The quantity that settles it |
+| Score | Result |
 | :--- | :--- |
-| 02 | rows per key; a second total from the running-total column, consistent by construction here |
-| 03 | the recomputed ratio; the sum of the group sizes against the row count |
-| 04 | the model's number against a truth table; which groups each digest reaches |
-| 05 | distinct x values, not rows; filled cells against correctly-placed cells |
-| 06 | the share flagged per rule; events against days |
-| 07 | the score from one column and one threshold; four rankings side by side |
-| 08 | rows going into the mining, and rows coming out |
-| 09 | population overlap between neighbouring points; fit error under shuffling |
-| 10 | rank of the expected document; tokens actually spent |
-| 11 | cited pages against supplied pages |
+| report routing | 6 of 6 |
+| answer type routing | 6 of 6 |
+| schema conformance | 6 of 6 |
+| answers correct | 6 of 6 |
+| comparisons correct | 2 of 2 |
+| page citations | 5 made, 0 invented |
 
-Every one of these is one print statement or one small function. None of them requires
-understanding the failure in advance — they are checks that make a class of failure visible
-whether or not you expected it.
-
-### 17.2 Two errors that only look like the same error
-
-A useful split, because the second class is where the effort belongs:
-
-**Raises.** Missing package, wrong path, port in use, mismatched endpoint name, a
-serialisation type the encoder does not know. These announce themselves; the fix is
-mechanical.
-
-**Does not raise.** A wrong aggregation, a clamped column, a band that drops a segment, a
-digest that spans two subjects, a misdated column, a label recovered from a feature, a lift
-of exactly one, a forecast on a cohort. The program completes, the output is well-formed, and
-the magnitude is plausible.
-
-The second class is not harder to fix. It is harder to **notice**, and noticing is the entire
-problem.
-
-### 17.3 A repair can move an error out of sight
-
-Section 6.4 is the clearest instance: `head(10)` produced a reply that said outright it had
-only one instrument's data, and the shapes that reach both ends of the result produced
-replies that said nothing of the kind — one reading a late-December close as a first close,
-one pairing two different instruments' prices. The number is no more trustworthy, and the
-warning is gone.
-
-The same pattern appears in 3.4 (filtering after a join instead of before), and in 4.3 (once
-the empty bands are removed, the funnel looks clean and the missing 1,276 customers are still
-missing).
-
-> **Judge a fix by whether its input became correct, not by whether its output looks
-> correct.**
-
-### 17.4 Ask the data what the categories are
-
-The contrast in section 4.3 is worth stating on its own. When the group list comes from a
-query, nobody is lost. When it is written from domain intuition, the categories that exist in
-the data but not in the author's head disappear silently, and the categories in the author's
-head but not in the data show up as zeroes.
-
-Print `unique()` before writing a band, a label list, or a funnel.
-
-### 17.5 A measure needs its baseline
-
-Two instances, both in section 8:
-
-- A band flag reported as date and price contradicts itself; reported with centre, upper and
-  lower it does not.
-- A run-based rule firing on 45.7% of days looks alarming until the baseline is named — a
-  rolling mean that the series trends away from, with 61% of days above it.
-
-A relative measure printed without the thing it is relative to is not a weak report. It is an
-unreadable one.
-
----
-
-## 18. The eleven scripts
-
-| # | Script | What it establishes | The quantity it prints |
-| :--- | :--- | :--- | :--- |
-| 01 | `build_project_datasets.py` | Five sources with every later claim's answer written down first | yearly moves, planted lift, three totals, rows reading 99 |
-| 02 | `join_grain_and_aggregation_audit.py` | Grain and aggregation semantics | rows per key, mean drift, 197x total, rank changes |
-| 03 | `dashboard_metrics_and_cache.py` | Reported columns, bands, and cache invalidation | clamped rows, band shortfall, cold vs warm scaling |
-| 04 | `tool_return_shapes.py` | A tool's return value sets the ceiling on the answer | error against the truth table, groups per digest |
-| 05 | `chart_criterion_and_index_alignment.py` | A criterion on the wrong count; index alignment | rows vs distinct x, misplaced cells |
-| 06 | `bollinger_and_spc_rules.py` | Control limits, and rule sets that catch different days | per-rule share, events vs days, single vs multi-day |
-| 07 | `label_leakage_and_importance_views.py` | A label recovered from a feature; four importance measures | one-column AUC, proxy correlations, rank disagreement |
-| 08 | `association_rules_sample_unit.py` | The sample unit decides the answer | rows before and after, support powers of two, lift |
-| 09 | `cohort_is_not_a_time_series.py` | Cohorts, and terms with no data under them | population overlap, shuffle ratio, weekend rows, cycles |
-| 10 | `search_backends_and_ui.py` | Two backends; a limit in the wrong unit; layer isolation | mean rank per question kind, tokens spent, rank of the miss |
-| 11 | `answer_routing_and_citation.py` | Routing, structured answers, citation validation | six separate scores, invented citations |
-
-**Dependencies.** Script 01 writes everything the others read; run it first. Scripts 04, 10
-and 11 call a model API. The rest are offline.
-
-**Providers.** One provider per script. Scripts 04 and 11 are text-only and prefer DeepSeek;
-script 10 needs embeddings and answers, so it stays entirely on Gemini — one key, one base
-URL, one quota to reason about when something fails. All three carry a backoff that retries on
-rate-limit responses, because a script that indexes a corpus sends a burst rather than a
-trickle.
-
-**Outputs.** `data/` and `outputs/` are both regenerated and both ignored by git. Nothing in
-either is source material.
-
----
-
-## 19. What this module is really about
-
-The techniques in the earlier modules can all be checked by running them: the model answers
-or it does not, the loss falls or it does not, the detector finds the object or it does not.
-
-These eleven scripts are about the part that cannot be checked that way. Every one of them
-runs cleanly on the first try. The join returns a table. The aggregation returns a number of
-the right magnitude. The model answers confidently. The classifier reports an AUC any
-reviewer would sign off. The rule mining returns rules. The forecast returns a smooth curve.
-
-What separates the correct version from the incorrect one, in all eleven cases, is a quantity
-somewhere in the middle that nobody printed:
-
-> The rows per key. The second total. The distinct x values. The groups the digest reached.
-> The share per rule. The score from one column. The rows going into the mining. The overlap
-> between neighbouring points. The rank of the document that was missed. The pages that were
-> actually supplied.
-
-None of these are sophisticated. All of them are cheap. Each one turns an invisible failure
-into a visible one, which is the only part of this that is hard.
+*   Temperature 0 does not guarantee identical replies. In four runs on 2026-09-30 every count
+    stayed the same; only the wording of the string answer changed.

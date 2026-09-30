@@ -1,19 +1,25 @@
-"""Pick a chart type from the wrong count, then build a column that silently comes back empty.
+"""This script picks a chart type for three queries on the price database with a row-count
+rule and a distinct-x rule, and draws the query where the two rules disagree with
+matplotlib both ways. It then attaches a rolling-mean column to a new frame, and pandas
+index alignment fills most of that column with values from the wrong dates.
 
-Demonstrates two rules that hold on the data they were written against and fail elsewhere:
+Each rule holds on the data it was written against and fails elsewhere:
     1. Run three queries that a chart helper would be handed in turn.
-    2. Choose a chart type from the row count, the way the rule is usually written.
-    3. Choose it from the number of distinct x values instead, and compare.
-    4. Draw the disagreeing case both ways and save the two pictures.
-    5. Sample ten points from a result the way a helper thins a long series.
-    6. Attach a computed column to a fresh frame and count how many values arrived.
-    7. Repeat the attachment three ways that work, and stack two frames that share an index.
-
-Module 10: Applied Projects - Chart Criteria and Index Alignment.
+    2. Choose a chart type from the row count and from the number of distinct x values,
+       and compare the two.
+    3. Draw the disagreeing case both ways and save the two pictures. Both plot every row
+       by position, so the bar picture shows the other rule's choice, not one position
+       per date.
+    4. Sample ten points from two results the way a helper thins a long series.
+    5. Attach a computed column to a fresh frame, and count how many values arrived and
+       how many sit on the wrong date.
+    6. Repeat the attachment three ways that work, and stack two frames that do not share
+       an index.
 """
 
 import sqlite3
 import sys
+import textwrap
 from pathlib import Path
 
 import matplotlib
@@ -55,31 +61,20 @@ QUERIES = {
 
 def by_row_count(frame: pd.DataFrame) -> str:
     """Choose a chart type from how many rows came back.
-
-    This is the rule as it is normally written, and it is right about the thing it
-    was tested on: a long single series should not be drawn as bars. It reads the
-    row count as a stand-in for how many positions the x axis needs, which is only
-    the same number while every row carries a distinct x value.
-    """
+    The row count stands in for the positions the x axis needs, which holds only while
+    every row has its own x value."""
     return "line" if len(frame) > ROW_THRESHOLD else "bar"
 
 
 def by_distinct_x(frame: pd.DataFrame, x_column: str) -> str:
     """Choose a chart type from how many distinct x values came back.
-
-    This asks the question the axis actually poses. When one date carries four
-    instruments, the axis still needs ten positions, not forty.
-    """
+    This is the number of positions the axis needs, however many rows share a date."""
     return "line" if frame[x_column].nunique() > ROW_THRESHOLD else "bar"
 
 
 def draw(frame: pd.DataFrame, chart_type: str, title: str, path: Path) -> None:
-    """Draw one result set as bars or as a line, exactly as the chosen rule dictates.
-
-    The frame is drawn flat, in the order it arrived, with no grouping by series.
-    That is what a generic helper does, and it is why an interleaved result turns
-    into a zigzag rather than four readable series.
-    """
+    """Draw one result as bars or a line, one position per row in arrival order.
+    Nothing is grouped by series, so an interleaved result turns into a zigzag."""
     figure, axes = plt.subplots(figsize=(10, 4))
     positions = range(len(frame))
     if chart_type == "bar":
@@ -96,10 +91,7 @@ def draw(frame: pd.DataFrame, chart_type: str, title: str, path: Path) -> None:
 
 def thin_to_points(frame: pd.DataFrame, points: int) -> pd.DataFrame:
     """Keep evenly spaced rows so a crowded axis stays readable.
-
-    Even spacing over row positions is only even over time when the rows are one
-    series in time order. On an interleaved result it walks across instruments.
-    """
+    The spacing is over row positions, so an interleaved result walks across instruments."""
     if len(frame) <= points:
         return frame
     picked = np.linspace(0, len(frame) - 1, points, dtype=int)
@@ -107,12 +99,8 @@ def thin_to_points(frame: pd.DataFrame, points: int) -> pd.DataFrame:
 
 
 def compute_moving_average(frame: pd.DataFrame) -> pd.Series:
-    """Return a rolling mean of the close column, carrying the frame's own index.
-
-    Every pandas operation preserves the index it was given. That is the behaviour
-    that makes alignment work; it is also the behaviour that empties a column when
-    the two sides were never meant to line up.
-    """
+    """Return a rolling mean of the close column.
+    The result keeps the frame's index, which decides where it lands when attached."""
     return frame["close"].rolling(MA_WINDOW).mean()
 
 
@@ -121,6 +109,7 @@ def main() -> None:
         raise SystemExit(f"Missing {DB_PATH.name}. Run 01_build_project_datasets.py first.")
     OUTPUTS.mkdir(parents=True, exist_ok=True)
 
+    # 1. Three results a chart helper receives
     with sqlite3.connect(DB_PATH) as connection:
         results = {name: pd.read_sql_query(sql, connection) for name, sql in QUERIES.items()}
 
@@ -130,7 +119,8 @@ def main() -> None:
         print(f"    {name:<30}{len(frame):>7}{frame['trade_date'].nunique():>17}"
               f"{frame['ticker'].nunique():>13}")
 
-    print("\n--- 2-3. The same three results under two rules ---")
+    # 2. The same three results under two rules
+    print("\n--- 2. The same three results under two rules ---")
     print(f"    threshold is {ROW_THRESHOLD} either way\n")
     print(f"    {'result':<30}{'by row count':>15}{'by distinct x':>16}{'agree':>8}")
     disagreeing = None
@@ -152,30 +142,40 @@ def main() -> None:
         print(f"    The axis needs {frame['trade_date'].nunique()} positions, so the same "
               f"threshold applied to them picks a {right}.")
 
-        print("\n--- 4. Both pictures, drawn and saved ---")
+        # 3. Both pictures, drawn and saved
+        print("\n--- 3. Both pictures, drawn and saved ---")
         for chart_type, label in ((left, "by-row-count"), (right, "by-distinct-x")):
             path = OUTPUTS / f"chart_{label}_{chart_type}.png"
             draw(frame, chart_type, f"{name} drawn as a {chart_type} ({label})", path)
             print(f"    {path.name}")
+        print(f"    Both plot all {len(frame)} rows by position, so the bar picture shows the "
+              "other")
+        print(f"    rule's choice, not {frame['trade_date'].nunique()} date positions.")
         head = frame.head(8)[["trade_date", "ticker", "close"]]
         print("\n    The first rows show why the line zigzags: consecutive positions are")
         print("    different instruments on the same date, not one instrument over time.")
-        print(head.to_string(index=False))
+        print(textwrap.indent(head.to_string(index=False), "    "))
 
-    print(f"\n--- 5. Thinning a result to {SAMPLE_POINTS} points ---")
+    # 4. Thinning a result
+    print(f"\n--- 4. Thinning a result to {SAMPLE_POINTS} points ---")
     for name in ("one instrument, one year", "four instruments, ten days"):
         frame = results[name]
         thinned = thin_to_points(frame, SAMPLE_POINTS)
-        print(f"    {name:<30} {len(frame):>5} rows -> {len(thinned)} points, "
-              f"covering {thinned['ticker'].nunique()} instrument(s) and "
+        tickers = thinned["ticker"].tolist()
+        switches = sum(a != b for a, b in zip(tickers, tickers[1:]))
+        print(f"    {name:<30} {len(frame):>5} rows -> {len(thinned)} points over "
               f"{thinned['trade_date'].nunique()} date(s)")
-    print("    Even spacing over row positions is even over time only for one series.")
+        print(f"    {'':<30} instruments in order: {' '.join(tickers)}")
+        if switches:
+            print(f"    The points switch instrument {switches} times, so a line through "
+                  f"them joins {thinned['ticker'].nunique()} series.")
 
-    print(f"\n--- 6. Attaching a computed column ---")
+    # 5. Attaching a computed column
+    print("\n--- 5. Attaching a computed column ---")
     year = results["one instrument, one year"]
     windowed = year[year["trade_date"] >= "2024-02-01"]
     moving_average = compute_moving_average(windowed)
-    print(f"    rows selected for the window      {len(windowed):>6}")
+    print(f"    rows kept by the date filter      {len(windowed):>6}")
     print(f"    index of that selection runs      {windowed.index.min()} to "
           f"{windowed.index.max()}")
     print(f"    values in the moving average      {moving_average.notna().sum():>6}")
@@ -204,18 +204,21 @@ def main() -> None:
     source_date = year["trade_date"].iloc[first_filled]
     print(f"\n    Take report row {first_filled}. It is labelled {shown_date} and holds "
           f"{attached[first_filled]:.4f},")
-    print(f"    which is the average computed for {source_date} — the row that carried")
-    print(f"    index {first_filled} in the frame the average came from. Every filled cell is")
-    print(f"    shifted by the {int(windowed.index.min())} rows the window skipped. A column that is")
+    print(f"    which is the average computed for {source_date}, the row that carried")
+    print(f"    index {first_filled} in the frame the average came from. Every filled "
+          "cell is")
+    print(f"    shifted by the {int(windowed.index.min())} rows the date filter dropped. "
+          "A column that is")
     print("    mostly populated and entirely misdated is harder to spot than an empty one.")
 
-    print("\n--- 7. Three attachments that work, and one stack that does not ---")
+    # 6. Three attachments that work, and one stack that does not
+    print("\n--- 6. Three attachments that work, and one stack that does not ---")
     variants = {
         ".to_numpy()": moving_average.to_numpy(),
         ".reset_index(drop=True)": moving_average.reset_index(drop=True),
         ".set_axis(report.index)": moving_average.set_axis(report.index),
     }
-    # A count is what step 6 showed cannot be trusted, so each variant is also
+    # A count is what step 5 showed cannot be trusted, so each variant is also
     # checked cell by cell against the average looked up by date, not by position.
     by_date = dict(zip(windowed["trade_date"], moving_average))
     for label, values in variants.items():
@@ -225,8 +228,8 @@ def main() -> None:
         placed = probe["moving_average"].to_numpy()
         present = ~(pd.isna(expected) | pd.isna(placed))
         wrong = int((present & (expected != placed)).sum())
-        print(f"    {label:<26}{probe['moving_average'].notna().sum():>6} of {len(probe)} arrived, "
-              f"{wrong} misplaced")
+        print(f"    {label:<26}{probe['moving_average'].notna().sum():>6} of {len(probe)} "
+              f"arrived, {wrong} misplaced")
 
     left_frame = windowed.head(3)[["trade_date", "close"]]
     right_frame = windowed.head(3)[["ticker"]].reset_index(drop=True)

@@ -1,15 +1,16 @@
-"""Flag unusual days with one band rule, then with eight, and count what each rule alone would miss.
+"""This script flags unusual closing prices with a Bollinger band (a rolling mean plus and
+minus two standard deviations) and then with the eight Nelson rules of statistical process
+control (SPC), and counts what each rule alone would miss.
 
-Demonstrates why an outlier flag needs the numbers it was derived from printed beside it:
+An outlier flag needs the numbers it was derived from printed beside it:
     1. Build a rolling centre line and a band two standard deviations wide.
     2. Flag every close that sits outside the band, the way a single rule does.
     3. Report those flags with the four numbers behind them rather than a date alone.
-    4. Standardise the series against its own band, so eight rules can share one scale.
-    5. Apply the eight rules and count how many days each one flags on its own.
-    6. Merge consecutive flags into events, since a run is one excursion, not many.
-    7. Take the largest one-day and three-day moves, and check which rules caught them.
-
-Module 10: Applied Projects - Control Limits and Rule Sets.
+    4. Measure each close in standard deviations from its own centre line, apply the eight
+       rules to that one column, and count how many days each rule flags.
+    5. Merge consecutive flags into events, since a run is one excursion, not many.
+    6. Take the largest one-day and three-day moves on days the band can judge, and check
+       which rules fire on that day or in the next three.
 """
 
 import sqlite3
@@ -45,7 +46,7 @@ RULE_NAMES = {
     5: "two of three beyond 2 sigma, same side",
     6: "four of five beyond 1 sigma, same side",
     7: "fifteen in a row inside 1 sigma",
-    8: "eight in a row all beyond 1 sigma",
+    8: "eight in a row beyond 1 sigma, both sides",
 }
 
 
@@ -62,13 +63,8 @@ def load_series() -> pd.DataFrame:
 
 
 def add_bands(frame: pd.DataFrame) -> pd.DataFrame:
-    """Add the rolling centre line, the rolling spread, and the two band edges.
-
-    The centre moves with the series, so the band asks whether today is unusual
-    against the recent past rather than against the whole history. That is what
-    makes it usable on a series that trends: a price can be at a two-year high and
-    still be ordinary relative to last month.
-    """
+    """Add the rolling centre, spread, band edges, and the close in sigmas from centre.
+    The centre follows the series, so a two-year high can still be ordinary for last month."""
     frame = frame.copy()
     frame["centre"] = frame["close"].rolling(WINDOW).mean()
     frame["spread"] = frame["close"].rolling(WINDOW).std()
@@ -86,6 +82,15 @@ def band_breaches(frame: pd.DataFrame) -> pd.DataFrame:
     breaches = frame[outside].copy()
     breaches["side"] = np.where(breaches["close"] > breaches["upper"], "above", "below")
     return breaches
+
+
+def print_flag_rows(rows: pd.DataFrame) -> None:
+    """Print flagged days with the close, centre, band edges and sigmas behind each flag."""
+    print(f"    {'date':<13}{'side':<7}{'close':>9}{'centre':>9}{'upper':>9}"
+          f"{'lower':>9}{'sigmas':>8}")
+    for row in rows.itertuples():
+        print(f"    {row.trade_date:<13}{row.side:<7}{row.close:>9.2f}{row.centre:>9.2f}"
+              f"{row.upper:>9.2f}{row.lower:>9.2f}{row.sigmas:>8.2f}")
 
 
 def runs_on_one_side(sigmas: np.ndarray, length: int) -> np.ndarray:
@@ -129,7 +134,7 @@ def alternating_runs(sigmas: np.ndarray, length: int) -> np.ndarray:
 
 
 def k_of_n_beyond(sigmas: np.ndarray, k: int, n: int, threshold: float) -> np.ndarray:
-    """Flag every point ending a window where `k` of `n` points sit beyond `threshold`, one side."""
+    """Flag every point ending a window where `k` of `n` sit beyond `threshold` on one side."""
     flags = np.zeros(len(sigmas), dtype=bool)
     for end in range(n - 1, len(sigmas)):
         window = sigmas[end - n + 1:end + 1]
@@ -141,12 +146,7 @@ def k_of_n_beyond(sigmas: np.ndarray, k: int, n: int, threshold: float) -> np.nd
 
 
 def hugging_centre(sigmas: np.ndarray, length: int) -> np.ndarray:
-    """Flag every point ending a run of `length` points that all sit inside one sigma.
-
-    This rule fires on a series that is too calm rather than too wild. On market
-    data that is not a fault, but the rule is kept so the count can be read: a rule
-    set is only worth having if you know which of its rules fire on ordinary data.
-    """
+    """Flag every point ending a run of `length` points inside one sigma (too calm)."""
     flags = np.zeros(len(sigmas), dtype=bool)
     for end in range(length - 1, len(sigmas)):
         window = sigmas[end - length + 1:end + 1]
@@ -158,13 +158,13 @@ def hugging_centre(sigmas: np.ndarray, length: int) -> np.ndarray:
 
 
 def all_beyond(sigmas: np.ndarray, length: int) -> np.ndarray:
-    """Flag every point ending a run of `length` points all further than one sigma out."""
+    """Flag every point ending a run of `length` points all beyond one sigma, on both sides."""
     flags = np.zeros(len(sigmas), dtype=bool)
     for end in range(length - 1, len(sigmas)):
         window = sigmas[end - length + 1:end + 1]
         if np.isnan(window).any():
             continue
-        if np.all(np.abs(window) > 1.0):
+        if np.all(np.abs(window) > 1.0) and (window > 0).any() and (window < 0).any():
             flags[end] = True
     return flags
 
@@ -184,15 +184,11 @@ def apply_rules(frame: pd.DataFrame) -> pd.DataFrame:
     }, index=frame.index).fillna(False)
 
 
-def merge_into_events(flag_dates: list, gap: int) -> list:
-    """Group flagged positions that sit within `gap` of each other into single events.
-
-    One excursion produces a flag on every day it lasts. Counting days answers "how
-    many flagged rows are there"; counting events answers "how many times did this
-    series do something unusual", which is the question a person is asking.
-    """
+def merge_into_events(positions: list, gap: int) -> list:
+    """Group flagged row positions that sit within `gap` of each other into single events.
+    One excursion flags every day it lasts, so a count of days overstates how often."""
     events = []
-    for position in sorted(flag_dates):
+    for position in sorted(positions):
         if events and position - events[-1][-1] <= gap:
             events[-1].append(position)
         else:
@@ -206,8 +202,10 @@ def draw(frame: pd.DataFrame, breaches: pd.DataFrame, path: Path) -> None:
     positions = np.arange(len(frame))
     axes.plot(positions, frame["close"], linewidth=1.0, label="close")
     axes.plot(positions, frame["centre"], linewidth=1.0, label=f"{WINDOW}-day centre")
-    axes.plot(positions, frame["upper"], linewidth=0.8, linestyle="--", label=f"+{BAND_SIGMA} sigma")
-    axes.plot(positions, frame["lower"], linewidth=0.8, linestyle="--", label=f"-{BAND_SIGMA} sigma")
+    axes.plot(positions, frame["upper"], linewidth=0.8, linestyle="--",
+              label=f"+{BAND_SIGMA} sigma")
+    axes.plot(positions, frame["lower"], linewidth=0.8, linestyle="--",
+              label=f"-{BAND_SIGMA} sigma")
     axes.fill_between(positions, frame["lower"], frame["upper"], alpha=0.08)
     axes.scatter(breaches.index, breaches["close"], s=18, zorder=5, label="outside the band")
     ticks = positions[::60]
@@ -225,12 +223,16 @@ def main() -> None:
     OUTPUTS.mkdir(parents=True, exist_ok=True)
     frame = add_bands(load_series())
 
+    # 1. Centre line and band
+
     print(f"--- 1. A {WINDOW}-day centre line and a {BAND_SIGMA} sigma band on {TICKER} ---")
     usable = frame["centre"].notna().sum()
     print(f"    rows                              {len(frame):>6}")
     print(f"    rows with a full window behind them {usable:>4}")
     print(f"    close ranges {frame['close'].min():.2f} to {frame['close'].max():.2f}, "
           f"and the band moves with it")
+
+    # 2. Days outside the band
 
     print("\n--- 2. Days outside the band ---")
     breaches = band_breaches(frame)
@@ -239,20 +241,21 @@ def main() -> None:
     print(f"    flagged days   {len(breaches):>4}   above {above}   below {below}")
     print(f"    that is {100 * len(breaches) / usable:.1f}% of the days the band could judge")
 
+    # 3. Flags with the numbers behind them
+
     print("\n--- 3. The same flags, reported with the numbers behind them ---")
-    print(f"    {'date':<13}{'side':<7}{'close':>9}{'centre':>9}{'upper':>9}"
-          f"{'lower':>9}{'sigmas':>8}")
-    for row in breaches.head(10).itertuples():
-        print(f"    {row.trade_date:<13}{row.side:<7}{row.close:>9.2f}{row.centre:>9.2f}"
-              f"{row.upper:>9.2f}{row.lower:>9.2f}{row.sigmas:>8.2f}")
+    print_flag_rows(breaches.head(10))
     if len(breaches) > 10:
         print(f"    ... {len(breaches) - 10} more")
 
-    highest_below = breaches[breaches["side"] == "below"]["close"].max()
-    lowest_above = breaches[breaches["side"] == "above"]["close"].min()
-    if pd.notna(highest_below) and pd.notna(lowest_above) and highest_below > lowest_above:
-        print(f"\n    The dearest day flagged as below the band closed at {highest_below:.2f}.")
-        print(f"    The cheapest day flagged as above it closed at {lowest_above:.2f}.")
+    below_rows = breaches[breaches["side"] == "below"]
+    above_rows = breaches[breaches["side"] == "above"]
+    if len(below_rows) and len(above_rows) and \
+            below_rows["close"].max() > above_rows["close"].min():
+        print("\n    The dearest day flagged below the band and the cheapest day flagged "
+              "above it:")
+        print_flag_rows(breaches.loc[[below_rows["close"].idxmax(),
+                                      above_rows["close"].idxmin()]])
         print("    Reported as date and price alone, those two rows contradict each other.")
         print("    With the centre line beside them they do not: each was judged against")
         print("    its own recent window, and the windows were at different levels.")
@@ -260,7 +263,9 @@ def main() -> None:
         print("\n    On this series every below-band close came in under every above-band")
         print("    close, so date and price alone happen not to contradict each other here.")
 
-    print("\n--- 4-5. Eight rules over the standardised series ---")
+    # 4. Eight rules over the standardised series
+
+    print("\n--- 4. Eight rules over the standardised series ---")
     flags = apply_rules(frame)
     print(f"    {'rule':<6}{'description':<42}{'days':>7}{'share':>9}")
     for number, name in RULE_NAMES.items():
@@ -277,61 +282,85 @@ def main() -> None:
     print(f"    days the other rules caught that the band did not: {only_rules}")
 
     above_centre = float((frame["sigmas"] > 0).sum()) / usable
-    print(f"\n    Rules 2 and 6 count how long the series stays on one side of centre, and")
-    print(f"    rule 8 how long it stays more than one sigma away from it on either side.")
-    print(f"    They were written for a process held at a fixed target. Here the centre is")
-    print(f"    a {WINDOW}-day mean that follows the series, and {100 * above_centre:.0f}% of days sit "
-          f"above it,")
-    print("    so a trend alone keeps those counters running. Their high share is a")
-    print("    property of the baseline they were given, not of anything unusual in the")
-    print("    data. Reading the share per rule is what makes that visible.")
+    print("\n    Rule 2 counts nine days in a row on one side of centre, and rule 6 four of")
+    print("    five days more than one sigma out on one side. Both were written for a")
+    print(f"    process held at a fixed target. Here the centre is a {WINDOW}-day mean that")
+    print(f"    follows the series, and {100 * above_centre:.0f}% of days sit above it, "
+          f"so a trend alone")
+    print("    keeps those counters running. Their high share is a property of the")
+    print("    baseline they were given, not of anything unusual in the data.")
 
-    print(f"\n--- 6. Merging runs into events (gap of {EVENT_GAP} days or less) ---")
+    # 5. Days merged into events
+
+    print(f"\n--- 5. Merging runs into events (gap of {EVENT_GAP} days or less) ---")
+    counts = {}
     for label, positions in (("band rule", list(breaches.index)),
                              ("all eight rules", list(frame.index[any_rule]))):
         events = merge_into_events(positions, EVENT_GAP)
+        counts[label] = (len(positions), len(events))
         longest = max((len(event) for event in events), default=0)
+        mean_run = len(positions) / len(events) if events else 0.0
         print(f"    {label:<18}{len(positions):>5} days -> {len(events):>4} events, "
-              f"longest run {longest} days")
-    print("    A count of flagged days answers a question about rows. A count of events")
-    print("    answers the question a person asked, and the two differ by the run length.")
+              f"mean run {mean_run:.1f}, longest {longest} days")
+    band_days, band_events = counts["band rule"]
+    rule_days, rule_events = counts["all eight rules"]
+    if band_days and rule_events <= band_events:
+        print(f"    The eight rules flag {rule_days / band_days:.1f}x the band's days but "
+              f"{rule_events} events against {band_events}:")
+        print("    most of their days sit inside a few long runs.")
 
-    print("\n--- 7. One-day jumps against multi-day excursions ---")
-    one_day = frame["close"].pct_change().abs()
-    three_day = (frame["close"] / frame["close"].shift(3) - 1).abs()
+    # 6. Largest moves against both rule sets
+
+    print("\n--- 6. One-day jumps against multi-day excursions ---")
+    judged = frame["centre"].notna()
+    one_day = frame["close"].pct_change().abs()[judged]
+    three_day = (frame["close"] / frame["close"].shift(3) - 1).abs()[judged]
+    first_later = {}
 
     def report(label: str, moves: pd.Series) -> tuple:
         by_band = 0
         by_rules = 0
-        print(f"\n    largest {label}:")
-        print(f"        {'date':<13}{'move':>9}{'band':>10}{'rules firing':>18}")
+        print(f"\n    largest {label}, on days the band can judge:")
+        print(f"        {'date':<13}{'move':>9}{'band':>10}{'rules that day':>17}"
+              f"{f'next {EVENT_GAP} days':>14}")
         for position in moves.nlargest(3).index:
             date = frame.loc[position, "trade_date"]
             outside = position in breaches.index
             firing = [str(number) for number in RULE_NAMES if flags.loc[position, number]]
             by_band += 1 if outside else 0
             by_rules += 1 if firing else 0
+            later = "-"
+            for step in range(1, EVENT_GAP + 1):
+                if position + step < len(frame) and any_rule[position + step]:
+                    rules = [str(n) for n in RULE_NAMES if flags.loc[position + step, n]]
+                    later = f"+{step}: {','.join(rules)}"
+                    first_later[position] = step
+                    break
             print(f"        {date:<13}{100 * moves[position]:>8.2f}%"
                   f"{'outside' if outside else 'inside':>10}"
-                  f"{','.join(firing) if firing else '-':>18}")
+                  f"{','.join(firing) if firing else '-':>17}{later:>14}")
         return by_band, by_rules
 
     band_one, rules_one = report("single-day moves", one_day)
     band_three, rules_three = report("three-day moves", three_day)
     print(f"\n    {'':<22}{'caught by the band':>20}{'caught by the 8 rules':>24}")
-    print(f"    {'top 3 single-day moves':<22}{f'{band_one} of 3':>20}{f'{rules_one} of 3':>24}")
-    print(f"    {'top 3 three-day moves':<22}{f'{band_three} of 3':>20}{f'{rules_three} of 3':>24}")
-    distinct = len(set(one_day.nlargest(3).index) | set(three_day.nlargest(3).index))
+    print(f"    {'top 3 single-day moves':<22}{f'{band_one} of 3':>20}"
+          f"{f'{rules_one} of 3':>24}")
+    print(f"    {'top 3 three-day moves':<22}{f'{band_three} of 3':>20}"
+          f"{f'{rules_three} of 3':>24}")
+    distinct = set(one_day.nlargest(3).index) | set(three_day.nlargest(3).index)
+    same_day = sum(1 for position in distinct if any_rule[position])
     print(f"\n    The band catches {band_one + band_three} of these 6 moves "
-          f"({distinct} distinct days); the eight rules catch none.")
-    print("    Seven of the eight count runs or windows, so they need an excursion that")
-    print("    lasts several days. Rule 1 looks at single points, but at 3 sigma it is")
-    print(f"    stricter than the band, and it fired on {int(flags[1].sum())} days of the whole series.")
-    print("    A move that is large on one day and gone the next leaves the run counters")
-    print(f"    short, whether or not that day crossed the band at all: "
-          f"{6 - band_one - band_three} of the six")
-    print("    above never crossed it. A rule set is not a strictly larger net than the")
-    print("    rule it extends: it catches different days, and here it catches none.")
+          f"({len(distinct)} distinct days), and {6 - band_one - band_three} never crossed it.")
+    print("    Rule 1 looks at single points, but at 3 sigma it is stricter than the band,")
+    print(f"    and it fired on {int(flags[1].sum())} days of the whole series. "
+          f"The other seven count runs or windows.")
+    print(f"    The eight rules fire on {same_day} of these {len(distinct)} days.")
+    if first_later:
+        earliest = min(first_later.values())
+        print(f"    After {len(first_later)} of them they fire within {EVENT_GAP} days, "
+              f"the earliest {earliest} day{'s' if earliest > 1 else ''} later:")
+        print("    a run rule reports an excursion once it has lasted.")
 
     path = OUTPUTS / f"bands_{TICKER.lower()}.png"
     draw(frame, breaches, path)

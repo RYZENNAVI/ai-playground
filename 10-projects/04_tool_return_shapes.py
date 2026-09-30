@@ -1,15 +1,17 @@
-"""Ask a model the same question five times, changing only what its tool hands back.
+"""This script asks a hosted chat model the same question about the price database five
+times, changing only the shape of the tool output in the prompt (head, head and tail, a
+describe() summary, endpoints, and endpoints with the change computed), and scores each
+reply against the answer computed from the database.
 
-Demonstrates that a tool's return value sets the ceiling on what a model can answer:
+A tool's return value sets the ceiling on what a model can answer:
     1. Compute the answer directly from the database, so every reply can be scored.
     2. Run one query and turn its result into five different return shapes.
-    3. Send each shape to the model behind the same question and the same prompt.
-    4. Read out which instrument each reply names and what change it claims.
-    5. Score every reply against the computed answer, naming and number apart.
-    6. Compare the two shapes that both fit in ten rows but carry different rows.
-    7. Print how many characters each shape spent to reach its score.
-
-Module 10: Applied Projects - Tool Return Shapes.
+    3. Send each shape to the model with the same question and prompt, and read out the
+       instrument and the change each reply gives.
+    4. Score every reply against the computed answer, naming and number apart, next to
+       the size of the shape it was given.
+    5. Check which instruments the two ten-row shapes reach, and whether either holds an
+       instrument's first and last close together.
 """
 
 import json
@@ -44,8 +46,7 @@ QUESTION = (
 )
 
 # The query a text-to-SQL step would produce for that question. It is correct SQL:
-# it selects exactly the rows the question is about. Everything that follows is
-# about what happens to those rows on the way back to the model.
+# it selects exactly the rows the question is about.
 QUERY = f"""
     SELECT ticker, trade_date, close
     FROM daily_price
@@ -66,13 +67,7 @@ SYSTEM_PROMPT = (
 
 def truth_table(connection: sqlite3.Connection) -> pd.DataFrame:
     """Compute each instrument's first and last close of the year, and the change between them.
-
-    This runs against the whole year rather than any digest of it, so it is the
-    reference every reply is scored against. It reads the database itself rather
-    than any rendered shape, so no digest can shape the reference. The endpoint
-    arithmetic is the same one shape_computed performs, which is why that shape
-    can score an error of exactly zero by copying its own table.
-    """
+    It reads the database rather than any shape, so every reply is scored against it."""
     frame = pd.read_sql_query(QUERY, connection)
     rows = []
     for ticker, group in frame.groupby("ticker"):
@@ -91,46 +86,28 @@ def truth_table(connection: sqlite3.Connection) -> pd.DataFrame:
 
 
 def shape_head(frame: pd.DataFrame) -> str:
-    """Return the first ten rows, which is the shape a result preview usually takes.
-
-    Ten rows of a thousand-row result is a preview, and a preview of a table sorted by
-    ticker is entirely the first ticker. Nothing in it is wrong; it is just the
-    wrong ten rows for this question.
-    """
+    """Return the first ten rows, the usual preview.
+    Sorted by ticker, all ten belong to the first instrument."""
     return frame.head(10).to_markdown(index=False)
 
 
 def shape_head_and_tail(frame: pd.DataFrame) -> str:
-    """Return the first five rows and the last five, the usual fix for the shape above.
-
-    This looks like the strict improvement it is normally taken for: the digest now
-    reaches both ends of the result. But the result is sorted by ticker first, so
-    the head is one instrument's January and the tail is a different instrument's
-    December. The ticker column does name both, but no instrument appears with
-    both its first and its last close, so no instrument's move can be read off it.
-    """
+    """Return the first five rows and the last five.
+    Sorted by ticker, no instrument appears with both its first and its last close."""
     return pd.concat([frame.head(5), frame.tail(5)]).to_markdown(index=False)
 
 
 def shape_head_tail_describe(frame: pd.DataFrame) -> str:
-    """Add summary statistics over the numeric columns to the previous shape.
-
-    Statistics are the usual answer to "the model has no overview". They do give an
-    overview, of the wrong thing: the spread of every close price of every
-    instrument pooled together, which no per-instrument question can be read out of.
-    """
+    """Add summary statistics of the close column to the previous shape.
+    They pool every instrument's closes, so no per-instrument change can be read from them."""
     digest = pd.concat([frame.head(5), frame.tail(5)]).to_markdown(index=False)
     stats = frame[["close"]].describe().round(4).to_markdown()
     return f"{digest}\n\nSummary statistics over all rows:\n{stats}"
 
 
 def shape_endpoints(frame: pd.DataFrame) -> str:
-    """Return the first and last row of every instrument, and nothing else.
-
-    This is the smallest shape that contains the answer. The change from the shapes
-    above is not size; it is that the rows were chosen per group rather than off the
-    ends of one flat table.
-    """
+    """Return the first and last row of every instrument.
+    The rows are chosen per instrument, not off the ends of one flat table."""
     parts = []
     for ticker, group in frame.groupby("ticker"):
         group = group.sort_values("trade_date")
@@ -140,10 +117,7 @@ def shape_endpoints(frame: pd.DataFrame) -> str:
 
 def shape_computed(frame: pd.DataFrame) -> str:
     """Return the endpoints with the percentage change already worked out.
-
-    The arithmetic moves out of the model and into the tool. Everything the model
-    still has to do is read a table and pick the largest absolute value.
-    """
+    The model then only has to pick the largest absolute value."""
     rows = []
     for ticker, group in frame.groupby("ticker"):
         group = group.sort_values("trade_date")
@@ -168,12 +142,8 @@ SHAPES = [
 ]
 
 
-def pick_provider() -> tuple:
-    """Return (api_key, base_url, model) for whichever key is configured.
-
-    Only chat completion is needed here, so DeepSeek comes first; Gemini and
-    OpenAI follow, so a single key of any kind is enough to run the script.
-    """
+def pick_provider() -> tuple | None:
+    """Return (api_key, base_url, model) for whichever key is configured, DeepSeek first."""
     if os.getenv("DEEPSEEK_API_KEY"):
         return (os.getenv("DEEPSEEK_API_KEY"), "https://api.deepseek.com", "deepseek-chat")
     if os.getenv("GEMINI_API_KEY"):
@@ -181,12 +151,13 @@ def pick_provider() -> tuple:
                 "https://generativelanguage.googleapis.com/v1beta/openai/",
                 "gemini-3.1-flash-lite")
     if os.getenv("OPENAI_API_KEY"):
-        return (os.getenv("OPENAI_API_KEY"), os.getenv("OPENAI_BASE_URL"), "gpt-4o-mini")
+        return (os.getenv("OPENAI_API_KEY"), os.getenv("OPENAI_BASE_URL"),
+                os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
     return None
 
 
 def call_with_retry(client, **kwargs):
-    """Send one request, backing off when the provider answers with a rate limit."""
+    """Send one request, backing off when the provider is rate-limited or timing out."""
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
             return client.chat.completions.create(**kwargs)
@@ -237,19 +208,22 @@ def main() -> None:
         frame = pd.read_sql_query(QUERY, connection)
         truth = truth_table(connection)
 
+    # 1. The answer, computed from the database
     print("--- 1. The answer, computed from the database ---")
     print(truth.to_string(index=False, float_format=lambda v: f"{v:.2f}"))
     best = truth.loc[truth["change_pct"].abs().idxmax()]
     print(f"\n    largest absolute move: {best['ticker']} at {best['change_pct']:+.2f}%")
 
-    print(f"\n--- 2. One query, five return shapes ---")
+    # 2. One query, five return shapes
+    print("\n--- 2. One query, five return shapes ---")
     print(f"    the query returns {len(frame):,} rows across {frame['ticker'].nunique()} "
           f"instruments, sorted by ticker then date")
     rendered = [(name, builder(frame)) for name, builder in SHAPES]
     for name, text in rendered:
         print(f"    {name:<34}{len(text):>7,} characters")
 
-    print(f"\n--- 3-4. The same question against each shape ---")
+    # 3. The same question against each shape
+    print("\n--- 3. The same question against each shape ---")
     print(f"    model {model}, temperature 0\n")
     results = []
     for step, (name, text) in enumerate(rendered, start=1):
@@ -261,11 +235,12 @@ def main() -> None:
         print(f"       says {str(reply.get('ticker')):<6} {claimed_text:>9}   "
               f"{str(reply.get('basis'))[:70]}")
 
-    print("\n--- 5. Scored against the computed answer ---")
-    print(f"    {'shape':<34}{'ticker':>8}{'named right':>13}{'claimed':>10}"
-          f"{'truth':>9}{'error':>9}")
+    # 4. Scored against the computed answer
+    print("\n--- 4. Scored against the computed answer ---")
+    print(f"    {'shape':<32}{'ticker':>7}{'named':>7}{'claimed':>9}"
+          f"{'truth':>9}{'error':>8}{'chars':>7}")
     truth_by_ticker = truth.set_index("ticker")["change_pct"].to_dict()
-    for name, _, reply in results:
+    for name, text, reply in results:
         ticker = reply.get("ticker")
         claimed = reply.get("change_pct")
         named_right = "yes" if ticker == best["ticker"] else "no"
@@ -276,29 +251,31 @@ def main() -> None:
             claimed_text = f"{claimed:+.2f}"
         else:
             error, actual_text, claimed_text = "-", "-", "-"
-        print(f"    {name:<34}{str(ticker):>8}{named_right:>13}{claimed_text:>10}"
-              f"{actual_text:>9}{error:>9}")
-    print("\n    'named right' asks whether the reply picked the instrument that actually")
-    print("    moved most. 'error' is measured against the truth for whichever instrument")
-    print("    the reply named, so a reply can be precise about the wrong instrument.")
+        print(f"    {name:<32}{str(ticker):>7}{named_right:>7}{claimed_text:>9}"
+              f"{actual_text:>9}{error:>8}{len(text):>7,}")
+    print("\n    'named' asks whether the reply picked the instrument that actually moved")
+    print("    most. 'error' is measured against the truth for whichever instrument the")
+    print("    reply named, so a reply can be precise about the wrong instrument. 'chars'")
+    print("    is the size of the shape the reply was given.")
 
-    print("\n--- 6. The two shapes that both fit in ten rows ---")
-    ticker_pattern = re.compile(r"^\| ([A-Z]{3})", re.M)
-    head_only = sorted(set(ticker_pattern.findall(rendered[0][1])))
-    head_tail = sorted(set(ticker_pattern.findall(rendered[1][1])))
-    print(f"    head(10) covers tickers       : {head_only}")
-    print(f"    head(5)+tail(5) covers tickers: {head_tail}")
-    print("    Both are ten rows. The second reaches two instruments and neither of them")
-    print("    completely, which is why its answer can look reasonable and still be built")
-    print("    from one instrument's January and another's December.")
-
-    print("\n--- 7. Characters spent per shape ---")
-    print(f"    {'shape':<34}{'characters':>12}{'named right':>13}")
-    for (name, text, reply) in results:
-        named_right = "yes" if reply.get("ticker") == best["ticker"] else "no"
-        print(f"    {name:<34}{len(text):>12,}{named_right:>13}")
-    print("\n    The shape that answers the question is not the largest one. Choosing rows")
-    print("    per group rather than off the ends of the table is what changed the answer.")
+    # 5. The two shapes that both fit in ten rows
+    print("\n--- 5. The two shapes that both fit in ten rows ---")
+    row_key = re.compile(r"^\| ([A-Z]{3}) +\| (\d{4}-\d{2}-\d{2})", re.M)
+    any_complete = False
+    for name, text in rendered[:2]:
+        rows = set(row_key.findall(text))
+        reached = sorted({ticker for ticker, _ in rows})
+        complete = [r.ticker for r in truth.itertuples()
+                    if (r.ticker, r.first_date) in rows and (r.ticker, r.last_date) in rows]
+        any_complete = any_complete or bool(complete)
+        print(f"    {name:<20}reaches {reached}, with first and last close: "
+              f"{complete or 'none'}")
+    if any_complete:
+        print("    Both are ten rows, and at least one holds an instrument's first and last "
+              "close.")
+    else:
+        print("    Both are ten rows, and neither holds any instrument's first and last close "
+              "together.")
 
 
 if __name__ == "__main__":
