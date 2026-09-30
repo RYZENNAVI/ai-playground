@@ -43,7 +43,7 @@ explains what each script does and the ideas it relies on.
 
 ## Script 01: TF-IDF and cosine similarity
 
-*   The data is 152 Seattle hotels with `name`, `address` and `desc`. Every
+*   Part 1 loads 152 Seattle hotels with `name`, `address` and `desc`. Every
     description becomes a TF-IDF vector, and hotels whose vectors point in similar
     directions count as similar. No neural model is involved.
 *   Cosine similarity is `(A·B) / (||A|| × ||B||)`. It compares directions, so a long
@@ -51,14 +51,15 @@ explains what each script does and the ideas it relies on.
 *   Part 3 counts the 20 most common three-word phrases. `pike place market` comes
     first, whether or not it tells hotels apart. Raw counts cannot say which words
     matter, which is what TF-IDF adds.
-*   `TfidfVectorizer` weights each term count by `idf = ln((1 + n) / (1 + df)) + 1`,
-    where n is the number of descriptions and df the number containing the term. A
-    term most hotels use counts less. The script uses terms of one to three words:
-    3348 terms, a `152 × 3348` matrix, nearly all zeros.
+*   Part 4 lowercases the descriptions and drops punctuation and stop words. Part 5
+    builds the vectors: `TfidfVectorizer` weights each term count by
+    `idf = ln((1 + n) / (1 + df)) + 1`, where n is the number of descriptions and df the
+    number containing the term. A term most hotels use counts less. The script uses
+    terms of one to three words: 3348 terms, a `152 × 3348` matrix, nearly all zeros.
 *   Every vector is scaled to length 1, so the dot product (`linear_kernel`) is the
     cosine. The result is a `152 × 152` matrix with 1 on the diagonal.
-*   Recommendations sort one hotel's row and skip the first entry, the hotel itself
-    (`iloc[1:11]`).
+*   Part 6 recommends by sorting one hotel's row and skipping the first entry, the hotel
+    itself (`iloc[1:11]`).
 
 | Query hotel | Top 10 |
 | :--- | :--- |
@@ -71,29 +72,31 @@ explains what each script does and the ideas it relies on.
 
 ## Script 02: Word2Vec
 
-*   Chinese has no spaces between words, so jieba first cuts the novel (Journey to the
-    West, stored as GB18030) into words.
+*   Chinese has no spaces between words, so part 1 cuts the novel (Journey to the
+    West, stored as GB18030) into words with jieba.
 *   Word2Vec learns one vector per word by predicting which words appear near each
     other, so words used in similar contexts get similar vectors. Multiplying a
     one-hot input by the weight matrix selects one row, and that row is the word's
     vector.
+
+Parts 2 and 5 train two models:
 
 | Model | Vector size | Window | Min count | Vocabulary | Threads |
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | Baseline | 100 | 3 | 1 | 46005 | 1 |
 | Second | 128 | 5 | 5 | 7735 | all cores |
 
-*   The analogy asks: Sun Wukong is to Pilgrim Sun (his other name) as Tang Seng is to
-    what? The baseline answers 长老 (elder, 0.9805), the way other characters address
+*   Part 4's analogy asks: Sun Wukong is to Pilgrim Sun (his other name) as Tang Seng is
+    to what? The baseline answers 长老 (elder, 0.9805), the way other characters address
     Tang Seng.
-*   The second model is saved and reloaded, and the reloaded model gives the same
-    similarity. It trains on several threads, so its numbers move between runs:
-    `孙悟空 vs 猪八戒` from 0.9265 to 0.9369, and its analogy has put 长老 or 菩萨
-    first. The baseline runs on one thread and repeats exactly.
-*   Every name pair scores above 0.8 in both models, even Sun Wukong and "monster"
-    (0.9602). One novel is small and repetitive, so the names share the same contexts
-    and their vectors crowd together. High scores here describe the corpus, not the
-    model.
+*   Part 6 reloads the second model from disk, and it gives the same similarity. It
+    trains on several threads, so its numbers move between runs: `孙悟空 vs 猪八戒` from
+    0.9265 to 0.9369, and its analogy has put 长老 or 菩萨 first. The baseline runs on one
+    thread and repeats exactly.
+*   In part 3, every name pair scores above 0.8 in both models, even Sun Wukong and
+    "monster" (0.9602). One novel is small and repetitive, so the names share the same
+    contexts and their vectors crowd together. High scores here describe the corpus, not
+    the model.
 *   Part 7 trains the same recipe on text8, 17 million words of cleaned Wikipedia.
     `king - man + woman` gives queen (0.7226), `paris + italy - france` gives venice
     (0.7671), and `king vs banana` scores 0.0455 against 0.7264 for `king vs queen`.
@@ -106,22 +109,22 @@ a ride closed for maintenance) and the question "I want to understand the refund
 process for Disney tickets" are embedded with `gemini-embedding-001` at 768 dimensions.
 
 *   Matryoshka representation learning trains the model so that the leading values of
-    its vector also work as a shorter embedding. The same question at 3072, 1536 and
-    768 dimensions starts with the same values (`-0.014099, -0.0218, -0.000503`).
-    Parts 1 to 3 only look at the embeddings. The search from part 4 on embeds
-    everything again.
+    its vector also work as a shorter embedding. Part 2 embeds the same question at
+    3072, 1536 and 768 dimensions, and all three start with the same values
+    (`-0.014099, -0.0218, -0.000503`). Parts 1 to 3 only look at the embeddings. The
+    search from part 4 on embeds everything again.
 *   Part 3 runs the whole search at all three sizes. The top three are the same each
     time, and the distances move a little (doc3: 0.3139, 0.3354, 0.3142).
-*   `IndexFlatL2` compares the query with every vector, so the search is exact. It
-    returns squared L2 distance, where smaller is closer. For unit vectors, squared L2
-    equals 2 minus 2 times the cosine, so both rank the same way: doc3 at 0.3142 is a
-    cosine of 0.84, doc2 at 0.8528 a cosine of 0.57. The two refund entries come
-    first.
+*   Part 4 embeds the documents, and part 5 indexes them in `IndexFlatL2`, which
+    compares the query with every vector, so the search is exact. It returns squared L2
+    distance, where smaller is closer. For unit vectors, squared L2 equals 2 minus 2
+    times the cosine, so both rank the same way. In part 6, doc3 at 0.3142 is a cosine
+    of 0.84, doc2 at 0.8528 a cosine of 0.57. The two refund entries come first.
 *   FAISS alone returns positions. `IndexIDMap` stores an id with each vector (doc3 as
     3), so deleting or reordering entries cannot change which document a hit points
     to. FAISS stores only vectors and ids. The text and metadata live in a dict under
     the same ids.
-*   The index is written to disk and read back, and the search gives the same
+*   Part 7 writes the index to disk and reads it back, and the search gives the same
     ranking. The metadata dict is not part of the index and has to be saved with it.
 
 ## Script 04: Pooling (CLS, mean and last token)
@@ -142,8 +145,8 @@ that answer them, with three models:
     token.
 *   An encoder attends in both directions, so every token has seen the whole text. A
     decoder attends only to earlier tokens, so only the last one has seen it all.
-*   Through the SentenceTransformer wrapper, each question scores highest against its
-    own passage in all three models.
+*   Parts 1 to 3 score one model each through the SentenceTransformer wrapper, and
+    each question scores highest against its own passage in all three.
 *   Part 4 writes tokenising, pooling and normalising out by hand and compares the
     scores with the wrapper's. Qwen3 runs with right and with left padding, because
     the last real token sits in a different place.
@@ -173,6 +176,7 @@ Part 5 pools bge with mean instead of CLS:
 The document is a theme park ticket guide in three paragraphs (ticket types, buying a
 ticket, discounts), 1299 characters long, or 1366 in the copy with headings. The target
 chunk size is 800. The script measures chunk sizes only. It does not test retrieval.
+Parts 1 to 5 run one strategy each, and part 6 sets them side by side.
 
 | Strategy | What the code does | What the run shows |
 | :--- | :--- | :--- |
@@ -212,10 +216,11 @@ The PDF is nine pages of a bank's rules for assessing retail account managers. O
 question asks how many points a customer complaint costs, the other when the yearly
 appointment review opens.
 
-*   pypdf extracts the text page by page. `RecursiveCharacterTextSplitter` splits it
+*   Part 1 extracts the text page by page with pypdf. `RecursiveCharacterTextSplitter`
+    splits it
     with `chunk_size=1000` and `chunk_overlap=200`, trying `["\n\n", "\n", ".", " ",
-    ""]` in order. The chunks are embedded and stored in FAISS, saved to disk with
-    their page map, and loaded back.
+    ""]` in order. Part 2 embeds the chunks into FAISS and saves them to disk with
+    their page map, and part 3 loads them back.
 *   The page citations are the script's own work. The splitter cuts the text wherever
     it likes, so a page number recorded per line cannot be matched to chunk i. The
     script records a page number for every character, finds each chunk in the text
@@ -224,9 +229,9 @@ appointment review opens.
     next page's first line. The extracted text has no `\n\n`, so joining with `\n\n`
     would have made the page breaks the splitter's first choice and stopped chunks from
     crossing pages. With `\n`, 10 of the 15 chunks span two pages.
-*   Each question gets the 4 nearest chunks in one prompt and one model call (the
-    "stuff" approach). LangChain 1.x no longer has `langchain.chains`, so the chain is
-    written with LCEL. `OpenAIEmbeddings` posts token arrays by default, which Gemini
+*   In part 4, each question gets the 4 nearest chunks in one prompt and one model call
+    (the "stuff" approach). LangChain 1.x no longer has `langchain.chains`, so the chain
+    is written with LCEL. `OpenAIEmbeddings` posts token arrays by default, which Gemini
     rejects with a 501, so `check_embedding_ctx_length=False` makes it send plain
     strings.
 
@@ -262,11 +267,11 @@ that holds its answer (5 and 6, checked against the PDF):
 The knowledge base is four Word files (ticket rules, senior tickets, a visit guide,
 hotel and membership services) and two event posters. The script uses no LangChain.
 
-*   Each Word file is walked element by element. A paragraph gets the heading above it
-    as a prefix, and a table becomes Markdown (header row, separator row, one row per
-    table row). The four files give 26 text blocks. Indexed alone, a five-word heading
-    such as `Ticket Rules` ranked near the top for any ticket question and pushed the
-    refund clause out of the top k.
+*   Part 1 builds the indexes. Each Word file is walked element by element. A paragraph
+    gets the heading above it as a prefix, and a table becomes Markdown (header row,
+    separator row, one row per table row). The four files give 26 text blocks. Indexed
+    alone, a five-word heading such as `Ticket Rules` ranked near the top for any ticket
+    question and pushed the refund clause out of the top k.
 *   Text is embedded with `gemini-embedding-001` at 1024 dimensions and normalised.
 *   The posters are embedded with CLIP (`openai/clip-vit-base-patch32`, 512
     dimensions). CLIP trains an image encoder and a text encoder together so that a
@@ -289,9 +294,9 @@ An image can reach a text-only prompt in three ways, and the script shows all th
 | OCR (`rapidocr-onnxruntime`, pip only) | The words printed on the picture | The image's record, and the prompt when the image is found |
 | Vision model | A description of the picture itself | Printed for comparison, not used in the answers |
 
-*   Every question searches the text index for the 3 nearest blocks. The image index
-    is searched only when the question contains a word such as `poster`, `picture` or
-    `look like`, and then it returns the single nearest image.
+*   In part 2, every question searches the text index for the 3 nearest blocks. The
+    image index is searched only when the question contains a word such as `poster`,
+    `picture` or `look like`, and then it returns the single nearest image.
 *   The two sets of hits are not merged by distance. Both are squared L2 between unit
     vectors, so the numbers look alike, but the models spread their scores
     differently: a strong CLIP match sits near cosine 0.3.
@@ -322,7 +327,7 @@ holds plain statements. Query rewriting turns the question into one a retriever 
 use. DeepSeek does every rewrite, and all prompts share one frame: instruction,
 conversation history, current question. Parts 1 to 6 use a made-up park, Riverbend
 Park. They only rewrite and retrieve nothing, so what a rewrite does for retrieval is
-not measured here.
+not measured here. Parts 1 to 5 rewrite one type each:
 
 | Type | Trigger | Original and rewrite |
 | :--- | :--- | :--- |
@@ -410,23 +415,24 @@ these cases and asks for JSON:
 
 ## Script 09: Reranking and query expansion
 
-The knowledge base is 26 paragraph chunks (108 sentences) from 4 Word files of Disney
-ticket rules. Each paragraph carries its file's heading, so no heading is a chunk of its
-own.
+Part 1 loads the knowledge base: 26 paragraph chunks (108 sentences) from 4 Word files
+of Disney ticket rules. Each paragraph carries its file's heading, so no heading is a
+chunk of its own.
 
-*   Stage one, BM25, scores every paragraph by the words it shares with the question
-    and keeps 8. BM25 is TF-IDF with two fixes: repeats of a word soon stop adding
-    score, and long paragraphs lose the edge of simply holding more words.
+*   Part 2 retrieves in two stages. Stage one, BM25, scores every paragraph by the words
+    it shares with the question and keeps 8. BM25 is TF-IDF with two fixes: repeats of a
+    word soon stop adding score, and long paragraphs lose the edge of simply holding
+    more words.
 *   Stage two, a cross-encoder (`cross-encoder/ms-marco-MiniLM-L-6-v2`), reads the
     question together with each sentence of those 8 paragraphs and keeps the best 3.
     An embedding model is a bi-encoder: it encodes question and document separately,
     so document vectors can be computed ahead. A cross-encoder reads the pair together
     and judges meaning more closely, but costs one model pass per pair, so it only
     runs on the few candidates recall leaves.
-*   The cross-encoder returns raw logits with no fixed range. For question 1, the
-    correct sentence scores -6.11 and an unrelated sentence about the Eiffel Tower
-    -11.36. Zero is not a threshold. Only the order within one question means
-    anything.
+*   Part 4 shows that the cross-encoder returns raw logits with no fixed range. For
+    question 1, the correct sentence scores -6.11 and an unrelated sentence about the
+    Eiffel Tower -11.36. Zero is not a threshold. Only the order within one question
+    means anything.
 
 Part 3 scores question 1's answer as different units:
 
@@ -481,17 +487,19 @@ hours, transport, rides and park rules. Three visitor questions each map to one 
 Two of them share no content word with any chunk. The third uses the chunk's own words,
 as a control.
 
-*   The basic set is five questions for one chunk, with `question`, `question_type` and
-    `difficulty`. It is shown for comparison only.
-*   The wider set is eight questions, varied by type, wording, difficulty and
-    perspective. It adds `perspective`, `is_answerable` and `answer`: the model
-    answers its own question from the chunk, and a question the chunk cannot answer is
-    dropped. Indexed, such a question would send a visitor to a chunk without the
+*   Part 1 asks for a basic set of five questions for one chunk, with `question`,
+    `question_type` and `difficulty`. It is shown for comparison only.
+*   Part 2 asks for a wider set of eight questions, varied by type, wording, difficulty
+    and perspective. It adds `perspective`, `is_answerable` and `answer`: the model
+    answers its own question from the chunk, and part 3 drops each question the chunk
+    cannot answer. Indexed, such a question would send a visitor to a chunk without the
     answer. On the first chunk, 3 of 8 were dropped.
 *   Part 4 generates the wider set for every chunk and keeps the answerable questions:
     39 of 48 in the run below. It then builds two BM25 indexes, one on the six chunks
     and one on the kept questions. The questions can be stored in the same record as
     the chunk.
+
+Part 5 scores both indexes, and part 6 shows each query:
 
 ```
   prose retrieval accuracy   :  33.3%  (1/3)
@@ -504,8 +512,8 @@ as a control.
 | 2 | `What time should I show up to avoid the crowds?` | 0.000 | 8.979 | ✗ | ✓ | `If you wanted to avoid crowds, when would be the best time to go?` |
 | 3 | `How much does it cost to park a car?` | 1.262 | 2.499 | ✓ | ✗ | `How much does a weekday adult ticket cost?` (kb_002) |
 
-*   A 0.000 in the prose column means nothing matched. BM25 scores every chunk at zero
-    and `max()` returns the first one, `kb_001`.
+*   Part 7 reads the numbers. A 0.000 in the prose column means nothing matched. BM25
+    scores every chunk at zero and `max()` returns the first one, `kb_001`.
 *   The question index returns the chunk that produced the closest generated question,
     so a hit depends on how close the visitor came to one of those phrasings.
 *   The generated questions bring words of their own, and those work both ways. Query
@@ -523,16 +531,16 @@ as a control.
 DeepSeek does two jobs here. Extraction turns three visitor conversations about an
 invented theme park into knowledge base entries in three steps.
 
-*   Extract. The model pulls typed points out of each conversation: `fact`, `need`,
-    `question`, `process` and `caution`, each with `confidence`, `source`, `keywords`
-    and `category`. In three runs every point came back at confidence 1.00, so the
-    script prints that the column does not tell the points apart.
-*   Filter. `need` and `question` points record what a visitor wanted, not what is
-    true. Left in the index, a question about ticket prices could retrieve "the
+*   Part 1 extracts. The model pulls typed points out of each conversation: `fact`,
+    `need`, `question`, `process` and `caution`, each with `confidence`, `source`,
+    `keywords` and `category`. In three runs every point came back at confidence 1.00,
+    so the script prints that the column does not tell the points apart.
+*   Part 2 filters. `need` and `question` points record what a visitor wanted, not what
+    is true. Left in the index, a question about ticket prices could retrieve "the
     visitor wanted to know the ticket price". They are dropped: 16 of 39 points in the
     run below.
-*   Merge. The remaining points are grouped by type, and each group becomes one entry
-    through one model call. 23 points became 3 entries.
+*   Part 3 merges. The remaining points are grouped by type, and each group becomes one
+    entry through one model call. 23 points became 3 entries.
 
 ```
   fact: 13 points -> 1 (confidence 1.00)
@@ -544,8 +552,8 @@ invented theme park into knowledge base entries in three steps.
     topic, but the model's `category` is too loose for that, with 11 to 14 different
     values for 23 points across three runs. Nothing later uses the merged entries.
 
-The audit checks a separate six-entry base for three problems, each with its own prompt
-and its own extra input:
+Part 4 loads a separate six-entry base, and parts 5 to 7 audit it for three problems,
+each with its own prompt and its own extra input:
 
 | Check | Extra input | Finds |
 | :--- | :--- | :--- |
@@ -555,10 +563,10 @@ and its own extra input:
 
 *   Coverage needs the questions because a gap only exists relative to something
     someone asks. Freshness needs the date because the model has no clock.
-*   The base holds three planted defects, which serve as the answer key: no entry
-    about pets, a winter festival that ended in January 2024, and `kb_002` and
-    `kb_005` giving the parking charge as 100 and 150. The report checks each check
-    against its planted defect by id and counts everything else it flagged.
+*   The base holds three planted defects, which serve as the answer key: no entry about
+    pets, a winter festival that ended in January 2024, and `kb_002` and `kb_005` giving
+    the parking charge as 100 and 150. The report in part 8 checks each check against
+    its planted defect by id and counts everything else it flagged.
 
 ```
 --- 5. Coverage ---
@@ -596,17 +604,17 @@ and its own extra input:
 Version 1 of an invented park's base has 3 entries. Version 2 adds 2 entries and
 extends the other 3. Embeddings do the retrieval here, not a chat model.
 
-*   Fingerprints. Each version gets an MD5 hash of its sorted ids and texts, so one
+*   Part 1 gives each version an MD5 hash of its sorted ids and texts, so one
     edited character changes it: v1.0 has hash `1d0aec844c6e`, v2.0 `61d5d51301c1`.
-*   Diff. Added and removed ids come from set operations, modified ones from exact
-    text comparison, with no model: 2 added, 0 removed, 3 modified.
-*   Indexing. Both versions are embedded with gemini-embedding-001 at 1024 dimensions
-    into `IndexFlatIP`. At 1024 dimensions the vectors come back with a mean length of
+*   Part 2 diffs the versions. Added and removed ids come from set operations, modified
+    ones from exact text comparison, with no model: 2 added, 0 removed, 3 modified.
+*   Part 3 embeds both versions with gemini-embedding-001 at 1024 dimensions into
+    `IndexFlatIP`. At 1024 dimensions the vectors come back with a mean length of
     0.62, so each is divided by its own length first. The inner product is then the
     cosine, and no entry ranks higher only because its vector is longer.
-*   Scoring. Each of five test questions names a string the answer must contain. A
-    question counts as answered when that string appears in the top 3 entries, and the
-    table shows the rank of the first entry holding it.
+*   Part 4 scores them. Each of five test questions names a string the answer must
+    contain. A question counts as answered when that string appears in the top 3
+    entries, and the table shows the rank of the first entry holding it.
 
 ```
   query                                            v1.0     v2.0
@@ -625,14 +633,14 @@ extends the other 3. Embeddings do the retrieval here, not a chat model.
 *   The accuracy hides a weak retrieval. The location entry comes second in version 1
     and third in version 2. With the top 1 both versions would fail, and with the top 2
     version 2 would.
-*   The gain from 60% to 100% comes entirely from content version 1 lacked: `line 11`
-    and `launch coaster` are in no entry of version 1. Version 2 does not search
-    better; it has more to find.
+*   Part 5 shows that the gain from 60% to 100% comes entirely from content version 1
+    lacked: `line 11` and `launch coaster` are in no entry of version 1. Version 2 does
+    not search better; it has more to find.
 *   The mean search time was 0.007 ms and 0.006 ms. An exact search over 3 or 5
     vectors costs the same, so the script reports no measurable change.
-*   The regression check asks whether every question version 1 answered still passes:
-    3 of 3 do. Five cases catch only the breakages they cover, so the claim is "no
-    regressions on this test set".
+*   Part 6, the regression check, asks whether every question version 1 answered still
+    passes: 3 of 3 do. Five cases catch only the breakages they cover, so the claim is
+    "no regressions on this test set".
 *   A substring test shows that the answer's text was retrieved, not that a reply
     built from it would be right.
 
@@ -644,26 +652,27 @@ The answer needs five facts that no passage states together: `Delaunay trained E
 founded Northgate, Northgate developed Latch Encoding, Latch Encoding made the Orrery
 system possible, Orrery was deployed at Port Halbrook`.
 
-*   The baseline splits the archive into 7 chunks of about 150 words, embeds them with
-    gemini-embedding-001 and answers from the nearest 3 (cos 0.686, 0.655, 0.652) with
-    gemini-3.1-flash-lite. All five chain terms appear in those chunks. A term can
-    also sit in a passage that denies the link: the third chunk is the Broch
+*   Part 2, the baseline, splits the archive into 7 chunks of about 150 words, embeds
+    them with gemini-embedding-001 and answers from the nearest 3 (cos 0.686, 0.655,
+    0.652) with gemini-3.1-flash-lite. All five chain terms appear in those chunks. A
+    term can also sit in a passage that denies the link: the third chunk is the Broch
     collection, which the archive itself warns researchers against.
-*   GraphRAG (Microsoft's graphrag 2.7.2) has a model extract entities and
-    relationships from each text unit when it builds the index. The Leiden algorithm
+*   GraphRAG (Microsoft's graphrag 2.7.2) builds its index in part 4: a model
+    extracts entities and relationships from each text unit. The Leiden algorithm
     groups closely linked entities into communities, and the model summarises each
-    community. graphrag pins numpy 1.x, so it runs in its own virtual environment and
-    the script drives it from the command line.
-*   The index holds 28 entities, 36 relationships, 4 communities and 4 community
-    reports, from 5 text units. `ASHFIELD` and `ASHFIELD POLYTECHNIC`, `NORTHGATE` and
-    `NORTHGATE LAB` stay four entities: extraction merges only entities with the same
-    name and type, and entity resolution, which would join different names for one
-    thing, is off by default.
-*   Global search answers from the community summaries by map-reduce and cites them as
-    `Reports`. Local search starts from the entities in the question and also cites
-    `Entities`, `Relationships` and `Sources` (the text units). The script checks that
-    every cited id exists in its table; all of them do. That shows the rows exist, not
-    that they support the sentence they are attached to.
+    community. graphrag pins numpy 1.x, so part 3 gives it its own virtual environment,
+    and the script drives it from the command line.
+*   Part 5 counts what the index holds: 28 entities, 36 relationships, 4 communities and
+    4 community reports, from 5 text units. `ASHFIELD` and `ASHFIELD POLYTECHNIC`,
+    `NORTHGATE` and `NORTHGATE LAB` stay four entities: extraction merges only entities
+    with the same name and type, and entity resolution, which would join different names
+    for one thing, is off by default.
+*   Part 6 runs global search, which answers from the community summaries by map-reduce
+    and cites them as `Reports`. Part 7 runs local search, which starts from the
+    entities in the question and also cites `Entities`, `Relationships` and `Sources`
+    (the text units). The script checks that every cited id exists in its table; all of
+    them do. That shows the rows exist, not that they support the sentence they are
+    attached to.
 
 Part 8 counts, in each of the three answers, how many of the question's 7 entities it
 names:

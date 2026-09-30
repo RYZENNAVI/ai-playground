@@ -53,34 +53,35 @@ relies on.
 The model has no live weather data. It is given the JSON schema of a local function,
 `get_current_weather`, and asks the script to run it.
 
-*   The question goes out with `tools=TOOLS_SCHEMA`, which describes the function name,
-    what it does and its `location` parameter.
+*   Part 1 sends the question with `tools=TOOLS_SCHEMA`, which describes the function
+    name, what it does and its `location` parameter.
 *   `response.choices[0].message.tool_calls` holds nothing when the model answers
     directly. Otherwise each call has a `name` and JSON `arguments`, parsed with
     `json.loads`. The question "How is the weather in Shanghai and Shenzhen today?"
     usually returns two calls, one per city.
-*   The script runs `get_current_weather(**fn_args)`. The function reads a fixed table of
-    temperatures, so the flow can be tested without a real weather service.
+*   Part 2 prints each call and runs `get_current_weather(**fn_args)`. The function reads
+    a fixed table of temperatures, so the flow can be tested without a real weather
+    service.
 *   The script appends the assistant message that asked for the calls, then one
     `{"role": "tool", "tool_call_id": ..., "content": ...}` per call. Every call needs its
     own `tool` message with the matching id, or the next request fails.
-*   The script calls the model again with the whole history and prints the final answer.
+*   Part 3 calls the model again with the whole history and prints the final answer.
 
 ## Script 03: An image in a chat message
 
-*   The script draws an order table with Pillow and saves it to `outputs/order_table.png`.
+*   Part 1 draws an order table with Pillow and saves it to `outputs/order_table.png`.
 *   The picture goes into an ordinary user message. The message content is a list of two
     parts: a `text` part with the instruction and an `image_url` part holding the PNG as
     a base64 data URL (`data:image/png;base64,...`).
-*   A vision-language model reads the table and returns it as JSON. It is
+*   In part 2, a vision-language model reads the table and returns it as JSON. It is
     `gemini-3.1-flash-lite` with a Gemini key and `gpt-4o-mini` otherwise. The script
     prints the reply without parsing it, so it may come wrapped in a Markdown code block.
 
 ## Script 04: A tool loop
 
-A database alert goes to the model. The system message tells it to check the server
-first with `get_current_status`, then give a root-cause analysis and an action plan.
-A simplified version of the loop:
+Part 1 sends a database alert to the model. The system message tells it to check the
+server first with `get_current_status`, then give a root-cause analysis and an action
+plan. A simplified version of the loop:
 
 ```python
 while True:
@@ -96,9 +97,11 @@ while True:
 
 *   The model decides when it has enough data. The loop ends when a reply comes without a
     tool call, and nothing else stops it. Script 06 adds a round limit.
-*   The function draws connections, CPU and memory at random on every call. The connection
-    count always stays above the alert threshold of 80.
-*   The model only diagnoses. Nothing in the script executes its plan.
+*   Part 2 prints every call and its result. The function draws connections, CPU and
+    memory at random on every call. The connection count always stays above the alert
+    threshold of 80.
+*   The model only diagnoses, and part 3 prints the diagnosis. Nothing in the script
+    executes its plan.
 
 ## Script 05: Prompt techniques
 
@@ -121,34 +124,35 @@ message. `compose_prompt` builds the user message from sections under Markdown h
 
 ## Script 06: A search agent with a round cap
 
-*   The question is "What have DeepSeek and OpenAI announced recently?" The model's
+*   Part 1 asks "What have DeepSeek and OpenAI announced recently?" The model's
     knowledge stops at its training cutoff, so it gets a search tool.
 *   The search is simulated on purpose. The tool queries the Wikipedia search API
     (MediaWiki `list=search`), which needs no key and returns titles and snippets as
     JSON. The model is told it searches the web. Each search returns up to three results.
     A failed request gives the model an error message instead of raising.
-*   Script 04's loop only ends when the model stops calling tools. Here the loop runs at
-    most three rounds. One round can hold several searches.
+*   Script 04's loop only ends when the model stops calling tools. Here part 2 runs the
+    loop for at most three rounds. One round can hold several searches.
 *   If the model is still searching after the third round, the script adds a message
     telling it to stop, and calls it once more with `tool_choice="none"`. That setting
-    rules out another tool call, so the reply is text.
+    rules out another tool call, so the final answer in part 3 is text.
 
 ## Script 07: A local model through Ollama
 
 *   Ollama serves models over a REST API on port 11434. The script uses three endpoints:
     `/api/tags` lists the pulled models, `/api/pull` downloads one and `/api/generate`
-    produces a reply. A model name without a tag means `:latest`, as in `ollama run`.
+    produces a reply. Part 1 downloads the model when it is missing, and part 2 asks for
+    one reply. A model name without a tag means `:latest`, as in `ollama run`.
 *   `deepseek-r1:1.5b` is DeepSeek-R1-Distill-Qwen-1.5B, a small Qwen model fine-tuned on
     reasoning samples written by DeepSeek-R1. It is not the full R1. It writes its
     reasoning before the answer.
-*   With `"stream": true`, Ollama sends one JSON object per line as the model writes, and
-    the script prints each piece as it arrives.
+*   In part 3, with `"stream": true`, Ollama sends one JSON object per line as the model
+    writes, and the script prints each piece as it arrives.
 *   Ollama 0.34.2 returns the reasoning in its own `thinking` field and the answer in
     `response`. Older versions put both in `response`, with the reasoning wrapped in
-    `<think>` tags. The script reads the two fields and prints the length of each.
-*   `build_api_app` defines a FastAPI gateway with `POST /api/chat`, which forwards the
-    prompt to Ollama and returns the answer. CORS is open, so a browser frontend on
-    another origin can call it. Start it from the repository root:
+    `<think>` tags. Part 4 reads the two fields and prints the length of each.
+*   Part 5, `build_api_app`, defines a FastAPI gateway with `POST /api/chat`, which
+    forwards the prompt to Ollama and returns the answer. CORS is open, so a browser
+    frontend on another origin can call it. Start it from the repository root:
 
     ```
     uvicorn --app-dir 01-llm-foundation 07_ollama_local_chat:build_api_app --factory --port 8000
@@ -159,23 +163,23 @@ message. `compose_prompt` builds the user message from sections under Markdown h
 
 ## Script 08: The same model with Transformers
 
-*   `snapshot_download` fetches `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` from the
-    Hugging Face Hub. `allow_patterns` keeps only the weights, configs and tokenizer
-    files. A cached checkpoint is only checked against the Hub. Set
+*   Part 1 uses `snapshot_download` to fetch `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B`
+    from the Hugging Face Hub. `allow_patterns` keeps only the weights, configs and
+    tokenizer files. A cached checkpoint is only checked against the Hub. Set
     `HF_ENDPOINT=https://hf-mirror.com` to use a mirror.
-*   `torch_dtype="auto"` keeps the dtype saved in the checkpoint, bfloat16, two bytes per
-    parameter. The model takes about 3.5 GB of VRAM.
-*   Each model family marks roles with its own special tokens. `apply_chat_template`
-    turns the message list into the format the model was trained on. For this model the
-    string looks like
-    `<｜begin▁of▁sentence｜>system text<｜User｜>question<｜Assistant｜><think>`. It ends
-    with an opening `<think>`, so the reply starts inside the reasoning and shows only
-    the closing `</think>`.
-*   `model.generate` returns the prompt tokens followed by the new ones. The script
-    slices off the prompt before decoding, so only the reply is printed.
+*   In part 2, `torch_dtype="auto"` keeps the dtype saved in the checkpoint, bfloat16, two
+    bytes per parameter. The model takes about 3.5 GB of VRAM.
+*   Each model family marks roles with its own special tokens. In part 3,
+    `apply_chat_template` turns the message list into the format the model was trained on.
+    For this model the string looks like
+    `<｜begin▁of▁sentence｜>system text<｜User｜>question<｜Assistant｜><think>`. It ends with
+    an opening `<think>`, so the reply starts inside the reasoning and shows only the
+    closing `</think>`.
+*   In part 4, `model.generate` returns the prompt tokens followed by the new ones. The
+    script slices off the prompt before decoding, so only the reply is printed.
 
-The table compares 07 and 08 on an RTX 5070 Ti Laptop (128 tokens, warmed up, mean of
-three runs):
+Part 5 of script 08 measures the Transformers speed. The table compares 07 and 08 on an
+RTX 5070 Ti Laptop (128 tokens, warmed up, mean of three runs):
 
 | Path | Weights | Speed | VRAM |
 | :--- | :--- | :--- | :--- |
