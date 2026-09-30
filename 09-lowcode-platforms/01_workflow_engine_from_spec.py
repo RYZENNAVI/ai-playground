@@ -1,18 +1,29 @@
-"""Run a visual workflow from its exported definition, without the visual editor.
+"""This script runs a drag-and-drop workflow from its exported JSON definition, without
+the visual editor, by resolving the port references between its nodes and executing them
+in topological order.
 
-Demonstrates that a drag-and-drop workflow is a typed graph plus a node registry:
+The run shows that such a workflow is a typed graph plus a node registry:
     1. Load three workflow definitions and print the node types they are built from.
-    2. Resolve every port reference, then repeat it on a definition whose one edited
-       reference points at a field no upstream node emits.
-    3. Order the nodes topologically, and refuse a graph that contains a cycle.
-    4. Execute the main workflow node by node, printing what each node contributed.
-    5. Read what the code nodes actually do, including one regular expression whose
-       character class excludes four letters instead of one word.
-    6. Run the same batch body as isolated iterations and as a state-carrying loop.
-    7. Read the branch the selector wrote, and drop the items it marked.
-    8. Follow both sub-workflow calls, bounded by a call-depth guard.
+    2. Check every port reference before anything runs. Then break one reference under
+       'inputs', and break the batch's 'over' and the selector's 'when', which sit
+       outside 'inputs'.
+    3. Order the nodes topologically, then add one edge that closes a cycle.
+    4. Execute the main workflow node by node, printing what each node produced.
+    5. List what each code node does. Then split a scene text with a regular expression
+       whose character class excludes four letters instead of one word. No workflow
+       here uses that split.
+    6. Run one node of the batch body over every ordering of the four articles, once
+       isolated and once carrying a running total.
+    7. Read the branch the selector wrote for each article in step 4, and what
+       KeepMarked kept.
+    8. Follow both sub-workflow calls, then run a workflow that calls itself and let the
+       call-depth guard stop it.
 
-Module 09: Low-Code Platforms - Workflow Engine.
+Nothing here calls a model. Every model node is answered by a fixed local handler, so
+each run prints the same thing; script 02 puts a real model behind the same node type.
+A batch gives every iteration its own copy of the context, so nothing one element writes
+reaches the next. Anything that must hold across elements has to be written into the
+data before the batch splits it.
 """
 
 import json
@@ -58,15 +69,13 @@ REVIEW_FIXTURE = [
      "body": "The research tab is genuinely useful, though it buries the export button."},
 ]
 
-# One paragraph per scene, in the shape a model is asked to produce them.
+# Three scene paragraphs under numbered headings, for the regex in step 5.
 SCENE_TEXT = (
     "Scene1: A red kite rises over an empty green field at dawn.\n"
     "Scene2: The same field at noon, seen from beneath a bending tree.\n"
     "Scene3: Evening arrives and the kite is a dark speck against orange cloud.\n"
 )
 
-
-# --- Plugin registry -------------------------------------------------------
 
 def plugin_news_feed(topic):
     """Return market articles for a topic. Stands in for a remote data source."""
@@ -81,14 +90,10 @@ def plugin_review_feed(app_id):
 PLUGINS = {"news_feed": plugin_news_feed, "review_feed": plugin_review_feed}
 
 
-# --- Code node registry ----------------------------------------------------
-
 def code_same_calendar_day(today, published):
     """Return 1 when a published timestamp falls on the reference date.
 
-    The timestamp is cut back to its date part before the comparison, so
-    '2026-05-04 09:05' and '2026-05-04' still meet. Both sides stay strings;
-    the ISO layout is what lets a string comparison give the right answer.
+    Cuts '2026-05-04 09:05' to its date part first, so it can equal '2026-05-04'.
     """
     day = published.split(" ")[0]
     return {"same_day": 1 if day == today else 0}
@@ -100,11 +105,9 @@ def code_keep_marked(values, marks):
 
 
 def code_split_by_verdict(verdicts, digests):
-    """Split digests into two lists according to the verdict beside each one.
+    """Split digests into a positive and a negative list by the verdict beside each one.
 
-    The comparison is a string equality against a fixed vocabulary. Whatever
-    produced the verdict has to keep emitting exactly these words; script 02
-    is about what happens when it stops.
+    Any other word, 'neutral' included, lands in neither list (script 02 counts them).
     """
     positive = [d for v, d in zip(verdicts, digests) if v == "positive"]
     negative = [d for v, d in zip(verdicts, digests) if v == "negative"]
@@ -118,25 +121,19 @@ CODE_FNS = {
 }
 
 
-# --- Model node registry ---------------------------------------------------
-
-STOPWORDS = {"the", "a", "an", "and", "on", "in", "at", "of", "to", "its", "it",
-             "is", "are", "has", "have", "not", "for", "by", "all", "next"}
+# Hotwords only counts words of four letters or more, so shorter stopwords never reach
+# this check.
+STOPWORDS = {"have", "next"}
 
 
 def model_node(title, args):
-    """Answer a model node with a deterministic local handler.
-
-    Nothing here calls a model. This script is about the engine around the node,
-    so every handler has to return the same thing on every run; script 02 puts a
-    real model behind this same node type and measures what it returns.
-    """
+    """Answer a model node with a fixed local handler instead of a model."""
     if title == "Digest":
         # A bare split(".") would cut "gained 1.2 percent" after the 1. A sentence
         # end is a period followed by whitespace or the end of the text; a decimal
         # point is followed by a digit.
         first = re.split(r"\.(?=\s|$)", args["body"].strip())[0].strip()
-        return {"text": f"{args['title']} - {first}."}
+        return {"text": f"{args['title']}: {first}."}
     if title == "Classify":
         rating = args.get("rating", 3)
         verdict = "positive" if rating >= 4 else "negative" if rating <= 2 else "neutral"
@@ -156,8 +153,6 @@ def model_node(title, args):
     raise KeyError(f"no handler registered for model node {title!r}")
 
 
-# --- Reference resolution --------------------------------------------------
-
 def declared_ports(spec):
     """Map every node id in a definition to the ports it says it emits."""
     ports = {}
@@ -169,11 +164,9 @@ def declared_ports(spec):
 
 
 def resolve(ref, ctx, item=None):
-    """Turn one reference string into a value.
+    """Turn one reference into a value: 'literal:x', 'item.field' or 'node.port'.
 
-    Three forms exist, and the platform's editor writes all three:
-    'literal:x' is a constant, 'item.field' reads the current batch element,
-    and 'node.port' reads a port another node has already produced.
+    'item' is the current batch element; 'node.port' is a port already produced.
     """
     if ref.startswith("literal:"):
         return ref[len("literal:"):]
@@ -186,11 +179,9 @@ def resolve(ref, ctx, item=None):
 
 
 def validate(spec, library):
-    """Return every reference in one definition that cannot be satisfied.
+    """Return every reference in one definition that no declared port satisfies.
 
-    This is the check the editor is expected to run before the graph is allowed
-    to start. A reference that names a port nobody declares is a mistake that
-    the canvas will happily draw and the runtime will only find on the way past.
+    Without this check, such a reference fails only when the run reaches its node.
     """
     ports = declared_ports(spec)
     known = set(ports) | {"item"}
@@ -247,10 +238,9 @@ def validate(spec, library):
 
 
 def topological_order(spec):
-    """Order the top-level nodes so every node runs after its predecessors.
+    """Order the top-level nodes so each runs after its predecessors (Kahn's algorithm).
 
-    Returns (order, cycle_nodes). A non-empty second element means the graph
-    cannot run at all: the remaining nodes are each waiting on another one.
+    Returns (order, stuck); stuck lists the nodes that never become ready.
     """
     incoming = {node["id"]: 0 for node in spec["nodes"]}
     outgoing = {node["id"]: [] for node in spec["nodes"]}
@@ -270,8 +260,6 @@ def topological_order(spec):
         ready.sort()
     return order, sorted(set(incoming) - set(order))
 
-
-# --- Execution -------------------------------------------------------------
 
 def run_node(node, ctx, item=None, trace=None):
     """Execute one node and return the dictionary of ports it produces."""
@@ -303,13 +291,7 @@ def run_node(node, ctx, item=None, trace=None):
 
 
 def run_batch(node, ctx, trace=None):
-    """Run the body once per element, each iteration starting from a clean slate.
-
-    Every iteration gets its own context. Nothing an iteration writes is visible
-    to the next one, which is what makes the elements safe to process in any
-    order - and also why anything that must hold across them has to be written
-    into the data before the batch splits it up.
-    """
+    """Run the body once per element, each iteration on its own copy of the context."""
     collected = {name: [] for name in node["collect"]}
     for element in resolve(node["over"], ctx):
         local = dict(ctx)
@@ -321,18 +303,16 @@ def run_batch(node, ctx, trace=None):
 
 
 def run_workflow(spec_id, library, inputs, depth=0, trace=None):
-    """Execute one workflow definition and return the ports its end node reads.
+    """Execute one workflow definition and return the values its end node reads.
 
-    depth counts nested sub-workflow calls. A platform needs this guard because
-    a definition may call another one that calls back into it; the canvas shows
-    two tidy boxes either way.
+    depth counts nested sub-workflow calls; past MAX_CALL_DEPTH the call raises.
     """
     if depth > MAX_CALL_DEPTH:
         raise RecursionError(f"call depth {depth} exceeded at {spec_id!r}")
     spec = library[spec_id]
     order, cycle = topological_order(spec)
     if cycle:
-        raise ValueError(f"{spec_id} cannot run: {cycle} form a cycle")
+        raise ValueError(f"{spec_id} cannot run: {cycle} are stuck on a cycle")
 
     nodes = {node["id"]: node for node in spec["nodes"]}
     ctx = {"100001": dict(inputs)}
@@ -353,14 +333,10 @@ def run_workflow(spec_id, library, inputs, depth=0, trace=None):
     return result
 
 
-# --- Code node reshaping ---------------------------------------------------
-
 def split_scenes_excluding(text):
     """Split on scene headings with a character class, which is the wrong tool.
 
-    '[^Scene]' is not 'anything but the word Scene'. It is 'anything but the
-    letters S, c, e and n', so the capture stops at the first of those letters
-    in the body text.
+    '[^Scene]' excludes the letters S, c, e and n, not the word, so captures stop early.
     """
     return [m.group(1).strip() for m in re.finditer(r"Scene\d+:([^Scene]+)", text)]
 
@@ -370,8 +346,6 @@ def split_scenes_by_separator(text):
     parts = re.split(r"Scene\d+:", text)
     return [part.strip() for part in parts if part.strip()]
 
-
-# --- Reporting -------------------------------------------------------------
 
 def load_library():
     """Read every workflow definition in the data directory."""
@@ -393,6 +367,7 @@ def census(spec):
 
 
 def main():
+    # 1. Load the definitions and count node types
     library = load_library()
 
     print("--- 1. Three definitions, and the node types they are built from ---")
@@ -401,8 +376,10 @@ def main():
         total = sum(counts.values())
         print(f"  {spec['name']:<16} {total:>2} nodes  {len(spec['edges']):>2} edges  "
               f"{', '.join(f'{k}x{v}' for k, v in sorted(counts.items()))}")
-    print(f"  every node type above resolves to a handler: "
-          f"{len(PLUGINS)} plugins, {len(CODE_FNS)} code functions, 1 model handler")
+    print(f"  handlers registered: {len(PLUGINS)} plugins, {len(CODE_FNS)} code functions,"
+          f" 1 model handler (step 4 runs all three definitions on them)")
+
+    # 2. Check every port reference
 
     print("\n--- 2. Every port reference, checked before anything runs ---")
     for spec_id, spec in library.items():
@@ -426,9 +403,11 @@ def main():
     print("  edit the batch's 'over' and the selector's 'when' instead:")
     for problem in validate(bent, library):
         print(f"    {problem}")
-    print("  neither of those two sits under 'inputs', and neither is drawn as an edge")
+    print("  neither sits under 'inputs', so a check of 'inputs' alone misses both")
     print("  run_workflow never calls validate: this is the editor's gate, not the")
     print("  runtime's, so a definition handed straight to the engine skips it")
+
+    # 3. Order the nodes, then close a cycle
 
     print("\n--- 3. Execution order, and a graph that has none ---")
     order, cycle = topological_order(library["market_sentiment"])
@@ -438,8 +417,10 @@ def main():
     looped["edges"].append({"from": "900001", "to": "107368"})
     order2, cycle2 = topological_order(looped)
     print(f"  add one edge End -> FetchNews: {len(order2)} of "
-          f"{len(looped['nodes'])} nodes can start, "
-          f"{len(cycle2)} wait forever {cycle2}")
+          f"{len(looped['nodes'])} nodes can run, "
+          f"{len(cycle2)} never become ready {cycle2}")
+
+    # 4. Run the main workflow
 
     print("\n--- 4. The main workflow, node by node ---")
     trace = []
@@ -450,6 +431,8 @@ def main():
             f"{k}={len(v)} item(s)" if isinstance(v, list) else f"{k}={str(v)[:38]!r}"
             for k, v in output.items())
         print(f"  {'  ' * depth}{title:<20} {shape}")
+
+    # 5. Code nodes, and a character class that is the wrong tool
 
     print("\n--- 5. What the code nodes are for ---")
     print("  each one reshapes data for the next node rather than deciding anything a")
@@ -472,55 +455,78 @@ def main():
           f" the character class kept {bad_chars} of {good_chars} characters, each"
           f" capture stopping at the first S, c, e or n in the body")
 
+    # 6. One batch body node, isolated and carrying state
     print("\n--- 6. A batch body, run isolated and run carrying state ---")
     news = plugin_news_feed("brokerage")["items"]
-    isolated = []
-    for element in news:
-        local = {"100001": {"today": "2026-05-04"}}
-        local["130992"] = code_same_calendar_day("2026-05-04", element["published"])
-        isolated.append(local["130992"]["same_day"])
+    isolated = [code_same_calendar_day("2026-05-04", element["published"])["same_day"]
+                for element in news]
     carried, seen = [], 0
     for element in news:
         seen += code_same_calendar_day("2026-05-04", element["published"])["same_day"]
         carried.append(seen)
-    marks_by_order, totals_by_order = set(), []
+    marks_by_article = [set() for _ in news]
+    totals_by_article = [set() for _ in news]
+    totals_by_order = []
     for perm in permutations(range(len(news))):
-        marks = [code_same_calendar_day("2026-05-04", news[i]["published"])["same_day"]
-                 for i in perm]
-        marks_by_order.add(tuple(sorted(marks)))
         running, totals = 0, []
-        for mark in marks:
+        for i in perm:
+            mark = code_same_calendar_day("2026-05-04", news[i]["published"])["same_day"]
             running += mark
+            marks_by_article[i].add(mark)
+            totals_by_article[i].add(running)
             totals.append(running)
         totals_by_order.append(tuple(totals))
     orders = len(totals_by_order)
-    distinct_totals = set(totals_by_order)
     matching = totals_by_order.count(tuple(carried))
     print(f"  isolated iterations: {isolated}")
     print(f"  carried across them: {carried}")
-    print(f"  over all {orders} orderings of the same 4 articles: the marks always form"
-          f" the same multiset ({len(marks_by_order)} distinct), because each article's"
-          f" mark reads only that article")
-    print(f"  the running totals take {len(distinct_totals)} distinct values over those"
-          f" same {orders} orderings; {matching} of them end up as {list(carried)}")
-    print("  a running total is the second kind, so it cannot live inside a batch;")
-    print("  anything that has to hold across elements is written in before the split")
+    print(f"  over all {orders} orderings of the same {len(news)} articles, what each"
+          f" article receives:")
+    for element, marks, totals in zip(news, marks_by_article, totals_by_article):
+        print(f"    {element['title'][:38]:<38} isolated {sorted(marks)}"
+              f"  carried {sorted(totals)}")
+    print(f"  {matching} of the {orders} orderings give the carried totals {carried}")
+    print("  an isolated mark reads only its own article; a running total depends on the")
+    print("  order, so it cannot live inside a batch. Anything that has to hold across")
+    print("  elements is written in before the split")
 
+    # 7. The branch the selector wrote
     print("\n--- 7. The branch the selector wrote ---")
     batch_output = next(o for _, _, nid, _, o in trace if nid == "136482")
+    kept = next(o for _, _, nid, _, o in trace if nid == "123474")["kept"]
     for element, branch in zip(news, batch_output["branch"]):
         print(f"  {branch:<5} {element['published']}  {element['title'][:44]}")
-    kept = code_keep_marked(batch_output["digest"], batch_output["branch"])["kept"]
-    print(f"  {len(kept)} of {len(news)} digests survive the branch")
+    print(f"  {len(kept)} of {len(batch_output['digest'])} digests survive the branch"
+          f" (KeepMarked's output in step 4)")
+
+    # 8. Sub-workflow calls and the call-depth guard
 
     print("\n--- 8. The two sub-workflow calls ---")
     depths = sorted({(d, s) for d, s, _, _, _ in trace})
     for depth, spec_id in depths:
         print(f"  depth {depth}: {library[spec_id]['name']}")
-    print(f"  guard stops at depth {MAX_CALL_DEPTH} and names the workflow it stopped in;")
-    print("  without it a self-calling definition still raises - Python's own recursion")
-    print("  limit sees to that - but only after hundreds of nested levels, each one")
-    print("  having run its plugin and model calls, and with a message naming nothing")
+    self_call = {
+        "id": "self_call", "name": "SelfCall", "inputs": ["topic"],
+        "nodes": [
+            {"id": "100001", "type": "start", "title": "Start", "ports": ["topic"]},
+            {"id": "200001", "type": "subworkflow", "title": "CallAgain",
+             "workflow": "self_call", "inputs": {"topic": "100001.topic"},
+             "ports": ["topic"]},
+            {"id": "900001", "type": "end", "title": "End",
+             "inputs": {"topic": "200001.topic"}},
+        ],
+        "edges": [{"from": "100001", "to": "200001"}, {"from": "200001", "to": "900001"}],
+    }
+    try:
+        run_workflow("self_call", dict(library, self_call=self_call), {"topic": "x"})
+    except RecursionError as err:
+        print(f"  a definition that calls itself: RecursionError: {err}")
+    else:
+        print("  a definition that calls itself: finished without an error")
+    print(f"  depths 0 to {MAX_CALL_DEPTH} run, and the call into depth"
+          f" {MAX_CALL_DEPTH + 1} raises; without the guard,")
+    print(f"  Python's recursion limit ({sys.getrecursionlimit()} here) raises instead,"
+          f" with a message that names no workflow")
     print(f"\n  hotwords: {result['hotwords']}")
     print("  report:")
     for line in result["report"].splitlines():

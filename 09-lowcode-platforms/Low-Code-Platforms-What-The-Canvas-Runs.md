@@ -1,825 +1,251 @@
-# Low-Code Platforms: What the Canvas Actually Runs
+# Low-code platforms: what the canvas runs
 
-Five scripts on one question: **when an AI application is assembled by dragging boxes onto
-a canvas instead of writing code, what is actually executing — and which mistakes does that
-way of building make harder to see?**
+On a low-code platform an AI application is built by dragging nodes onto a canvas and wiring
+them together. These five scripts rebuild the mechanisms behind that editor locally and in code,
+so each claim can be checked against printed output. Script 01 runs a workflow from its exported
+JSON definition. Script 02 puts a real chat model behind one node and scores its replies against
+the strings the next node compares. Script 03 writes a plugin held to a declared schema. Script
+04 indexes a table two ways and asks a question only one of them can answer. Script 05 serves
+the platform's HTTP API from a local server and calls it. Most failures shown here raise no
+error, so each script prints the number that exposes them. This document explains what each
+script does and the ideas it relies on.
 
-Everything here runs locally. There is no platform account, no hosted deployment, no
-canvas. Each script rebuilds one mechanism a low-code platform performs behind its editor,
-in a form where the claims can be checked: a workflow engine that reads a declarative graph
-and runs it, a model node scored against the vocabulary the next node compares against, a
-plugin held to its declared schema, a table indexed two ways and asked a question only one
-of them can answer, and a local server speaking the protocol such a platform exposes.
+| # | Script | What it shows |
+| :---: | :--- | :--- |
+| 01 | `01_workflow_engine_from_spec.py` | A workflow run from its JSON definition: reference validation, topological order, batch bodies against carried state, a selector branch, and sub-workflow calls with a depth guard |
+| 02 | `02_llm_node_output_contract.py` | A real model behind a workflow node, prompted three ways and scored against the vocabulary the next node compares; a deterministic edit given to a model and to code |
+| 03 | `03_plugin_io_contract.py` | A plugin held to a declared input and output schema, permissive against strict field mapping, a skip policy that reports, and what paging costs the caller |
+| 04 | `04_table_knowledge_base_retrieval.py` | A table indexed two ways, semantic retrieval against a column filter on a three-condition question, and what prose recall costs |
+| 05 | `05_platform_api_protocol.py` | A local server with the platform's three endpoints and its event stream, blocking against streaming, two unrelated failures behind one status code, and a probe that rewrites the cause of a failure |
 
-The shapes are the ones mainstream platforms use — a typed node graph with port
-references, batch bodies, selector branches, sub-workflow calls, and an HTTP API with
-three endpoints and a server-sent event stream.
+## Shared setup
 
-**The module needs no platform credential.** Script 02 calls a chat model
-(DeepSeek, Gemini or OpenAI — whichever key is present). Script 04 embeds locally with
-`BAAI/bge-small-en-v1.5`, reusing a copy this repository already has on disk and
-downloading it once through `modelscope` only when no module has it yet. Scripts 01,
-03 and 05 make no network call at all; 05 starts a `uvicorn` subprocess on a loopback port
-and stops it before exiting.
+*   Scripts 01, 03 and 05 make no network call and need no key. Script 02 reads
+    `DEEPSEEK_API_KEY`, `GEMINI_API_KEY` or `OPENAI_API_KEY` from `.env`, in that order (the
+    OpenAI key also reads `OPENAI_BASE_URL` and `OPENAI_MODEL`), and backs off on a rate limit.
+    Script 04 embeds locally with `BAAI/bge-small-en-v1.5`. It looks under any sibling module's
+    `weights/` first and downloads the encoder once through `modelscope` only when no module has
+    it.
+*   The dependencies are openai, python-dotenv, sentence-transformers, numpy, fastapi and
+    uvicorn, plus modelscope if script 04 has to fetch its encoder.
+*   `data/` holds the inputs: three workflow definitions in `data/workflows/`,
+    `commission_plans.csv` (nine rows, four columns), `user_behavior_event.csv` (twenty event
+    rows across three user ids and four days) and `service_notes.txt`. Script 03 writes
+    `data/review_feed/page{1,2,3}.atom` and script 05 writes `data/mock_platform_server.py` on
+    every run. Those two are not tracked.
 
-**Requires**: `openai`, `python-dotenv`, `sentence-transformers`, `numpy`, `fastapi`,
-`uvicorn`, and `modelscope` if script 04 has to fetch its encoder.
+## Script 01: A workflow engine from a JSON definition
 
----
+A visual workflow is a typed directed graph plus a registry of node handlers, and the editor is
+one way of writing that graph. In code, a name that does not exist fails at import time. On a
+canvas, a reference to a field no upstream node emits is drawn like any other line, and the
+failure comes later, if at all. The `model` handler here answers each node title with a fixed
+local function, so every run prints the same thing. Script 02 puts a real model behind the same
+node type.
 
-## 1. What a canvas is, underneath
-
-### 1.1 The proposition
-
-**A visual workflow is a typed directed graph plus a registry of node handlers.**
-The editor is a way of writing that graph. Everything the editor does for you —
-validating a connection, deciding execution order, splitting an array across a batch body,
-following a call into another graph — is something the runtime has to do anyway, and each
-of those is a place where a mistake can hide.
-
-The reason this matters is not that graphs are hard. It is that **the canvas removes the
-compiler.** In code, a name that does not exist is a failure at import time. On a canvas,
-a reference to a field no upstream node emits is a line the editor draws exactly like any
-other line, and the failure arrives later, if at all.
-
-### 1.2 Where the decision lives
-
-The three ways of building on such a platform differ in one thing only: **who decides what
-happens next.**
-
-| Form | Who decides the next step | What you get |
-| :--- | :--- | :--- |
-| **Agent** | The model, from tool descriptions | Order is not fixed; the same question can take different paths |
-| **Branch on a classification** | The model picks a lane; the lanes are drawn by a person | One decision is delegated, the rest is fixed |
-| **Workflow** | The graph. Every run walks the same edges | Same input, same path, every time |
-
-Moving toward the workflow end buys repeatability and spends flexibility. Script 01 is
-about that end of the range, because it is the end where the mechanics are explicit enough
-to reproduce.
-
-### 1.3 The node types the engine implements
-
-`01_workflow_engine_from_spec.py` registers nine, which is enough to run all three
-definitions in `data/workflows/`:
-
-| Type | What it does in the engine |
+| Node type | What it does in the engine |
 | :--- | :--- |
-| `start` | Holds the values the run was called with |
-| `end` | Reads the ports the caller receives |
-| `plugin` | Calls a registered function by name (`PLUGINS`) |
-| `code` | Calls a registered function by name (`CODE_FNS`) |
-| `model` | Calls a handler that stands in for a model (see 1.5) |
-| `text` | Fills a template string from its inputs |
-| `selector` | Compares one port against a literal and emits a branch label |
-| `batch` | Runs a body once per element of an array |
-| `subworkflow` | Runs another definition and returns its end ports |
-
-### 1.4 The three definitions
-
-`data/workflows/` holds three JSON files. `market_sentiment` calls the other two:
-
-```
-MarketSentiment  11 nodes   8 edges  batchx1, codex2, endx1, modelx2, pluginx1,
-                                     selectorx1, startx1, subworkflowx2
-ReviewAnalysis    6 nodes   4 edges  batchx1, codex1, endx1, modelx1, pluginx1, startx1
-DailyReport       6 nodes   7 edges  endx1, modelx3, startx1, textx1
-```
-
-`DailyReport` has more edges than nodes because its start node fans out to three model
-nodes that later rejoin. That fan-out is worth noticing: those three nodes have no
-dependency on each other, so any order among them is valid, and a topological sort is free
-to pick one. The same is true of two nodes in `MarketSentiment`. **Wherever the graph
-permits more than one order, anything that depends on the order is a latent bug** — which
-is the same property section 4 measures inside a batch body.
-
-### 1.5 One honest limitation
-
-The `model` handler in script 01 does not call a model. It answers each node title with a
-deterministic local function, because script 01 is about the engine around the node and has
-to produce identical output on every run. Script 02 puts a real model behind the same node
-type and measures what comes back.
-
----
-
-## 2. References: the part the editor draws and does not check
-
-### 2.1 Three forms of reference
-
-Every input on every node is a string. `resolve()` reads three forms:
-
-```python
-if ref.startswith("literal:"):
-    return ref[len("literal:"):]
-source, _, port = ref.partition(".")
-if source == "item":
-    if item is None:
-        raise KeyError("'item' referenced outside a batch body")
-    return item[port]
-return ctx[source][port]
-```
-
-- `literal:ABC-Trade` — a constant typed into the editor
-- `item.published` — the current element inside a batch body
-- `136482.digest` — port `digest` of node `136482`
-
-### 2.2 Validating them before anything runs
-
-`validate()` walks every node, every batch body, every `collect` mapping and every edge,
-and returns the list of references that cannot be satisfied. Run against the three shipped
-definitions, it returns nothing. Then the script edits one reference — `136482.digest`
-becomes `136482.summary` — and runs the same check:
-
-```
-edit one reference from 136482.digest to 136482.summary:
-  123474.values wants 136482.summary, but 136482 emits ['digest', 'branch']
-the canvas draws that edge exactly the same either way
-```
-
-That last line is the point of the exercise. **The two graphs are visually identical.**
-One of them cannot run.
-
-Not every reference sits under `inputs`, though. A batch says what it walks in `over`, and
-a selector says what it tests in `cases[].when`. Neither is drawn as an edge, and neither
-is reachable by walking the inputs map, so both have to be checked explicitly:
-
-```
-edit the batch's 'over' and the selector's 'when' instead:
-  136482.over wants 107368.rows, but 107368 emits ['items']
-  159567.cases[0].when wants 130992.same_date, but 130992 emits ['same_day']
-```
-
-One more caveat about where this check lives: **`run_workflow` never calls `validate`.** It
-is the editor's gate, not the runtime's. A definition handed straight to the engine — by an
-API client, a migration script, a generated template — skips it entirely and fails at the
-node that reads the missing port. A platform that does not perform this check hands the difference to
-the runtime, where it surfaces as a `KeyError` in the middle of a long job, or — if the
-mapper downstream is forgiving — as a missing value nobody notices.
-
-The same function also checks sub-workflow calls against the target's declared inputs, so
-`ReviewAnalysis` cannot be called without `app_id`.
-
-### 2.3 Execution order, and a graph that has none
-
-`topological_order()` is Kahn's algorithm over the top-level nodes. On the main definition:
-
-```
-Start -> FetchNews -> PerArticle -> KeepMarked -> Hotwords -> ReviewAnalysis -> DailyReport -> End
-```
-
-Add one edge from `End` back to `FetchNews` and re-run it:
-
-```
-add one edge End -> FetchNews: 1 of 8 nodes can start, 7 wait forever
-['107368', '123474', '136482', '140895', '170693', '174746', '900001']
-```
-
-**One node can start; seven wait forever.** The function returns the stalled set rather
-than looping, and `run_workflow` refuses to execute a definition whose cycle set is
-non-empty. On a canvas, that back-edge is one drag of the mouse.
-
----
-
-## 3. Code nodes: shape adaptation, and a regular expression that is wrong
-
-### 3.1 What code nodes are for
-
-The engine registers three. None of them decides anything a model would decide;
-the rule each applies is a fixed comparison:
-
-| Function | What it does |
-| :--- | :--- |
-| `code_same_calendar_day` | Return 1 when a published timestamp falls on the reference date |
-| `code_keep_marked` | Keep the values whose parallel mark is the string `'keep'` |
-| `code_split_by_verdict` | Split digests into two lists according to the verdict beside each one |
-
-Every one of them reshapes data so the next node can read it: a date to a flag, two
-parallel arrays to one filtered array, one array to two. **That is the job.** A model node
-produces prose; a plugin wants a scalar; a batch body wants an array. Something has to
-convert, and the converter is a code node.
-
-### 3.2 A character class that excludes four letters
-
-Splitting a numbered list is the standard first use of a code node. Here are two ways,
-both in the script:
-
-```python
-def split_scenes_excluding(text):
-    return [m.group(1).strip() for m in re.finditer(r"Scene\d+:([^Scene]+)", text)]
-
-def split_scenes_by_separator(text):
-    parts = re.split(r"Scene\d+:", text)
-    return [part.strip() for part in parts if part.strip()]
-```
-
-`[^Scene]` reads as "anything but the word Scene". It is not. It is **anything but the
-letters S, c, e and n**, so the capture stops at the first of those letters in the body
-text. On three scenes of ordinary English:
-
-```
-splitting 3 scenes with a [^Scene] character class: 3 part(s), 7 characters kept
-  'A r'
-  'Th'
-  'Ev'
-splitting the same text on the heading itself: 3 part(s), 174 characters kept
-  'A red kite rises over an empty green field at dawn.'
-  'The same field at noon, seen from beneath a bending '
-  'Evening arrives and the kite is a dark speck against'
-the part count is the same either way, so counting parts says nothing; the character
-class kept 7 of 174 characters
-```
-
-Both versions return **three parts**. A check that counts the parts passes for both, which
-is why the script prints the characters kept instead: **7 against 174**. The failure is
-entirely in the content, and English makes it violent — nearly every word
-contains an `e`. **Splitting on the separator rather than capturing between separators
-removes the whole class of problem**, because the body text can no longer terminate a
-match.
-
----
-
-## 4. Batch bodies: what isolation buys and what it forbids
-
-### 4.1 The rule
-
-`run_batch` gives every iteration its own context:
-
-```python
-for element in resolve(node["over"], ctx):
-    local = dict(ctx)
-    for inner in node["body"]:
-        local[inner["id"]] = run_node(inner, local, item=element, trace=trace)
-    for name, ref in node["collect"].items():
-        collected[name].append(resolve(ref, local))
-```
-
-Nothing an iteration writes is visible to the next one. That is what makes the elements
-safe to process in any order — and it is also a hard constraint on what can go inside.
-
-### 4.2 The same computation, both ways
-
-The script runs one function over the same four articles twice: once isolated, once
-carrying a running total.
-
-```
-isolated iterations: [1, 1, 0, 1]
-carried across them: [1, 2, 2, 3]
-over all 24 orderings of the same 4 articles: the marks always form the same multiset
-(1 distinct), because each article's mark reads only that article
-the running totals take 4 distinct values over those same 24 orderings; 6 of them end
-up as [1, 2, 2, 3]
-```
-
-The script enumerates all 24 orderings rather than asserting the difference. The claim
-has to be stated carefully: reordering the articles *does* move the marks around, so
-`[1, 1, 0, 1]` is not order-invariant as a list. What is invariant is the multiset — every
-ordering produces three ones and one zero, because each article's mark reads only that
-article. The running total is not even invariant as a multiset: it takes four distinct
-values, one per position the zero can occupy, and the printed `[1, 2, 2, 3]` is what 6 of
-the 24 orderings give.
-
-The first result is a property of each element. The second is a property of the sequence.
-**A running total cannot live inside a batch body**, and neither can anything else that has
-to hold across elements — a shared style, a de-duplication set, a rolling threshold.
-
-The consequence is practical: **anything that must be consistent across the elements has to
-be written into the data before the batch splits it up.** If four generated images have to
-share a style, the style goes into each element's text in the code node that builds the
-array, not into the node that consumes it.
-
-### 4.3 The selector, and the hole it leaves
-
-The batch body ends with a selector:
-
-```json
-{"id": "159567", "type": "selector", "title": "KeepTodayOnly",
- "cases": [{"when": "130992.same_day", "equals": 1, "then": "keep"}],
- "otherwise": "drop", "ports": ["branch"]}
-```
-
-It does not remove anything. It writes a label, and the elements it labelled `drop` still
-occupy their position in the collected arrays:
-
-```
-keep  2026-05-04 18:20  Index closes higher on rate relief
-keep  2026-05-04 09:05  Broker cuts commission on index funds
-drop  2026-05-03 21:40  Quarterly filings land next week
-keep  2026-05-04 11:55  Settlement window shortens in June
-3 of 4 digests survive the branch
-```
-
-The next node, `code_keep_marked`, is what actually drops them. **The selector and that
-code node are two halves of one chain**: one marks, the other cleans up after the marking.
-Looking at either alone, neither seems necessary. This is the ordinary form of implicit
-coupling on a canvas — a dependency that lives in the data rather than in the edges.
-
----
-
-## 5. Sub-workflows: a call, and a guard
-
-`run_workflow` recurses, and counts:
-
-```python
-def run_workflow(spec_id, library, inputs, depth=0, trace=None):
-    if depth > MAX_CALL_DEPTH:
-        raise RecursionError(f"call depth {depth} exceeded at {spec_id!r}")
-```
-
-The traced run shows the two calls nested one level down, with the inner definitions
-running to their own end nodes before the outer one continues:
-
-```
-FetchNews            items=4 item(s)
-PerArticle           digest=4 item(s), branch=4 item(s)
-KeepMarked           kept=3 item(s)
-Hotwords             text='index, broker, settlement, window, bas'
-  FetchReviews         items=5 item(s)
-  PerReview            verdict=5 item(s), digest=5 item(s)
-  SplitByVerdict       positive=2 item(s), negative=2 item(s)
-  End                  positive=2 item(s), negative=2 item(s)
-ReviewAnalysis       positive=2 item(s), negative=2 item(s)
-  SummarisePraise      text='2 item(s); first is: Fast and stable'
-  ...
-End                  report='MARKET\n3 item(s); first is: Index clos', hotwords='index, broker, ...'
-```
-
-`MAX_CALL_DEPTH = 3` exists because a definition may call another that calls back into it.
-**On the canvas both are one tidy box.**
-
-It is worth being exact about what the guard buys, because the obvious claim — that without
-it the engine hangs — is wrong. `run_workflow` is ordinary Python recursion, so the
-interpreter's own recursion limit stops it either way. Pointing a definition's sub-workflow
-node at itself and raising `MAX_CALL_DEPTH` out of the way gives:
-
-```
-guard ON  (3) -> RecursionError: call depth 4 exceeded at 'loop_a'
-guard OFF     -> RecursionError: maximum recursion depth exceeded
-```
-
-Both raise. The difference is **when** and **with what**. The guard fires at the fourth
-level and names the workflow it stopped in. The interpreter's limit fires hundreds of levels
-down, and by then every one of those levels has already run its plugin calls and its model
-calls — on a real platform, hundreds of requests billed before anything surfaces — and the
-message it raises names no workflow at all.
-
-**A guard is not there to turn a hang into an error. It is there to make the error arrive
-early, cheaply, and with the name of the thing that caused it.**
-
----
-
-## 6. Model nodes: the contract between a probability and a comparison
-
-`02_llm_node_output_contract.py` puts a real model behind the node type script 01 stubs
-out, and scores it against the thing that consumes it.
-
-### 6.1 What the next node does
-
-The downstream code node compares strings:
-
-```python
-EXPECTED = ("positive", "neutral", "negative")
-
-def split_by_verdict(rows):
-    positive = [r for r in rows if r["verdict"] == "positive"]
-    neutral  = [r for r in rows if r["verdict"] == "neutral"]
-    negative = [r for r in rows if r["verdict"] == "negative"]
-    return positive, neutral, negative
-```
-
-**A row matching none of the three branches raises nothing. It is simply gone.**
-
-### 6.2 Three ways of asking, on the same six reviews
-
-| Variant | Prompt |
-| :--- | :--- |
-| `plain` | A role and a task: "say how the reviewer feels, and give a short digest" |
-| `example` | The same, plus an output example naming `"verdict"` and `"digest"` |
-| `json mode` | The same, plus a constraint and `response_format={"type": "json_object"}` |
-
-Measured with `deepseek-chat` at `temperature=0`:
-
-```
---- 4. Scored against the vocabulary the next node compares against ---
-  plain      0/6 replies parsed as JSON, 0/6 verdicts match the vocabulary exactly
-             values outside it: ['Frustrated', 'Mixed', 'Negative', 'Neutral', 'Positive']
-  example    0/6 replies parsed as JSON, 6/6 verdicts match the vocabulary exactly
-  json mode  6/6 replies parsed as JSON, 6/6 verdicts match the vocabulary exactly
-
---- 5. What the downstream code node does with those rows ---
-  plain      routed 0/6  (positive 0, neutral 0, negative 0)
-             dropped without an error: ['Fast and stable', 'Login keeps failing', ...]
-  example    routed 6/6  (positive 2, neutral 1, negative 3)
-  json mode  routed 6/6  (positive 2, neutral 1, negative 3)
-```
-
-**The plain prompt loses all six rows.** The model answered `**Sentiment:** Positive` in
-prose, which the parser's regular expression can read — the `read by` column in step 1 says
-`regex` for all six — but the value it reads is `Positive`, not `positive`, and four of the
-six differ from the vocabulary in nothing but case.
-
-What this does **not** show is that the sentiment judgements were right. There is no
-hand-labelled answer key anywhere in this script, so nothing here can score the judgement
-behind the label. What step 6 can measure is agreement between variants, and it prints it:
-once folded, `plain` agrees with `json mode` on **4 of 6** rows — the other two are the two
-labels the model invented for itself. **Every number in steps 4 and 5 is about the output
-contract, not about accuracy.**
-
-### 6.3 Two findings worth separating
-
-**The two variants fix two different contracts, and the run separates them cleanly.**
-Pinning the output example takes the vocabulary from 0/6 to 6/6 — the labels come back as
-`positive`, `neutral`, `negative`, exactly the three words the code node compares against.
-It does *not* make the reply parseable: `example` still scores **0/6 parsed as JSON**,
-because the example in the prompt is itself a fragment —
-
-```
-"verdict": "positive/neutral/negative",
-"digest": "..."
-```
-
-— with no surrounding braces, and the model reproduced that shape faithfully, missing
-braces included.
-
-The third variant reaches **6/6 parsed**, but it is worth being careful about the credit:
-it changes *two* things at once. It adds a written constraint ("Reply with a single JSON
-object holding exactly the keys...") **and** it switches `response_format` to
-`json_object`. The measurement supports "the constraint together with the format switch
-takes parsing to 6/6" — it does not isolate either one, and this script runs no variant
-that would.
-
-What the run does separate cleanly is the *other* axis: **the example bought the
-vocabulary, and it bought nothing else.** Vocabulary went 0/6 → 6/6 while parsing stayed at
-0/6. It is also worth being precise about what `json_object` even promises: it guarantees the reply is a JSON object. It carries no enum. The three permitted
-labels live in the prompt text, not in a machine-checkable schema, and nothing in this
-script validates that the object holds exactly the two keys it was asked for.
-
-**Folding the label recovers most but not all of it.** Adding a three-line normaliser
-before the comparison:
-
-```python
-def normalise(verdict):
-    return verdict.strip().strip("*#.\"' ").lower()
-```
-
-```
---- 6. The same rows, with each label normalised first ---
-  plain      routed 4/6  (positive 1, neutral 1, negative 2), recovering 4
-             still outside the vocabulary: ['frustrated', 'mixed']
-```
-
-Four of the six come back that were all lost before. The two that stay out are `frustrated`
-and `mixed` — neither is a spelling of a value in the enum; both are words the model chose
-for itself.
-
-The match is deliberately on the **whole** cleaned string. A substring test would be one
-character shorter and wrong: `'not positive'` contains `'positive'`, so it would fold onto
-the opposite of what the model said. Tidying case and punctuation is the job; guessing at a
-label the model never gave is not.
-
-And note what makes the two failures *visible*: it is step 5's report, which already printed
-every dropped title before any folding happened. **Normalising recovers labels; the report
-is what surfaces the ones it cannot.** Those are two jobs, and a pipeline needs both — the
-enum belongs on the boundary, and whatever cannot be folded onto it has to be reported
-rather than dropped.
-
-### 6.4 A rule is not a prompt
-
-The last step hands the same deterministic edit to both kinds of node: remove seven listed
-words from a paragraph, leave everything else unchanged.
-
-```python
-STOPWORDS = ["broker", "brokerage", "application", "app", "user", "users", "not"]
-```
-
-Counting leftovers only answers half the instruction. The other half is "keep all
-remaining words **and their order** unchanged", and a model can satisfy the first while
-quietly failing the second — dropping an article, reordering a clause. Note that a word
-*count* cannot see the second half either: `users trust brokers` and `brokers trust users`
-have identical counts. So the sequence is the test, and the counts are there to explain a
-failure rather than to detect one:
-
-```
-model node : 'The is slow, but report the research tab is reachable when the reconnects. one mentioned fees.'
-             0 listed word(s) survive: []
-code node  : 'The is slow, but report the research tab is reachable when the reconnects. one mentioned fees.'
-             0 listed word(s) survive: []
-  the two results match token for token, order included: yes
-               words the rule keeps that the model dropped: []
-               words the model wrote that the rule does not: []
-```
-
-**On this run the model got it exactly right.** That is worth stating plainly rather than
-reaching for a tidier conclusion. The prompt even contains the line "Make sure the word
-*not* is removed" — a sentence that exists because somebody once watched the model leave it
-in, and on a different day or a different model it will be earned again.
-
-Which is the actual point. The model's answer is correct *this time*, and the only way to
-know that is the comparison above — which means writing the rule in code anyway. Once it is
-written, the model call buys nothing: it costs a request, costs latency, and returns a
-result that is right or wrong in a way only the code path can adjudicate. **A rule that can
-be written down belongs in the node that can apply it.**
-
----
-
-## 7. Plugins: the schema is the interface
-
-A plugin is how a closed system reaches anything outside itself — an internal database, a
-company API, a page on the web. `03_plugin_io_contract.py` writes one the way a platform
-expects one: a handler whose input and output shapes are declared, so the editor can
-validate a connection into it before anything runs.
-
-### 7.1 What gets declared
-
-```python
-PLUGIN_SCHEMA = {
-    "name": "review_feed",
-    "input": {
-        "app_id": {"type": "string", "required": True},
-        "page": {"type": "integer", "required": True},
-    },
-    "output": {
-        "items": {"type": "array", "of": {
-            "title": "string", "rating": "integer", "author": "string",
-            "updated": "string", "content": "string",
-        }},
-        "page": {"type": "integer"},
-        "skipped": {"type": "array", "of": {"title": "string", "reason": "string"}},
-    },
-}
-```
-
-The transport is deliberately boring: `fetch_page` reads one of three Atom files the script
-writes into `data/review_feed/` on every run. A hosted plugin would put an HTTP call there
-and change nothing else. **The contract is what the platform reads, and the contract says
-nothing about where the bytes come from.**
-
-### 7.2 Three calls that are refused before any work happens
-
-```
-  {'app_id': 'ABC-Trade'}                          ['page is required and was not passed']
-  {'app_id': 'ABC-Trade', 'page': '1'}             ['page should be integer, got str']
-  {'app_id': 'ABC-Trade', 'page': 1, 'sort': ...}  ['sort is not a declared input']
-```
-
-The third is the interesting one. An undeclared argument is not ignored — it is an error,
-because a caller that passes `sort` believes the plugin sorts, and it does not.
-
-### 7.3 Two mappers, one missing field
-
-The third feed page carries an entry with no rating element, which is what a real feed does
-when someone leaves a comment without a score. The script maps that page twice.
-
-`map_permissively` fetches every field with a default and converts nothing, so a feed that
-stops sending one still produces a row — with `None` where the value should be:
-
-```
-permissive mapper returned 2 rows and raised nothing
-  rating=None   Alerts arrive late
-  rating='5'    Solid since the rewrite
-the output schema finds 2: ['items[0].rating should be integer, got NoneType',
-                            'items[1].rating should be integer, got str']
-```
-
-Note that the permissive mapper is wrong about **both** rows, not just the incomplete one:
-it never converts, so even the good row carries the string `'5'` where the schema declares
-an integer. Nothing raised. The next node would receive `None` for one rating and a string
-for the other, and would find out when it tried to compare them.
-
-`map_strictly` checks each field against the declared row shape and names what is absent:
-
-```
-strict mapper stops instead, and names the field: entry is missing ['rating']
-one of these hands the next node a rating of None; the other hands it nothing
-```
-
-### 7.4 Skipping is a policy, and it has to be reported
-
-Raising on one bad entry is the wrong behaviour for a plugin that walks pages, so the
-handler takes a policy:
-
-```python
-def handler(args, mapper=map_strictly, skip_invalid=False):
-    ...
-    for entry in root.findall("atom:entry", NS):
-        try:
-            items.append(mapper(entry))
-        except ValueError as error:
-            if not skip_invalid:
-                raise
-            title = entry.find("atom:title", NS)
-            skipped.append({"title": title.text if title is not None else "?",
-                            "reason": str(error)})
-    return {"items": items, "page": args["page"], "skipped": skipped}
-```
-
-**Dropping an entry keeps the page readable, but only if the count of what was dropped
-comes back with it.** A plugin that skips silently is the permissive mapper one level up.
-
-Coming back with it is not enough on its own, though: the report has to be a **declared**
-output, or the editor has no port to wire it to and the next node cannot read it. An
-earlier version of this script returned `skipped` without declaring it, and nothing
-noticed, because `validate_output` checked the declared fields and ignored everything else.
-That was asymmetric — `validate_args` already refused an undeclared *input* — so the output
-check now refuses an undeclared output the same way:
-
-```
-the same page against a schema that forgets 'skipped': ['skipped is returned but not a declared output']
-```
-
-The two checks also share one type test, `matches_type`, for a smaller reason with the same
-shape: `bool` is a subclass of `int` in Python, so `isinstance(True, int)` is `True`.
-`validate_args` had already refused a flag passed as an integer; the output side had not,
-and would have let a row through with `rating=True`. Both sides now go through the same
-function, so the contract cannot be strict in one direction and loose in the other.
-
-### 7.5 What paging costs, and who can see the limit
-
-```
-page_limit=1   1 page(s) read in 1 request(s), 3 rows, 0 entry(s) skipped
-page_limit=3   3 page(s) read in 3 request(s), 7 rows, 1 entry(s) skipped
-page_limit=20  3 page(s) read in 4 request(s), 7 rows, 1 entry(s) skipped
-  skipped 'Alerts arrive late': entry is missing ['rating']
-```
-
-Pages read and requests sent are counted separately, because they part company at the last
-row. With a limit of 3 the loop stops on its own count and never asks for page 4. With a
-limit of 20 it does ask, and that fourth request is the one that finds the end of the
-source. Locally that costs a file-existence check; over HTTP it is a full round trip that
-returns nothing. Against a source that keeps answering, a limit of 20 is twenty requests —
-sixty rows at three per page — behind one box on a canvas.
-
-Where the limit lives matters as much as its value. **In this script `page_limit` is an
-argument to `read_pages`, the loop that calls the one-page handler — it is not an input in
-`PLUGIN_SCHEMA`.** So a canvas that draws the node from that schema shows `app_id` and
-`page`, and nothing about how far anyone will walk. Putting the cost where whoever wires the
-node can see it would take two changes this script does not make: declare `page_limit` as
-an input, and move the paging loop inside the plugin.
-
----
-
-## 8. Table knowledge bases: a row is not a paragraph
-
-`04_table_knowledge_base_retrieval.py` is about the one place where the usual retrieval
-advice inverts.
-
-### 8.1 One row, one chunk
-
-Prose is cut by length because sentences have no natural boundary at any particular size.
-A table already has the boundary: **a row is the unit a question is asked about**, so a row
-is a chunk. The headers travel with the values, because `19.00` means nothing alone:
-
-```python
-def row_to_chunk(row):
-    return "; ".join(f"{key}: {value}" for key, value in row.items())
-```
-
-```
-family: Retail; plan: Starter; monthly_fee: 0.00; per_trade_fee: 4.95
-family: Retail; plan: Active; monthly_fee: 19.00; per_trade_fee: 1.95
-9 plan chunks and 20 event chunks, none of them split mid-row
-encoded with BAAI/bge-small-en-v1.5, 384 dimensions
-```
-
-### 8.2 Choosing the index column
-
-A platform that indexes tables asks which column to index. The answer decides everything
-downstream, and it is measurable:
-
-```
-family  3 distinct value(s), 0/9 rows uniquely identified, worst case 3 rows share a value
-plan    9 distinct value(s), 9/9 rows uniquely identified, worst case 1 rows share a value
-```
-
-Asking `"What does the Momentum plan cost per trade?"` against the full rows puts the right
-row first (0.793). Against an index built only on the family column, every candidate is one
-of three identical strings:
-
-```
-0.458  family: Retail
-0.458  family: Retail
-0.458  family: Retail
-```
-
-**Three rows carry the value `Retail`, so that index cannot separate them.** The criterion
-is a single question: *what is the customer most likely to say out loud, and is it
-selective enough to leave one row standing?* Both halves matter — a column nobody mentions
-is useless, and so is a column everybody's question matches.
-
-### 8.3 What similarity cannot do
-
-The question `"Did user U-100241 sign in on 2026-05-04?"` carries three conditions — a
-user, a date, and an event type. Semantic
-retrieval over twenty row-chunks returns:
-
-```
-0.795  event_time: 2026-05-04 09:30:00; event_type: Sign-in; ... user_id: U-100237
-0.794  event_time: 2026-05-06 08:55:00; event_type: Sign-in; ... user_id: U-100258
-0.792  event_time: 2026-05-07 09:05:00; event_type: Sign-in; ... user_id: U-100241
-0.791  event_time: 2026-05-04 10:11:00; event_type: Contact support; ... user_id: U-100241
-0 of the 4 rows returned satisfy all three
-```
-
-**None of the four.** The correct row — `U-100241`, `2026-05-04`, `Sign-in` — is not in the
-top four at all, and the spread across the four returned is 0.004. That is not a bug in the
-encoder. Every row about signing in resembles a question about signing in — including the
-fourth, a `Contact support` row whose detail says *"sign-in would not complete"*. An
-identifier has no
-neighbourhood in a semantic space, and a date is four tokens that look like every other
-date.
-
-The scores also show why raising the recall count is not a fix. At a spread of 0.004,
-`TOP_K` would have to grow until it covered the whole table before the ranking mattered.
-
-### 8.4 What a filter does instead
-
-```python
-def parse_conditions(question, rows):
-    conditions = {}
-    for user_id in {row["user_id"] for row in rows}:
-        if user_id.lower() in question.lower():
-            conditions["user_id"] = user_id
-    date = re.search(r"\d{4}-\d{2}-\d{2}", question)
-    if date:
-        conditions["date"] = date.group(0)
-    ...
-```
-
-Turning the question into conditions over named columns gives an exact answer to the
-conditions it recognised, and the count is checkable against a direct scan of the table.
-A vector database that offers metadata filtering is doing this same step alongside
-similarity; the contrast in this script is with similarity on its own.
-
-```
-1 row(s) satisfy the filter; scanning the table directly finds 1, so the filter and the
-table agree
-```
-
-### 8.5 A condition that matched nothing, and said nothing
-
-The same step surfaced a second failure of the same family. The question writes `sign in`;
-the column stores `Sign-in`. Matching literally, the event-type condition finds nothing —
-**and a condition that matches nothing is simply left out of the filter**:
-
-```
-conditions matched literally: {'user_id': 'U-100241', 'date': '2026-05-04'}
-  2026-05-04 10:05:00  Sign-in         Face unlock rejected three times then gave up
-  2026-05-04 10:11:00  Contact support Reported that sign-in would not complete
-2 row(s) satisfy those: the question writes 'sign in' and the column stores 'Sign-in',
-so the third condition matched nothing and was dropped from the filter without a word
-```
-
-Two rows instead of one, with no error anywhere. Folding case and punctuation on both sides
-restores it:
-
-```python
-def loosen(text):
-    return re.sub(r"[^a-z0-9]", "", text.lower())
-```
-
-**This is the same shape as the index-column mistake and the enum drift in section 6:
-something did not match, and not matching produced silence rather than a signal.**
-
-Folding fixes this one spelling, not the silence. `parse_conditions` recognises a user id or
-an event type only as a value the table already holds, and still leaves out one it cannot
-find — a user id the table does not hold, or `log in` where the column says `Sign-in` — so
-`apply_conditions` answers with whatever conditions remain. The date is different: it is
-taken by pattern as written, so a date the table lacks stays in the filter and matches no
-row. The failure also runs the other way: both event-type checks are substring tests with no
-word boundary, so a question about a user opening the *research* digest is read as event
-type `Search` and filters away the row it was asking about. The direct
-scan agrees with the filter here because it was written for this question's three
-conditions; it checks this answer, not the parser.
-
-### 8.6 Where prose still wins, and what it costs
-
-The reverse case is in the same script. `"Why does face unlock stop working after changing
-the password?"` is answered by a paragraph in `data/service_notes.txt`, and **no column
-holds that answer, so no filter can be written for it.** Retrieval returns the right two
-chunks at 0.773 and 0.754.
-
-The cost is visible:
-
-```
-top_k=2  recalls 747 characters, roughly 186 tokens, paid on every question ...
-top_k=4  recalls 1416 characters, roughly 354 tokens, paid on every question ...
-top_k=8  recalls 2485 characters, roughly 621 tokens, paid on every question ...
-```
-
-**The recall count converts directly into money.** Doubling the recall roughly doubles the
-bill — roughly, not exactly, because the chunks are not all the same length: 2 to 4 costs
-1.90x and 4 to 8 costs 1.76x. A structured filter that returns one row
-costs a fraction of that, which is a second reason to use it wherever the question can be
-expressed as conditions.
-
----
-
-## 9. The API a platform exposes, and a client that stops knowing what it is talking to
-
-`05_platform_api_protocol.py` starts a local server that answers the three endpoints such a
-platform exposes, then calls it. Nothing is mocked at the client — the client speaks real
-HTTP to a real server on a loopback port. The server is a **workflow** deployment declaring
-exactly one input variable, `question`; the other two endpoints exist and refuse.
-
-### 9.1 The three endpoints
+| `start`, `end` | Hold the values the run was called with, and read the ports the caller receives |
+| `plugin`, `code` | Call a registered function by name (`PLUGINS`, `CODE_FNS`) |
+| `model` | Call the local stand-in for a model |
+| `text` | Fill a template string from its inputs |
+| `selector` | Compare one port against a literal and emit a branch label |
+| `batch` | Run a body once per element of an array |
+| `subworkflow` | Run another definition and return its end ports |
+
+*   Part 1 loads the three definitions and counts their node types. `MarketSentiment` (11 nodes,
+    8 edges) calls the other two. `DailyReport` (6 nodes, 7 edges) has more edges than nodes
+    because its start node fans out to three model nodes that later rejoin. Those three do not
+    depend on each other, so any order among them is valid, and the same holds for two nodes in
+    `MarketSentiment`. Wherever a graph allows more than one order, anything that depends on the
+    order is a latent bug.
+*   Part 2 checks every reference before anything runs. An input is a string in one of three
+    forms: `literal:ABC-Trade` is a constant, `item.published` is the current element inside a
+    batch body, and `136482.digest` is port `digest` of node `136482`. `validate()` walks every
+    node, batch body, `collect` mapping and edge, and the shipped definitions pass. Editing
+    `136482.digest` to `136482.summary` gives
+    `123474.values wants 136482.summary, but 136482 emits ['digest', 'branch']`, and the canvas
+    draws both versions the same. A batch's `over` and a selector's `cases[].when` sit outside
+    `inputs`, so they are checked on their own. The same function checks each sub-workflow call
+    against the target's declared inputs. `run_workflow` never calls `validate`: it is the
+    editor's gate, so a definition handed straight to the engine fails at the node that reads
+    the missing port.
+*   Part 3 orders the top-level nodes with Kahn's algorithm: Start, FetchNews, PerArticle,
+    KeepMarked, Hotwords, ReviewAnalysis, DailyReport, End. One added edge from End back to
+    FetchNews leaves 1 of 8 nodes able to run and 7 never ready. The function returns the
+    stalled set instead of looping, and `run_workflow` refuses a definition with a cycle.
+*   Part 4 runs the main workflow and prints what each node produced, with the sub-workflow
+    nodes indented one level.
+*   Part 5 lists the three code nodes. Each applies a fixed comparison that reshapes data for
+    the next node: a timestamp becomes 1 when it falls on the reference date, two parallel
+    arrays become one filtered array, and one array of digests becomes a positive and a negative
+    list (`neutral` lands in neither). Then it splits three scenes two ways.
+    `Scene\d+:([^Scene]+)` reads like "anything but the word Scene", but the class excludes the
+    letters S, c, e and n, so each capture stops at the first of them. Both versions return 3
+    parts, and the class keeps 7 of 174 characters (`'A r'`, `'Th'`, `'Ev'`). Counting parts
+    cannot tell them apart. Splitting on the heading with `re.split` cannot be cut short by the
+    body text. No workflow here uses this split.
+*   Part 6 runs `code_same_calendar_day` over all 24 orderings of the four articles. `run_batch`
+    gives each iteration its own copy of the context, so an isolated mark reads only its own
+    article: `[1, 1, 0, 1]`, one value per article in every ordering. Carried as a running
+    total, the value depends on position. The article marked 0 receives 0, 1, 2 or 3, and 6 of
+    the 24 orderings print `[1, 2, 2, 3]`. A running total cannot live inside a batch body, and
+    neither can a shared style or a de-duplication set. Anything that must hold across elements
+    goes into the data before the batch splits it.
+*   Part 7 reads the branch the selector `KeepTodayOnly` wrote. The selector removes nothing. It
+    labels 1 of 4 articles `drop`, and that element keeps its position in the collected arrays.
+    `KeepMarked` is the node that drops it, leaving 3. The two nodes are halves of one chain, a
+    dependency that lives in the data rather than in the edges.
+*   Part 8 follows both sub-workflow calls. Each inner definition runs to its own end node
+    before the outer one continues. `MAX_CALL_DEPTH = 3` guards a definition that calls itself:
+    depths 0 to 3 run, and the call into depth 4 raises `call depth 4 exceeded at 'self_call'`.
+    Without the guard the engine would not hang. Python's recursion limit (1000 here) would
+    raise instead, far deeper, after every level had run the nodes before its call, with a
+    message that names no workflow. The guard makes the error arrive early and name the
+    definition.
+
+## Script 02: A model node against the next node's strings
+
+The code node after the model compares strings. A row whose verdict is not exactly `positive`,
+`neutral` or `negative` matches no branch and drops out without an error. The script asks
+`deepseek-chat` at `temperature=0` to label six app reviews with three prompts and scores every
+reply against those three words. It has no hand-labelled answers, so every number is about the
+output contract, not about whether a judgement was right. The table is one of three runs.
+
+| Variant | Prompt | Parsed as JSON | Verdict in the vocabulary | Routed |
+| :--- | :--- | ---: | ---: | ---: |
+| `plain` | A role and a task | 0/6 | 0/6 | 0/6 |
+| `example` | Plus an output example naming `verdict` and `digest` | 0/6 | 6/6 | 6/6 |
+| `json mode` | Plus a written constraint and `response_format={"type": "json_object"}` | 6/6 | 6/6 | 6/6 |
+
+*   Parts 1 to 3 run the node once per variant and print how each reply was read. The plain
+    replies are prose such as `**Sentiment:** Positive`. The parser's regular expression reads
+    all six, but the value is `Positive`, not `positive`.
+*   Part 4 scores the replies. Plain prints the values outside the vocabulary: `Frustrated`,
+    `Mixed`, `Negative`, `Neutral`, `Positive`. Temperature 0 did not make plain repeatable. In
+    two runs four of the six differed only in case. In the third it was five, because
+    `Login keeps failing` came back `Negative` instead of `Frustrated`. Every other line matched
+    across the three runs. The example buys the vocabulary and nothing else. It is itself a
+    fragment with no braces, and the model copies that shape, so parsing stays at 0/6. The third
+    variant changes two things at once, so the run credits the pair, not either one.
+    `json_object` guarantees a JSON object and carries no enum, and nothing checks that the
+    object holds exactly the two keys.
+*   Part 5 hands the rows to the code node. Plain routes 0 of 6 and prints the titles it
+    dropped. The other two route all six (positive 2, neutral 1, negative 3).
+*   Part 6 normalises each label first (strip, strip `*#."'`, lower-case) and matches the whole
+    cleaned string. A substring test would fold `'not positive'` onto `positive`. Plain gets 4
+    rows back. `frustrated` and `mixed` stay out, because they are words the model chose, not
+    spellings of the three. Part 5's report is what shows those two. Once folded, plain agrees
+    with json mode on 4 of 6 rows (5 of 6 in the third run). That is agreement between variants,
+    not accuracy.
+*   Part 7 asks the model and a regular expression to remove seven listed words (`broker`,
+    `brokerage`, `application`, `app`, `user`, `users`, `not`) and keep the rest in order. A
+    word count cannot see order (`users trust brokers` and `brokers trust users` count the
+    same), so the two results are compared token by token. The model matched the code exactly in
+    four runs of four. Knowing that took the code version anyway, so a rule that can be written
+    down belongs in a code node.
+
+## Script 03: A plugin held to its schema
+
+A plugin is how a closed workflow reaches something outside it. The platform reads its declared
+input and output schema, so the editor can check a wire into it before anything runs. Here
+`fetch_page` reads one of three Atom files. A hosted plugin would put an HTTP call there and
+change nothing else, because the contract says nothing about where the bytes come from.
+
+*   Part 1 writes the three feed pages into `data/review_feed/`, the same on every run. The
+    first entry on page 3 has no rating element.
+*   Part 2 prints `PLUGIN_SCHEMA`. The inputs are `app_id` (string) and `page` (integer), both
+    required. The outputs are `items` (rows of title, rating, author, updated and content),
+    `page`, and `skipped` (title and reason).
+*   Part 3 makes a call that satisfies the input schema.
+*   Part 4 makes three that do not, and the handler refuses each before any page is fetched:
+    `page is required and was not passed`, `page should be integer, got str` for `'1'`, and
+    `sort is not a declared input`. An undeclared argument is an error, not ignored, because a
+    caller that passes `sort` believes the plugin sorts, and it does not.
+*   Part 5 checks the rows of pages 1 and 2 against the output schema. `skipped` is a declared
+    output, so the editor has a port to wire it to. Against a schema that forgets it,
+    `validate_output` reports `skipped is returned but not a declared output`, the same way
+    `validate_args` refuses an undeclared input. Both checks share one type test,
+    `matches_type`, because `bool` is a subclass of `int` in Python and the contract should not
+    be strict in one direction and loose in the other.
+*   Part 6 maps page 3 twice. `map_permissively` reads every field with a default and converts
+    nothing. It returns 2 rows and raises nothing, and the output schema then finds 2
+    violations: `rating=None` on the incomplete row and the string `'5'` on the good one.
+    `map_strictly` stops and names the field: `entry is missing ['rating']`.
+*   Part 7 reads through `read_pages`. A plugin that walks pages should not stop on one bad
+    entry, so here the handler skips it and returns it in `skipped` with the reason
+    (`'Alerts arrive late': entry is missing ['rating']`). Dropping keeps the page readable only
+    when the count of what was dropped comes back with it. Then it prices paging:
+
+    | `page_limit` | Pages read | Requests | Rows | Skipped |
+    | ---: | ---: | ---: | ---: | ---: |
+    | 1 | 1 | 1 | 3 | 0 |
+    | 3 | 3 | 3 | 7 | 1 |
+    | 20 | 3 | 4 | 7 | 1 |
+
+*   With a limit of 3 the loop stops on its own count. With 20 it asks for page 4, and that
+    request only finds the end. Locally it costs a file check. Over HTTP it is a round trip that
+    returns nothing. `page_limit` is an argument to `read_pages`, the loop around the one-page
+    handler, not an input in `PLUGIN_SCHEMA`. A canvas drawn from the schema shows `app_id` and
+    `page`, and nothing about how far the loop walks.
+
+## Script 04: A table knowledge base
+
+Prose is cut by length. A table already has a boundary: a question is asked about a row, so each
+row is one chunk. The column names travel with the values, because `19.00` means nothing alone.
+The bge-small encoder (384 dimensions) embeds every chunk for retrieval by cosine similarity.
+
+*   Part 1 loads the two tables and the prose file.
+*   Part 2 prints chunks such as
+    `family: Retail; plan: Active; monthly_fee: 19.00; per_trade_fee: 1.95`: 9 plan chunks and
+    20 event chunks, none split mid-row.
+*   Part 3 asks which column can single a row out:
+
+    | Column | Distinct values | Rows uniquely identified | Worst case |
+    | :--- | ---: | ---: | ---: |
+    | `family` | 3 | 0/9 | 3 rows share a value |
+    | `plan` | 9 | 9/9 | 1 row |
+
+*   Part 4 asks `"What does the Momentum plan cost per trade?"`. Against whole rows the right
+    row comes first (0.793). Against an index on `family`, the top three are identical
+    `family: Retail` strings at 0.458. A good index column is one a user is likely to say and
+    one that leaves a single row standing.
+*   Part 5 asks `"Did user U-100241 sign in on 2026-05-04?"`, which holds three conditions. None
+    of the top 4 by similarity satisfies all three. They score 0.795 to 0.791, a spread of
+    0.004, and the correct row sits at rank 7 of 20 (0.743). Every sign-in row resembles a
+    question about signing in, including a `Contact support` row whose detail says "sign-in
+    would not complete". An id has no neighbourhood in a semantic space. A `TOP_K` of 7 would
+    reach the row with six wrong ones, and nothing in the scores says which is right.
+*   Part 6 turns the question into conditions on named columns. Matched literally, the event
+    type finds nothing, because the question writes `sign in` and the column stores `Sign-in`.
+    That condition is left out without a word, and 2 rows come back. Folding case and
+    punctuation on both sides gives 1 row, which matches a direct scan of the table. A vector
+    database with metadata filtering does this step alongside similarity. The contrast here is
+    with similarity alone. Folding fixes this spelling, not the silence. `parse_conditions`
+    recognises a user id or an event type only as a value the table holds, and still leaves out
+    one it cannot find, while a date is taken by pattern and stays in. Both event-type checks
+    are substring tests with no word boundary, so a question about opening the research digest
+    is read as event type `Search`. The direct scan was written for this question, so it checks
+    this answer, not the parser.
+*   Part 7 asks `"Why does face unlock stop working after changing the password?"`. No column
+    holds that answer, so no filter can be written for it, and retrieval returns the right two
+    chunks at 0.773 and 0.754. Every recalled character is paid on every question:
+
+    | `top_k` | Characters | Roughly tokens |
+    | ---: | ---: | ---: |
+    | 2 | 747 | 186 |
+    | 4 | 1416 | 354 |
+    | 8 (all chunks) | 2485 | 621 |
+
+*   Eight chunks come to more than the 2069-character file because chunks overlap. Doubling the
+    recall costs 1.90x and then 1.76x, not exactly 2x, because the chunks differ in length.
+
+## Script 05: The platform's HTTP API
+
+The script writes a FastAPI server to `data/mock_platform_server.py`, starts it with uvicorn on
+a free loopback port, and calls it over real HTTP. The server is a workflow deployment that
+declares one input variable, `question`. The chat and completion endpoints exist and refuse it,
+with `not_chat_app` and `not_completion_app`.
 
 | Endpoint | Application type | Where the user's words go |
 | :--- | :--- | :--- |
@@ -827,250 +253,31 @@ exactly one input variable, `question`; the other two endpoints exist and refuse
 | `/v1/completion-messages` | Single-shot completion | Inside `inputs`, under the variable the deployment declares |
 | `/v1/workflows/run` | Workflow | Inside `inputs`, under the variable the deployment declares |
 
-The last two matter more than they look. **The key inside `inputs` is not part of the
-protocol — it is whatever the person who built the deployment named their start variable.**
-A caller who guesses `text` when the deployment declares `question` gets a well-formed
-request that the deployment cannot read.
+The key inside `inputs` is not part of the protocol. It is whatever the builder named the start
+variable, so a caller that guesses `text` sends a well-formed request the deployment cannot
+read.
 
-### 9.2 Blocking and streaming
-
-```
---- 2. The blocking call ---
-  HTTP 200  run run-0001  status succeeded
-  answer: Alerts read one-second quote buckets, so they trail the print.
-  one request, one response, and nothing observable in between
-
---- 3. The same run, streamed ---
-  workflow_started   run-0001
-  node_finished      Start
-  node_finished      Retrieve
-  node_finished      Answer
-  workflow_finished
-  5 events in 0.18s; the node events are the only view of what ran
-```
-
-**For a multi-node workflow, streaming is not a typing effect — it is the only
-observability there is.** Blocking tells you it succeeded. Streaming tells you which node
-it was on when it did not.
-
-The client's stream reader skips any line it cannot parse:
-
-```python
-for raw in response:
-    line = raw.decode("utf-8").strip()
-    if not line.startswith("data: "):
-        continue
-    try:
-        events.append(json.loads(line[6:]))
-    except json.JSONDecodeError:
-        continue
-```
-
-That is not defensive clutter. An event stream carries blank lines and keep-alives between
-events; raising on them would take down the whole run at a heartbeat.
-
-### 9.3 A credential printed once per call
-
-The client holds its key in the headers it sends, and a debugging print of those headers is
-the single most common way that key escapes:
-
-```
-as written: {'Authorization': 'Bearer local-development-key', 'Content-Type': ..., 'Accept': ...}
-redacted  : {'Authorization': 'Bearer ***', 'Content-Type': ..., 'Accept': ...}
-```
-
-Locally this looks harmless. Once the same code runs on a server whose stdout is collected,
-**every request writes one more copy of the credential into the log store, and into every
-replica and backup of it.** Redacting is one dictionary literal:
-
-```python
-def redacted(headers):
-    return {**headers, "Authorization": "Bearer ***"}
-```
-
-The advice everyone repeats is *do not put your key in front-end code*. The key does not
-usually leave through the front end. It leaves through the logs.
-
-### 9.4 Two requests that both come back HTTP 400
-
-```python
-def completion_dropping_input(self, question):
-    return self.post("/v1/completion-messages",
-                     {"inputs": {}, "response_mode": "blocking", "user": "demo"})
-```
-
-`question` is a parameter of that method and appears nowhere in the body it sends.
-
-```
-right endpoint, empty inputs : HTTP 400  app_unavailable
-```
-
-The endpoint is correct, the credential is accepted, and the one thing that does not travel
-is the user's words. This deployment declares no default, so it refuses. Against one whose
-start variable has a default — not a case this script runs — the same body would not fail
-at all, and would come back as a fluent answer to a question nobody asked.
-
-The second request has the opposite problem. Its body is exactly right for
-`/v1/chat-messages` — the user's words in a top-level `query` — and it is aimed at a
-deployment that is a workflow:
-
-```python
-def chat_on_a_workflow_deployment(self, question):
-    return self.post("/v1/chat-messages", {"query": question, "user": "demo"})
-```
-
-```
-wrong endpoint, valid body   : HTTP 400  not_chat_app
-```
-
-**The two share a status code and agree on nothing else.** One is a payload that can be
-repaired; the other cannot be repaired by any payload, because the endpoint itself is the
-mistake. HTTP 400 says a request failed; only `app_unavailable` against `not_chat_app` says
-why. This is exactly the distinction the probing client in 9.5 throws away.
-
-### 9.5 Probing for the shape
-
-The alternative to knowing the key is guessing it. The client tries five payload shapes
-until one stops failing:
-
-```python
-shapes = [{}, {"text": question}, {"query": question},
-          {"question": question}, {"prompt": question}]
-```
-
-```
-inputs=[]             HTTP 400  app_unavailable
-inputs=['text']       HTTP 400  app_unavailable
-inputs=['query']      HTTP 400  app_unavailable
-inputs=['question']   HTTP 200  accepted
-4 request(s) to arrive at a key the deployment names in its own configuration
-```
-
-Four requests to discover something written down in the deployment's own settings — and
-already written in the first refusal, whose body reads
-`"input variable 'question' is required"`. The probe reads the status and moves on, so it
-never sees that. That is merely wasteful. The failure mode is the next step.
-
-### 9.6 The same probe with the server gone
-
-The script stops the server and runs the identical loop:
-
-```
-inputs=[]             HTTP None  timed out
-inputs=['text']       HTTP None  timed out
-inputs=['query']      HTTP None  timed out
-inputs=['question']   HTTP None  timed out
-inputs=['prompt']     HTTP None  timed out
-reported to the caller: 'every input format failed; check the application configuration
-and API key'
-```
-
-**Five transport failures in a row, and the message that comes back names the application
-configuration and the API key.** Every failure was read as "wrong shape", because that is
-the only hypothesis the loop can hold. The cause is not merely lost — it has been replaced
-with a plausible, wrong one, and whoever receives that message will go and check their key.
-
-**A loop that treats every error as the same error will always report the error it was
-built to expect.**
-
----
-
-## 10. What all of these have in common
-
-Every failure in this module has the same shape. **Nothing raised.**
-
-| Where | What went wrong | What it looked like |
-| :--- | :--- | :--- |
-| A port reference edited to a field nobody emits | The graph cannot run | An identical-looking edge on the canvas |
-| An edge added from the end back to the start | Seven nodes wait forever | One more line between two boxes |
-| `[^Scene]` instead of splitting on the heading | Every scene truncated to two or three characters | The right **number** of parts |
-| A plain prompt in front of a string comparison | Six of six rows discarded | Six correct classifications |
-| A permissive field mapper | Wrong types handed downstream | A complete-looking row |
-| A plugin that skips bad entries quietly | Rows missing from the result | A shorter list |
-| An index column that is not selective | Retrieval cannot separate rows | Confident scores, all identical |
-| A condition that matched no column value | The filter silently loses a condition | Two rows instead of one |
-| `inputs: {}` on a completion call | The user's question never travels | An HTTP 400 here; a fluent answer wherever the variable has a default |
-| A probe that reads every error as "wrong shape" | The real cause is overwritten | A specific, wrong diagnosis |
-
-Ten failures, ten silences. The pattern is not a property of low-code tools specifically —
-it is a property of **systems assembled from independently-correct parts across interfaces
-nobody checks.** A canvas produces more of those interfaces than code does, and checks
-fewer of them.
-
-The five scripts are five ways of putting a check back:
-
-1. **Validate references before running**, and say which port was wanted and what the node
-   actually emits.
-2. **Refuse a graph with a cycle**, and name the nodes that are stuck.
-3. **Print the intermediate quantity**, not just the final answer — how many parts the
-   split produced, what the extraction node wrote, how many characters came back.
-4. **Score against the consumer's vocabulary**, not against your own reading of the output.
-5. **Declare the schema and enforce it in both directions**, so a missing field is named
-   rather than defaulted.
-
-### 10.1 The one rule that generalises
-
-**Whenever a value has to be written in two places, the version that is wrong will not
-raise — it will diverge.** The enum in a prompt and the values in the data; the key inside
-`inputs` and the variable named in the deployment; the column name in a condition and the
-spelling in the table; the port name in a reference and the port a node emits. Every one of
-those pairs appears in this module, and every one of them fails quietly.
-
-The countermeasure is the same in all four cases: **derive one side from the other, or
-check them against each other at a point where a mismatch is an error.** `validate()` does
-it for ports. `validate_output` does it for rows. `normalise` does it for labels. Nothing
-does it for the key inside `inputs` on the client side, which is why section 9.5 costs four
-requests even though the first refusal already named the key.
-
----
-
-## 11. The five scripts
-
-| Script | What it demonstrates |
-| :--- | :--- |
-| `01_workflow_engine_from_spec.py` | A declarative graph → reference validation → topological order → execution; batch bodies against carried state, selector branches, sub-workflow calls with a depth guard, and what code nodes are for |
-| `02_llm_node_output_contract.py` | A real model behind a workflow node, scored against the vocabulary the next node compares against; three prompt variants; a deterministic edit given to a model and to code |
-| `03_plugin_io_contract.py` | A plugin held to a declared input/output schema; permissive against strict field mapping; a per-entry error policy; what paging costs the caller |
-| `04_table_knowledge_base_retrieval.py` | A table indexed two ways; semantic retrieval against an exact filter on a three-condition question; where prose still wins and what its recall costs |
-| `05_platform_api_protocol.py` | A local server speaking the three endpoints and the event stream; blocking against streaming; a credential in the logs; two unrelated failures behind one status code; a probe that rewrites the cause of a failure |
-
-### 11.1 Measured results
-
-| # | Result |
-| :--- | :--- |
-| **01** | 23 nodes across three definitions execute end to end. One edited reference is caught statically: `123474.values wants 136482.summary, but 136482 emits ['digest', 'branch']`. One added back-edge leaves **1 node able to start and 7 waiting forever**. `[^Scene]` truncates three scenes to `'A r'`, `'Th'`, `'Ev'` — 7 characters of 174 — while still returning three parts. Across all 24 orderings of the four articles the marks form **1 distinct multiset** while the running totals take **4 distinct values**. The selector marks 1 of 4 elements `drop`; the cleanup node removes it |
-| **02** | `deepseek-chat`, `temperature=0`, six reviews per variant. Plain prompt: **0/6 parse as JSON, 0/6 match the vocabulary, 0/6 routed** — all six discarded without an error. An output example takes the vocabulary to **6/6** but leaves parsing at **0/6**, because the example is a brace-less fragment and the model copies it faithfully. The third variant adds a written JSON constraint **and** `response_format` together, and reaches **6/6** parsed — the run credits the pair, not either one alone. **What it does isolate is that the example buys the vocabulary and nothing else.** Folding case and punctuation recovers 4 of the 6 lost in the plain run; `frustrated` and `mixed` are words the model chose and stay outside the enum. Once folded, plain agrees with json mode on **4/6** — agreement between variants, not accuracy, since the script has no answer key. The stopword edit came back matching the code path word for word on this run |
-| **03** | Three malformed calls refused before a page is fetched. The page with a missing rating: the permissive mapper returns 2 rows and raises nothing, and the output schema then finds **2 type violations across both rows**; the strict mapper stops and names the field. `page_limit=20` against a 3-page source reads 3 pages in **4 requests** — the fourth only finds the end — yields 7 rows and reports 1 skipped entry. `skipped` is a declared output; the output check refuses a schema that omits it. `page_limit` is a caller-side loop argument, not a schema input |
-| **04** | Index on `family`: **0/9 rows uniquely identified**, worst case 3 rows share a value. Index on `plan`: 9/9. A three-condition question returns 4 rows by similarity of which **0 satisfy all three**, spread across 0.795–0.791; the correct row is not in the top four. The parsed filter returns 1 row, matching a direct scan. Matching the event type literally silently drops that condition and returns 2 rows; folding case and punctuation returns 1. Prose recall costs 186 / 354 / 621 tokens at `top_k` 2 / 4 / 8 |
-| **05** | Server starts on a free loopback port. Blocking returns one body; streaming returns **5 events** — one started, one per node for three nodes, one finished — in under a fifth of a second, most of it the three 0.05s node sleeps (0.16–0.18s across runs). Two requests come back HTTP 400 for unrelated reasons: an empty `inputs` object on the right endpoint gets `app_unavailable`, and a well-formed chat body on the wrong endpoint gets `not_chat_app`. The probing client needs **4 requests** to find the declared key name. With the server stopped, the same loop makes 5 failed attempts and reports *"check the application configuration and API key"* |
-
-### 11.2 Data
-
-Everything under `data/` is written for this module, in English. The first four are
-inputs the scripts read; the last two are written by a script on every run and are
-not tracked, so they appear the first time you run 03 and 05:
-
-| Path | What it is |
-| :--- | :--- |
-| `data/workflows/*.json` | Three workflow definitions — nodes, edges, typed ports, a batch body, a selector, two sub-workflow calls |
-| `data/commission_plans.csv` | Nine rows, four columns — the table whose index column decides section 8.2 |
-| `data/user_behavior_event.csv` | Twenty event rows across three identifiers and four days |
-| `data/service_notes.txt` | The prose document no filter can answer |
-| `data/review_feed/page{1,2,3}.atom` | The paged feed script 03 reads, written by the script itself and rewritten identically on every run, with one entry deliberately missing a field |
-| `data/mock_platform_server.py` | Written by script 05 at run time, started as a subprocess, stopped before exit |
-
-### 11.3 Running them
-
-```bash
-cd 09-lowcode-platforms
-python 01_workflow_engine_from_spec.py          # offline, no key
-python 02_llm_node_output_contract.py           # needs a chat model key
-python 03_plugin_io_contract.py                 # offline, no key
-python 04_table_knowledge_base_retrieval.py     # local encoder, fetched once if absent
-python 05_platform_api_protocol.py              # offline, starts a local server
-```
-
-Script 02 reads `DEEPSEEK_API_KEY`, `GEMINI_API_KEY` or `OPENAI_API_KEY` from `.env`,
-in that order, and backs off on a rate limit. Script 04 looks for
-`BAAI/bge-small-en-v1.5` under any sibling module's `weights/` before downloading it, so a
-repository that already has it pays nothing to run this one.
+*   Part 1 starts the server and prints its port.
+*   Part 2 makes a blocking call: HTTP 200 and one body with the answer, with nothing observable
+    in between.
+*   Part 3 streams the same run: `workflow_started`, one `node_finished` each for Start,
+    Retrieve and Answer, and `workflow_finished`. The 5 events take 0.16 to 0.18s across runs,
+    most of it the three 0.05s node sleeps. For a multi-node workflow the stream is the only
+    view of which node ran. The reader keeps only lines that start with `data: `, so blank and
+    keep-alive lines are skipped.
+*   Part 4 prints the client's headers as written and redacted (`Bearer ***`). On a server whose
+    stdout is collected, the first form puts the credential into the log store.
+*   Part 5 sends two requests that both come back HTTP 400. The first goes to
+    `/v1/workflows/run` with an empty `inputs` object and gets `app_unavailable`. The endpoint
+    and the credential are right, and the one thing that does not travel is the user's question.
+    The second is a correct chat body sent to the workflow deployment and gets `not_chat_app`. A
+    payload can repair the first. No payload can repair the second, because the endpoint is the
+    mistake. Only the error code says which.
+*   Part 6 probes for the key, trying no key, then `text`, `query`, `question` and `prompt`. The
+    first three get `app_unavailable` and `question` gets HTTP 200, so it takes 4 requests to
+    find a name written in the deployment's own settings. The first refusal already said
+    `input variable 'question' is required`, but the probe reads only the status.
+*   Part 7 stops the server and runs the same probe. All 5 attempts end `timed out`, and the
+    caller is told `every input format failed; check the application configuration and API key`.
+    Every failure was read as the wrong shape, the only cause the loop can hold, so the real
+    cause is replaced by a plausible wrong one.

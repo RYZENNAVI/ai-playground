@@ -1,15 +1,18 @@
-"""Write a plugin the way a platform expects one, and let its schema do the checking.
+"""This script writes a workflow plugin that reads an app store review feed (Atom XML),
+declares its input and output schema the way a platform expects, and lets that schema
+refuse bad arguments before any work and check the rows that come back.
 
-Demonstrates that a plugin is a typed handler, not just a function that fetches:
-    1. Write the feed pages this plugin reads, so every later number is reproducible.
-    2. Declare the input and output schema the editor validates connections against.
-    3. Call the handler with arguments that satisfy the input schema.
-    4. Call it with arguments that do not, and watch the schema refuse before any work.
-    5. Check the rows that come back against the declared output schema.
-    6. Read a page with a field missing, through a permissive mapper and a strict one.
-    7. Read what paging costs, and where the page limit does and does not show.
-
-Module 09: Low-Code Platforms - Plugin Input/Output Contract.
+A plugin is a typed handler, not just a function that fetches. The run prints 7 parts:
+    1. The feed pages this plugin reads, written the same way on every run so every
+       later number is reproducible.
+    2. The input and output schema the editor validates wires against.
+    3. A call that satisfies the input schema.
+    4. Calls that do not, each refused by the handler before any page is fetched.
+    5. The rows of pages 1 and 2 checked against the output schema, and page 2 checked
+       against a schema that forgets 'skipped'.
+    6. The page whose first entry has no rating, read by a permissive mapper and a
+       strict one.
+    7. What paging costs the caller, and why a canvas never shows the page limit.
 """
 
 import sys
@@ -23,9 +26,6 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 FEED_DIR = DATA_DIR / "review_feed"
 NS = {"atom": "http://www.w3.org/2005/Atom", "im": "http://itunes.apple.com/rss"}
 
-# The transport here is the local filesystem. A hosted plugin would put an HTTP
-# call in fetch_page and change nothing else: the contract is what the platform
-# reads, and the contract says nothing about where the bytes come from.
 PAGES = {
     1: [
         ("Fast and stable", "5", "2026-05-04T08:12:00Z", "Ada Whitfield",
@@ -43,8 +43,8 @@ PAGES = {
         ("Charts unreadable at night", "2", "2026-05-02T22:31:00Z", "Falk Osei",
          "Dark mode turns the candles grey on grey, so I trade from a laptop instead."),
     ],
-    # The third page carries one entry with no rating element at all, which is
-    # what a real feed does when a reviewer leaves a comment without a score.
+    # The third page has one entry with no rating element, so each mapper meets
+    # a missing field.
     3: [
         ("Alerts arrive late", None, "2026-05-01T07:02:00Z", "Greta Amara",
          "Price alerts land two or three minutes after the move has already happened."),
@@ -82,21 +82,14 @@ PY_TYPES = {"string": str, "integer": int, "array": list}
 
 
 def matches_type(value, kind):
-    """Say whether a value has the declared type, with bool refused as an integer.
-
-    bool is a subclass of int in Python, so isinstance(True, int) is True. A
-    schema that says integer means a count or a score, not a flag, and both
-    directions of the contract have to hold that line or neither does.
-    """
+    """Say whether a value has the declared type. bool is refused as an integer,
+    although Python counts it as one."""
     return not isinstance(value, bool) and isinstance(value, PY_TYPES[kind])
 
 
 def write_feed_pages():
-    """Write one Atom file per page, and report whether anything changed.
-
-    The files are rewritten byte for byte on every run, so the script is
-    idempotent and the counts printed further down cannot drift between runs.
-    """
+    """Write one Atom file per page and report which files changed. The bytes
+    are the same on every run, so the counts below cannot drift."""
     FEED_DIR.mkdir(parents=True, exist_ok=True)
     written = []
     for page, entries in PAGES.items():
@@ -124,7 +117,8 @@ def write_feed_pages():
 
 
 def fetch_page(app_id, page):
-    """Return the raw bytes of one feed page for one application id."""
+    """Return the raw text of one feed page. A hosted plugin would make an HTTP
+    call here and change nothing else."""
     path = FEED_DIR / f"page{page}.atom"
     if not path.exists():
         raise FileNotFoundError(f"{app_id} has no page {page}")
@@ -132,13 +126,8 @@ def fetch_page(app_id, page):
 
 
 def map_permissively(entry):
-    """Map an entry by reading whatever elements happen to be there.
-
-    Every field is fetched with a default and nothing is converted, so a
-    missing rating comes back as None and a present one comes back as the
-    string the XML held. Both are the wrong shape for the declared row, and
-    nothing on the way out says so.
-    """
+    """Map an entry with a default for every field and no conversion. A missing
+    rating comes back as None, a present one as a string."""
     def text(path):
         node = entry.find(path, NS)
         return node.text if node is not None else None
@@ -196,8 +185,8 @@ def validate_output(schema, result):
         if not matches_type(result[name], rule["type"]):
             problems.append(f"{name} should be {rule['type']}")
     for name, rule in schema["output"].items():
-        # A value that is not a list was already reported above; walking it would
-        # crash the checker on exactly the return value it exists to describe.
+        # A value that is not a list was reported above. Walking it here would
+        # crash the checker.
         if "of" not in rule or not matches_type(result.get(name), "array"):
             continue
         for index, row in enumerate(result[name]):
@@ -211,8 +200,8 @@ def validate_output(schema, result):
                 elif not matches_type(row[field], kind):
                     problems.append(f"{name}[{index}].{field} should be {kind}, got "
                                     f"{type(row[field]).__name__}")
-    # validate_args refuses an undeclared input; an undeclared output is the same
-    # mistake from the other side - a port the handler fills that no wire can reach.
+    # validate_args refuses an undeclared input. An undeclared output is the same
+    # mistake on the other side: a port the handler fills and no wire can reach.
     for name in result:
         if name not in schema["output"]:
             problems.append(f"{name} is returned but not a declared output")
@@ -220,12 +209,8 @@ def validate_output(schema, result):
 
 
 def handler(args, mapper=map_strictly, skip_invalid=False):
-    """Run the plugin: check the arguments, fetch one page, map it to declared rows.
-
-    skip_invalid decides what an unmappable entry costs. Dropping it keeps the
-    page readable, but only if the count of what was dropped comes back too:
-    a plugin that skips silently is the permissive mapper one level up.
-    """
+    """Check the arguments, fetch one page and map its entries to declared rows.
+    With skip_invalid, a bad entry is dropped and listed under skipped."""
     problems = validate_args(PLUGIN_SCHEMA, args)
     if problems:
         raise ValueError("; ".join(problems))
@@ -245,12 +230,8 @@ def handler(args, mapper=map_strictly, skip_invalid=False):
 
 def read_pages(app_id, page_limit):
     """Call the one-page handler until the source runs out or page_limit is reached.
-
-    The limit is an argument to this loop, which sits outside the plugin. It is
-    not in PLUGIN_SCHEMA, so a canvas drawing the node from that schema never
-    shows it. Returns pages read and requests attempted separately: the request
-    that finds the end of the source is still a request.
-    """
+    Pages read and requests sent are counted apart: the request that finds the end
+    still counts."""
     rows, skipped, pages_read, attempts = [], [], 0, 0
     for page in range(1, page_limit + 1):
         attempts += 1
@@ -265,6 +246,7 @@ def read_pages(app_id, page_limit):
 
 
 def main():
+    # 1. The feed pages
     print("--- 1. The feed pages this plugin reads ---")
     for name, count, changed in write_feed_pages():
         state = "written" if changed else "unchanged"
@@ -272,6 +254,7 @@ def main():
     print(f"  files live in {FEED_DIR.relative_to(DATA_DIR.parent)}; "
           f"rerunning rewrites them identically")
 
+    # 2. The schema
     print("\n--- 2. The schema the editor validates wires against ---")
     for side in ("input", "output"):
         for name, rule in PLUGIN_SCHEMA[side].items():
@@ -282,20 +265,25 @@ def main():
             flag = " (required)" if rule.get("required") else ""
             print(f"  {side:<6} {name:<7} {detail}{flag}")
 
+    # 3. A valid call
     print("\n--- 3. A call that satisfies the input schema ---")
     result = handler({"app_id": "ABC-Trade", "page": 1})
     print(f"  returned {len(result['items'])} rows from page {result['page']}")
     for row in result["items"]:
         print(f"    {row['rating']}  {row['title'][:34]:<36} {row['author']}")
 
+    # 4. Invalid calls
     print("\n--- 4. Calls that do not ---")
     for bad in ({"app_id": "ABC-Trade"},
                 {"app_id": "ABC-Trade", "page": "1"},
                 {"app_id": "ABC-Trade", "page": 1, "sort": "recent"}):
-        problems = validate_args(PLUGIN_SCHEMA, bad)
-        print(f"  {str(bad)[:52]:<54} {problems}")
+        try:
+            handler(bad)
+        except ValueError as error:
+            print(f"  {str(bad)[:52]:<54} {error}")
     print("  each of these is refused before a single page is fetched")
 
+    # 5. Output schema check
     print("\n--- 5. The rows, checked against the output schema ---")
     for page in (1, 2):
         result = handler({"app_id": "ABC-Trade", "page": page})
@@ -304,9 +292,10 @@ def main():
               f"{len(problems)} schema violation(s)")
     without_skipped = {**PLUGIN_SCHEMA, "output": {
         k: v for k, v in PLUGIN_SCHEMA["output"].items() if k != "skipped"}}
-    print(f"  the same page against a schema that forgets 'skipped': "
+    print(f"  page {page} against a schema that forgets 'skipped': "
           f"{validate_output(without_skipped, result)}")
 
+    # 6. Two mappers on a missing field
     print("\n--- 6. The page whose first entry has no rating ---")
     loose = handler({"app_id": "ABC-Trade", "page": 3}, mapper=map_permissively)
     print(f"  permissive mapper returned {len(loose['items'])} rows and raised nothing")
@@ -318,8 +307,10 @@ def main():
         handler({"app_id": "ABC-Trade", "page": 3}, mapper=map_strictly)
     except ValueError as error:
         print(f"  strict mapper stops instead, and names the field: {error}")
-    print("  one of these hands the next node a rating of None; the other hands it nothing")
+    print("  one of these hands the next node None and the string '5'; "
+          "the other hands it nothing")
 
+    # 7. Paging cost
     print("\n--- 7. What paging costs the caller ---")
     for limit in (1, 3, 20):
         rows, skipped, pages_read, attempts = read_pages("ABC-Trade", limit)
@@ -327,10 +318,10 @@ def main():
               f"{len(rows)} rows, {len(skipped)} entry(s) skipped")
     for entry in skipped:
         print(f"    skipped {entry['title']!r}: {entry['reason']}")
-    print(f"  the source holds {len(PAGES)} pages, so a limit of 20 reads {pages_read} and "
-          f"sends {attempts}")
-    print("  requests here - the last one only finds the end - and would send all 20")
-    print("  against a source that keeps answering")
+    print(f"  the source holds {len(PAGES)} pages, so a limit of {limit} reads {pages_read} "
+          f"and sends {attempts} requests here:")
+    print(f"  the last one only finds the end. A source that keeps answering would get "
+          f"all {limit}")
     print("  page_limit is an argument to the calling loop, not an input in PLUGIN_SCHEMA,")
     print("  so nobody wiring this node on a canvas sees it. Making it visible would mean")
     print("  declaring it as an input and moving the paging into the plugin itself")

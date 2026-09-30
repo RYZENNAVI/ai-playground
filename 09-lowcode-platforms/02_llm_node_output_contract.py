@@ -1,15 +1,24 @@
-"""Put a real model behind a workflow node and watch the next node compare strings.
+"""This script puts a hosted chat model behind a workflow node that labels app reviews,
+prompts it three ways (a plain instruction, a pinned output example, and a JSON
+constraint with JSON mode on), and checks each reply against the exact strings the next
+code node compares.
 
-Demonstrates where a model node and a code node meet, and what leaks through:
-    1. Run the node on a plain instruction, the way a first draft states it.
-    2. Run it again with an output example pinned to the prompt.
-    3. Run it a third time with a written JSON constraint and the format switch on.
-    4. Score all three against the exact vocabulary the downstream node expects.
-    5. Route every row through that downstream node and count what disappears.
-    6. Normalise each label before comparing it, and route the same rows again.
-    7. Hand the model a deterministic edit and check it against the same edit in code.
-
-Module 09: Low-Code Platforms - Model Node Output Contract.
+The run prints 7 parts:
+    1. The node with a plain instruction.
+    2. The node with an output example pinned to the prompt. The example has no
+       braces, so it is not a whole JSON object.
+    3. The node with a written constraint plus JSON mode. Two things change at once,
+       so the run cannot say which of them makes the replies parse.
+    4. Scored against the vocabulary the next node compares against. Counts the
+       replies that parse as JSON and the verdicts that equal one of the three words.
+    5. What the downstream code node does with those rows. It splits them by exact
+       comparison, and a row that matches no branch drops out without an error.
+    6. The same rows, with each label normalised first. Lower-casing and stripping
+       recover labels that differ only in case; a word the model chose for itself
+       stays out. The part also counts how often each variant agrees with json mode,
+       which is not accuracy: the script has no hand-labelled answers.
+    7. A deterministic edit, asked of the model and written in code. Both remove seven
+       listed words from one paragraph, and the results are compared token by token.
 """
 
 import json
@@ -33,13 +42,13 @@ RETRY_BACKOFF = 6
 # The vocabulary the downstream code node compares against, character for character.
 EXPECTED = ("positive", "neutral", "negative")
 
-# Variant 1: everything a first draft usually says. A role, a task, no shape.
+# Variant 1: a role and a task, with no output format.
 PLAIN_PROMPT = """You are a review sentiment analyst for a trading application.
 Read the review, say how the reviewer feels, and give a short digest of what
 they report."""
 
-# Variant 2: the same node with an output example appended, which is how these
-# prompts tend to look once someone has read a reply they could not parse.
+# Variant 2: the same prompt with an output example appended. The example has no
+# braces, so it is not a whole JSON object.
 EXAMPLE_PROMPT = PLAIN_PROMPT + """
 
 # Output example
@@ -47,7 +56,8 @@ EXAMPLE_PROMPT = PLAIN_PROMPT + """
 "digest": "..."
 """
 
-# Variant 3: the example, plus the platform switch that makes the whole reply JSON.
+# Variant 3: the example plus a written constraint. VARIANTS also turns JSON mode on
+# for it, so two things change at once.
 SCHEMA_PROMPT = EXAMPLE_PROMPT + """
 # Constraint
 - Reply with a single JSON object holding exactly the keys "verdict" and "digest".
@@ -79,8 +89,8 @@ REVIEWS = [
 STOPWORDS = ["broker", "brokerage", "application", "app", "user", "users", "not"]
 
 STOPWORD_PROMPT = """Remove every word in this list from the text: {words}.
-Keep all remaining words and their order unchanged. Make sure the word "not" is
-removed. Reply with the edited text only."""
+Keep all remaining words and their order unchanged. Reply with the edited text
+only."""
 
 STOPWORD_TEXT = (
     "The broker app is not slow, but users report the brokerage research tab is "
@@ -89,11 +99,8 @@ STOPWORD_TEXT = (
 
 
 def pick_provider():
-    """Return (api_key, base_url, model) for whichever key is configured.
-
-    Only chat completion is needed here, so DeepSeek comes first; Gemini and
-    OpenAI follow, so a single key of any kind is enough to run the script.
-    """
+    """Return (api_key, base_url, model) for the first key found: DeepSeek, then
+    Gemini, then OpenAI."""
     if os.getenv("DEEPSEEK_API_KEY"):
         return (os.getenv("DEEPSEEK_API_KEY"), "https://api.deepseek.com", "deepseek-chat")
     if os.getenv("GEMINI_API_KEY"):
@@ -101,16 +108,14 @@ def pick_provider():
                 "https://generativelanguage.googleapis.com/v1beta/openai/",
                 "gemini-3.1-flash-lite")
     if os.getenv("OPENAI_API_KEY"):
-        return (os.getenv("OPENAI_API_KEY"), os.getenv("OPENAI_BASE_URL"), "gpt-4o-mini")
+        return (os.getenv("OPENAI_API_KEY"), os.getenv("OPENAI_BASE_URL"),
+                os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
     return None
 
 
 def call_with_retry(client, **kwargs):
-    """Send one request, backing off when the provider answers with a rate limit.
-
-    A node that fires once per element sends as many requests as there are
-    elements, so a burst is the normal case here rather than the exception.
-    """
+    """Send one request, backing off on rate limits. A node that fires once per
+    element sends a burst of requests."""
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
             return client.chat.completions.create(**kwargs)
@@ -141,13 +146,8 @@ def run_node(client, model, review, prompt, json_mode):
 
 
 def read_verdict(raw):
-    """Pull a verdict out of a reply, the way a platform's parser tries to.
-
-    A JSON body is read as JSON. Anything else falls back to a regular
-    expression over a labelled line, and if that finds nothing the parser is
-    reduced to taking the first word. Each step down is a step further from a
-    value the next node can rely on.
-    """
+    """Read the verdict from JSON, else from a labelled line by regex, else take
+    the first word."""
     try:
         parsed = json.loads(raw)
         if isinstance(parsed, dict) and "verdict" in parsed:
@@ -163,7 +163,8 @@ def read_verdict(raw):
 
 
 def split_by_verdict(rows):
-    """Split rows by an exact string comparison, as the code node in 01 does."""
+    """Split rows into three lists by exact string comparison, like script 01
+    (which keeps two lists)."""
     positive = [r for r in rows if r["verdict"] == "positive"]
     neutral = [r for r in rows if r["verdict"] == "neutral"]
     negative = [r for r in rows if r["verdict"] == "negative"]
@@ -171,18 +172,14 @@ def split_by_verdict(rows):
 
 
 def normalise(verdict):
-    """Fold a label onto the expected vocabulary before comparing it.
-
-    The match is on the whole cleaned string, not a substring. A substring test
-    would be shorter and wrong: 'not positive' contains 'positive', so it would
-    fold onto the opposite of what the model said. Tidying case and punctuation
-    is the job here; guessing at a label the model did not give is not.
-    """
+    """Lower-case a label and strip spaces, quotes, asterisks, hashes and dots at
+    either end. The caller still compares whole strings: a substring test would
+    read 'not positive' as 'positive'."""
     return verdict.strip().strip("*#.\"' ").lower()
 
 
 def strip_words_in_code(text, words):
-    """Remove whole words from text, which is what the instruction actually asks."""
+    """Remove whole words from text, which is what the instruction asks."""
     pattern = re.compile(r"\b(" + "|".join(re.escape(w) for w in words) + r")\b",
                          re.IGNORECASE)
     return re.sub(r"\s{2,}", " ", pattern.sub("", text)).strip()
@@ -208,11 +205,13 @@ def main():
     client = OpenAI(api_key=api_key, base_url=base_url)
     print(f"model node backed by {model}, temperature 0, {len(REVIEWS)} reviews per variant")
 
+    # 1-3. The node with each prompt variant
+
     runs = {}
     for step, (name, prompt, json_mode) in enumerate(VARIANTS, start=1):
         heading = {"plain": "a plain instruction",
                    "example": "an output example pinned to the prompt",
-                   "json mode": "a written constraint and the format switch, both"}[name]
+                   "json mode": "a written constraint plus JSON mode"}[name]
         print(f"\n--- {step}. The node with {heading} ---")
         rows = []
         for review in REVIEWS:
@@ -225,6 +224,8 @@ def main():
         first = rows[0]["raw"].replace("\n", " ")
         print(f"  first reply began: {first[:72]!r}")
 
+    # 4. Scored against the vocabulary
+
     print("\n--- 4. Scored against the vocabulary the next node compares against ---")
     for name, rows in runs.items():
         parsed = sum(1 for r in rows if r["how"] == "json")
@@ -234,6 +235,8 @@ def main():
         off = sorted({r["verdict"] for r in rows if r["verdict"] not in EXPECTED})
         if off:
             print(f"             values outside it: {off}")
+
+    # 5. What the downstream code node does
 
     print("\n--- 5. What the downstream code node does with those rows ---")
     routed_raw = {}
@@ -246,7 +249,9 @@ def main():
         lost = [r["title"] for r in rows if r["verdict"] not in EXPECTED]
         if lost:
             print(f"             dropped without an error: {lost}")
-    print("  a row that matches no branch raises nothing anywhere; it is simply gone")
+    print("  a row that matches no branch raises no error and lands in no list")
+
+    # 6. The same rows, normalised first
 
     print("\n--- 6. The same rows, with each label normalised first ---")
     stubborn = set()
@@ -263,11 +268,11 @@ def main():
         stubborn.update(still_off)
         if still_off:
             print(f"             still outside the vocabulary: {still_off}")
-    print("  folding costs one line and recovers every label that differs from the")
-    print("  vocabulary only in case or punctuation. It cannot recover a word the")
-    print(f"  model picked for itself: {sorted(stubborn) or 'nothing here'} came back")
-    print("  unroutable either way, which is the enum's job in the prompt, not the")
-    print("  parser's job after the fact")
+    print("  normalise() is one line and recovers labels that differ only in case or")
+    print("  in end punctuation")
+    if stubborn:
+        print(f"  {sorted(stubborn)} are words the model chose for itself; keeping it to")
+        print("  the three words is the prompt's job (parts 2 and 3 did it), not the parser's")
     reference = folded_labels["json mode"]
     for name in ("plain", "example"):
         agree = sum(1 for a, b in zip(folded_labels[name], reference) if a == b)
@@ -276,6 +281,8 @@ def main():
     print("  there is no hand-labelled sentiment anywhere in this script, so that is")
     print("  agreement between variants, not accuracy. Steps 4 and 5 score the output")
     print("  contract; nothing here scores the judgement behind the label")
+
+    # 7. A deterministic edit, by model and by code
 
     print("\n--- 7. A deterministic edit, asked of the model and written in code ---")
     print(f"  words to remove: {STOPWORDS}")
@@ -295,12 +302,10 @@ def main():
     print(f"               {len(left_model)} listed word(s) survive: {left_model}")
     print(f"  code node  : {in_code[:96]!r}")
     print(f"               {len(left_code)} listed word(s) survive: {left_code}")
-    # Counting only the residue answers half the instruction. The other half is
-    # 'keep all remaining words unchanged', and a model can satisfy the first
-    # while quietly failing the second.
-    # Word counts alone cannot see order: 'users trust brokers' and 'brokers trust
-    # users' have identical counts. The instruction says the remaining words keep
-    # their order, so the sequence is the test and the counts explain a failure.
+    # Counting leftovers checks only the removal. The other words must also keep
+    # their order, which word counts cannot see ('users trust brokers' and 'brokers
+    # trust users' count the same), so the token sequence is the test and the
+    # counts explain a failure.
     model_tokens, code_tokens = raw.split(), in_code.split()
     dropped = word_counts(in_code) - word_counts(raw)
     added = word_counts(raw) - word_counts(in_code)

@@ -1,15 +1,17 @@
-"""Put a table in a knowledge base two ways and ask it a question only one can answer.
+"""This script builds a table knowledge base from two CSV tables and one prose file.
+Each table row becomes one chunk with its column names attached, and the bge-small
+sentence encoder embeds every chunk for retrieval by cosine similarity. A question
+with three conditions in it is then answered a second way, by structured filtering
+on the columns, and the two answers are compared row for row.
 
-Demonstrates why a table is indexed rather than chunked like prose:
-    1. Load two tables and one prose document, and print what each one holds.
-    2. Turn every table row into its own chunk with the headers attached.
-    3. Choose the index column, and count how many rows each choice can single out.
-    4. Ask a pricing question against both index choices and read the rows returned.
-    5. Ask a question with three conditions in it, and read what similarity returns.
-    6. Answer that same question by filtering the fields, and compare row for row.
-    7. Ask the prose document a question no filter can express, and read the cost.
-
-Module 09: Low-Code Platforms - Table Knowledge Bases.
+The run prints 7 parts:
+    1. Two tables and one prose document.
+    2. One row, one chunk, headers attached.
+    3. Which column can single a row out.
+    4. A pricing question, against whole rows and against the family column.
+    5. A question with three conditions in it.
+    6. The same question, answered by filtering the columns.
+    7. A question only the prose document answers, and its cost.
 """
 
 import csv
@@ -34,13 +36,8 @@ CHUNK_OVERLAP = 60
 
 
 def ensure_model(model_id=MODEL_ID):
-    """Return a local path for the weights, reusing a copy this repository already has.
-
-    Every module keeps its downloads in its own weights/ directory, so the same
-    small encoder can already be on disk from earlier work. Looking there first
-    makes this script cost nothing to run twice, and nothing to run at all if a
-    sibling module has fetched it before.
-    """
+    """Return a local path for the weights, checking every module's weights/ first
+    so an encoder another module downloaded is reused."""
     vendor, _, name = model_id.partition("/")
     for candidate in sorted(MODULE_DIR.parent.glob(
             f"*/weights/models/{vendor}--{name}/snapshots/*")):
@@ -72,22 +69,13 @@ def read_table(name):
 
 
 def row_to_chunk(row):
-    """Render one row as text, headers included.
-
-    A bare '19.00' means nothing on its own, so the header travels with the
-    value. This is what makes a row survive being embedded: the chunk carries
-    its own column names.
-    """
+    """Render one row as text with its headers, because a bare '19.00' means nothing."""
     return "; ".join(f"{key}: {value}" for key, value in row.items())
 
 
 def chunk_prose(text, size=CHUNK_CHARS, overlap=CHUNK_OVERLAP):
-    """Split prose on length, rewinding to the nearest sentence end.
-
-    The rewind is only accepted past the halfway mark, and the next cursor is
-    forced to move forward. Without both guards a sentence that ends just after
-    a chunk begins pulls the cursor backwards, and the loop never terminates.
-    """
+    """Split prose on length, rewinding to a sentence end only past the halfway mark.
+    Both guards keep the cursor moving forward; without them the loop can run forever."""
     chunks, start = [], 0
     while start < len(text):
         end = min(start + size, len(text))
@@ -118,18 +106,8 @@ def index_selectivity(rows, column):
 
 
 def parse_conditions(question, rows):
-    """Pull an exact filter out of a question, using the values the table holds.
-
-    This is the step a table-backed knowledge base performs and similarity
-    search on its own cannot: the question is turned into conditions over named
-    columns, so the answer is whatever satisfies them rather than whatever is
-    nearby. user_id and event_type are recognised only as values the table
-    already holds, so one that is not found is left out, not reported, and the
-    filter still answers with the conditions that remain. The date is taken by
-    pattern as written, so a date the table lacks stays in and matches no row.
-    Both event-type checks are substring tests with no word boundary, so a
-    question mentioning 'research' is read as the event type 'Search'.
-    """
+    """Turn a question into exact conditions over named columns, from the table's values.
+    A user id or event type the table lacks is left out silently; a date is kept."""
     conditions = {}
     user_ids = {row["user_id"] for row in rows}
     for user_id in user_ids:
@@ -139,6 +117,7 @@ def parse_conditions(question, rows):
     if date:
         conditions["date"] = date.group(0)
     event_types = {row["event_type"] for row in rows}
+    # Substring tests with no word boundary: 'research' in a question reads as 'Search'.
     for event_type in event_types:
         if event_type.lower() in question.lower():
             conditions["event_type"] = event_type
@@ -148,12 +127,7 @@ def parse_conditions(question, rows):
 
 
 def loosen(text):
-    """Lower a string and drop everything that is not a letter or a digit.
-
-    A column stores 'Sign-in' and a question says 'sign in'. Matching the two
-    literally finds nothing, and the condition is then left out of the filter
-    rather than reported as unmatched.
-    """
+    """Lower a string and keep only letters and digits: 'sign in' matches 'Sign-in'."""
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
@@ -175,6 +149,7 @@ def main():
     events = read_table("user_behavior_event.csv")
     notes = (DATA_DIR / "service_notes.txt").read_text(encoding="utf-8")
 
+    # 1. Two tables and one prose document
     print("--- 1. Two tables and one prose document ---")
     print(f"  commission_plans     {len(plans)} rows x {len(plans[0])} columns  "
           f"{list(plans[0])}")
@@ -183,6 +158,7 @@ def main():
     prose_chunks = chunk_prose(notes)
     print(f"  service_notes.txt    {len(notes)} characters -> {len(prose_chunks)} chunks")
 
+    # 2. One row, one chunk, headers attached
     print("\n--- 2. One row, one chunk, headers attached ---")
     plan_chunks = [row_to_chunk(row) for row in plans]
     event_chunks = [row_to_chunk(row) for row in events]
@@ -195,6 +171,7 @@ def main():
     prose_vectors = np.asarray(encode(prose_chunks))
     print(f"  encoded with {MODEL_ID}, {plan_vectors.shape[1]} dimensions")
 
+    # 3. Which column can single a row out
     print("\n--- 3. Which column can single a row out ---")
     for column in ("family", "plan"):
         counts = index_selectivity(plans, column)
@@ -202,42 +179,57 @@ def main():
         unique = sum(1 for c in counts.values() if c == 1)
         print(f"  {column:<7} {len(counts)} distinct value(s), "
               f"{unique}/{len(plans)} rows uniquely identified, "
-              f"worst case {worst} rows share a value")
+              f"worst case {worst} row(s) share a value")
     print("  the index column has to be both what the customer says out loud and")
     print("  selective enough to leave one row standing")
 
-    print("\n--- 4. A pricing question, asked of the whole table ---")
+    # 4. A pricing question, against whole rows and against the family column
+    print("\n--- 4. A pricing question, against whole rows and against the family "
+          "column ---")
     question = "What does the Momentum plan cost per trade?"
     print(f"  {question!r}")
     for chunk, score in search(question, plan_chunks, plan_vectors):
         print(f"    {score:.3f}  {chunk}")
     family_chunks = [f"family: {row['family']}" for row in plans]
     family_vectors = np.asarray(encode(family_chunks))
+    top_family = search(question, family_chunks, family_vectors, top_k=1)[0][0]
+    top_family = top_family.split(": ", 1)[1]
+    tied = index_selectivity(plans, "family")[top_family]
     print("  the same question against an index built on the family column only:")
-    for chunk, score in search(question, family_chunks, family_vectors, top_k=3):
+    for chunk, score in search(question, family_chunks, family_vectors, top_k=tied):
         print(f"    {score:.3f}  {chunk}")
-    print("  three rows carry the value 'Retail', so that index cannot separate them")
+    print(f"  {tied} rows carry the value '{top_family}', "
+          f"so that index cannot separate them")
 
+    # 5. A question with three conditions in it
     print("\n--- 5. A question with three conditions in it ---")
     question = "Did user U-100241 sign in on 2026-05-04?"
     print(f"  {question!r}")
     hits = search(question, event_chunks, event_vectors)
     for chunk, score in hits:
         print(f"    {score:.3f}  {chunk}")
-    wanted = [h for h in hits
-              if "U-100241" in h[0] and "2026-05-04" in h[0] and "Sign-in" in h[0]]
+    def fits(chunk):
+        return "U-100241" in chunk and "2026-05-04" in chunk and "Sign-in" in chunk
+
+    wanted = [h for h in hits if fits(h[0])]
     print(f"  {len(wanted)} of the {len(hits)} rows returned satisfy all three")
+    ranked = search(question, event_chunks, event_vectors, top_k=len(event_chunks))
+    for rank, (chunk, score) in enumerate(ranked, 1):
+        if fits(chunk):
+            print(f"  the one row that does sits at rank {rank} of {len(ranked)} "
+                  f"({score:.3f})")
     print("  similarity ranks by resemblance, and every row about signing in")
     print("  resembles this one, whichever user or day it belongs to")
 
+    # 6. The same question, answered by filtering the columns
     print("\n--- 6. The same question, answered by filtering the columns ---")
     conditions = parse_conditions(question, events)
     literal = {k: v for k, v in conditions.items() if k != "event_type_loose"}
     print(f"  conditions matched literally: {literal}")
-    loose_rows = apply_conditions(events, literal)
-    for row in loose_rows:
+    literal_rows = apply_conditions(events, literal)
+    for row in literal_rows:
         print(f"    {row['event_time']}  {row['event_type']:<15} {row['event_detail']}")
-    print(f"  {len(loose_rows)} row(s) satisfy those: the question writes 'sign in'")
+    print(f"  {len(literal_rows)} row(s) satisfy those: the question writes 'sign in'")
     print("  and the column stores 'Sign-in', so the third condition matched nothing")
     print("  and was dropped from the filter without a word")
     print(f"  conditions matched after folding case and punctuation: {conditions}")
@@ -247,9 +239,11 @@ def main():
     truth = [r for r in events if r["user_id"] == "U-100241"
              and r["event_time"].startswith("2026-05-04") and r["event_type"] == "Sign-in"]
     print(f"  {len(selected)} row(s) satisfy the filter; scanning the table directly")
-    print(f"  finds {len(truth)}, so the filter and the table agree")
+    verdict = "agree" if selected == truth else "disagree"
+    print(f"  finds {len(truth)}, so the filter and the table {verdict}")
 
-    print("\n--- 7. The question the prose document has to answer ---")
+    # 7. A question only the prose document answers, and its cost
+    print("\n--- 7. A question only the prose document answers, and its cost ---")
     question = "Why does face unlock stop working after changing the password?"
     print(f"  {question!r}")
     for chunk, score in search(question, prose_chunks, prose_vectors, top_k=2):
@@ -260,6 +254,9 @@ def main():
                     search(question, prose_chunks, prose_vectors, top_k=k))
         print(f"  top_k={k:<2} recalls {chars} characters, roughly {chars // 4} "
               f"tokens, paid on every question before the model answers")
+    if chars > len(notes):
+        print(f"  top_k={len(prose_chunks)} is all {len(prose_chunks)} chunks, more "
+              f"than the {len(notes)}-character file because chunks overlap")
     print("  the chunks are not all the same length, so the bill rises with the")
     print("  recall count without tracking it exactly")
 

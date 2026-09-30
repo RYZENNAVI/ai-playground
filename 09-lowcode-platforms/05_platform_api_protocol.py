@@ -1,16 +1,16 @@
-"""Serve the protocol a workflow platform exposes, then call it three ways.
+"""This script serves the HTTP API of a hosted workflow platform from a local FastAPI
+server, then calls it three ways: a blocking request, a stream of server-sent events
+(SSE), and a client that probes payload shapes until one stops failing.
 
-Demonstrates what a hosted workflow looks like from outside, and how a client
-stops knowing which deployment it is talking to:
-    1. Start a local server that answers the three endpoints such a platform exposes.
-    2. Call the blocking endpoint and read the single response body.
-    3. Call the streaming endpoint and read the events as they arrive.
-    4. Print the request headers the way a debugging client does, and look at them.
-    5. Send two requests that both fail with HTTP 400 for unrelated reasons.
-    6. Let a client probe five payload shapes until one stops failing.
-    7. Break the connection and watch that probe rewrite the cause of the failure.
-
-Module 09: Low-Code Platforms - Platform API Protocol.
+It shows what a hosted workflow looks like from outside, and how a client stops knowing
+which deployment it is talking to. The run prints 7 parts:
+    1. A local server answering the three endpoints.
+    2. The blocking call.
+    3. The same run, streamed.
+    4. The headers a client prints while debugging.
+    5. Two requests that both come back HTTP 400.
+    6. A client probing for the shape.
+    7. The same probe against a server that is gone.
 """
 
 import json
@@ -127,6 +127,12 @@ SERVER_SOURCE = dedent('''
     async def completion_messages(request: Request, authorization: str = Header(None)):
         check(authorization)
         body = await request.json()
+        if APP_TYPE != "completion":
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "not_completion_app",
+                        "message":
+                            f"this deployment is a {APP_TYPE}, not a completion app"})
         inputs = body.get("inputs") or {}
         if INPUT_VARIABLE not in inputs:
             raise HTTPException(
@@ -171,7 +177,6 @@ class PlatformClient:
 
     def __init__(self, base_url, api_key):
         self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
         self.headers = {"Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                         "Accept": "application/json"}
@@ -199,10 +204,7 @@ class PlatformClient:
 
     def run_streaming(self, question):
         """Run the workflow and read its events as they are produced.
-
-        A line that does not parse is skipped rather than raised on, because a
-        stream carries keep-alive lines and blank lines between the events.
-        """
+        Only 'data: ' lines are kept; blank and keep-alive lines are skipped."""
         status, response = self.post(
             "/v1/workflows/run",
             {"inputs": {"question": question}, "response_mode": "streaming",
@@ -220,38 +222,22 @@ class PlatformClient:
                 continue
         return status, events
 
-    def completion_dropping_input(self, question):
-        """Call the completion endpoint with an empty inputs object.
-
-        question is a parameter of this method and appears nowhere in the body
-        it sends. The endpoint is reached and the key is accepted; the user's
-        words are the one thing that does not travel.
-        """
-        return self.post("/v1/completion-messages",
+    def run_dropping_input(self, question):
+        """Send the user's question nowhere: the inputs object goes out empty."""
+        return self.post("/v1/workflows/run",
                          {"inputs": {}, "response_mode": "blocking", "user": "demo"})
 
     def chat_on_a_workflow_deployment(self, question):
-        """Call the conversational endpoint on a deployment that is not a chat app.
-
-        The body is the correct one for /v1/chat-messages: the user's words go
-        in a top-level 'query'. Nothing about the request is malformed. It is
-        aimed at the wrong endpoint of the right server, which no amount of
-        rewriting the payload will resolve.
-        """
+        """Send a body correct for the chat endpoint to a workflow deployment."""
         return self.post("/v1/chat-messages", {"query": question, "user": "demo"})
 
-    def completion_probing(self, question, timeout=30):
-        """Try five payload shapes until one of them stops failing.
-
-        Every failure is read as the wrong shape, so a failure that has nothing
-        to do with shape gets the same treatment: move on to the next one, and
-        when the list is exhausted, report that the shapes are exhausted.
-        """
+    def run_probing(self, question, timeout=30):
+        """Try five payload shapes in turn, reading every failure as the wrong shape."""
         shapes = [{}, {"text": question}, {"query": question},
                   {"question": question}, {"prompt": question}]
         attempts = []
         for shape in shapes:
-            status, body = self.post("/v1/completion-messages",
+            status, body = self.post("/v1/workflows/run",
                                      {"inputs": shape, "response_mode": "blocking",
                                       "user": "demo"}, timeout=timeout)
             attempts.append((list(shape), status, body))
@@ -281,13 +267,15 @@ def main():
     client = PlatformClient(f"http://{HOST}:{port}", API_KEY)
     question = "Why do price alerts arrive late?"
     try:
-        print(f"--- 1. A local server on port {port} ---")
+        # 1. A local server answering the three endpoints
+        print(f"--- 1. A local server on port {port}, answering the three endpoints ---")
         print(f"  wrote {SERVER_FILE.name} and started it as a subprocess")
         print("  it answers /v1/workflows/run, /v1/chat-messages and "
               "/v1/completion-messages")
         print("  it is a workflow deployment and declares exactly one input")
         print("  variable, 'question'; the other two endpoints exist and refuse")
 
+        # 2. The blocking call
         print("\n--- 2. The blocking call ---")
         status, body = client.run_blocking(question)
         print(f"  HTTP {status}  run {body['workflow_run_id']}  "
@@ -295,6 +283,7 @@ def main():
         print(f"  answer: {body['data']['outputs']['answer']}")
         print("  one request, one response, and nothing observable in between")
 
+        # 3. The same run, streamed
         print("\n--- 3. The same run, streamed ---")
         started = time.time()
         status, events = client.run_streaming(question)
@@ -305,18 +294,20 @@ def main():
               f"events are the only view of what ran")
         print(f"  answer: {events[-1]['data']['outputs']['answer']}")
 
+        # 4. The headers a client prints while debugging
         print("\n--- 4. The headers a client prints while debugging ---")
         print(f"  as written: {client.headers}")
         print(f"  redacted  : {redacted(client.headers)}")
-        print("  the first form is one line in a debug print and one copy of the")
-        print("  credential in every log this process ever writes")
+        print("  the first form puts the credential into stdout, and into any log")
+        print("  that collects it")
 
+        # 5. Two requests that both come back HTTP 400
         print("\n--- 5. Two requests that both come back HTTP 400 ---")
-        status, body = client.completion_dropping_input(question)
+        status, body = client.run_dropping_input(question)
         print(f"  right endpoint, empty inputs : HTTP {status}  {describe(body)}")
         print("  the endpoint is right and the key is right; the payload has an")
         print("  empty inputs object, so the deployment refuses for its missing input")
-        print(f"  variable - the body's message says {body['detail']['message']!r},")
+        print(f"  variable. The body's message says {body['detail']['message']!r};")
         print("  the status code alone does not")
         status, body = client.chat_on_a_workflow_deployment(question)
         print(f"  wrong endpoint, valid body   : HTTP {status}  {describe(body)}")
@@ -326,22 +317,26 @@ def main():
         print("  the two share a status code and agree on nothing else: the status")
         print("  says that a request failed, and only the code in the body says why")
 
+        # 6. A client probing for the shape
         print("\n--- 6. A client probing for the shape ---")
-        attempts, result = client.completion_probing(question)
+        attempts, result = client.run_probing(question)
         for shape, status, body in attempts:
             note = "accepted" if status == 200 else describe(body)
             print(f"  inputs={str(shape):<14} HTTP {status}  {note}")
         print(f"  {len(attempts)} request(s) to arrive at a key the deployment names")
-        print(f"  in its own configuration: answer -> {result.get('answer')}")
+        answer = result["data"]["outputs"]["answer"]
+        print(f"  in its own configuration: answer -> {answer}")
 
+        # 7. The same probe against a server that is gone
         print("\n--- 7. The same probe against a server that is gone ---")
         server.terminate()
         server.wait(timeout=10)
-        attempts, result = client.completion_probing(question, timeout=2)
+        attempts, result = client.run_probing(question, timeout=2)
         for shape, status, body in attempts:
             print(f"  inputs={str(shape):<14} HTTP {status}  {describe(body)}")
         print(f"  reported to the caller: {result['message']!r}")
-        print("  five transport failures in a row, and the message that comes back")
+        print(f"  {len(attempts)} transport failures in a row, and the message that "
+              f"comes back")
         print("  names the application configuration and the API key instead")
     finally:
         if server.poll() is None:
