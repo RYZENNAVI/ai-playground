@@ -1,10 +1,10 @@
-"""Generate SQL with Vanna, which retrieves the schema, notes and examples it needs.
-
-Vanna applies retrieval-augmented generation to Text2SQL. It stores three kinds of
-training material in a vector store (Chroma, embedded locally): the five CREATE
-TABLE statements, five written notes that explain the status codes and where
-premium lives, and three question and SQL pairs. For each question it retrieves
-related items of each kind and pastes them into the prompt for the chat model.
+"""This script writes SQL for questions about the insurance database with Vanna, a
+library that applies retrieval-augmented generation (RAG) to Text2SQL. Vanna
+stores three kinds of training material in a vector store (Chroma, embedded
+locally): the five CREATE TABLE statements, five written notes that explain the
+status codes and where premium lives, and three question and SQL pairs. For each
+question it retrieves related items of each kind and pastes them into the prompt
+for the chat model.
 
 Vanna returns up to 10 items of each kind by default, and this store holds 5, 5
 and 3, so every question gets all of them. Retrieval here only orders them.

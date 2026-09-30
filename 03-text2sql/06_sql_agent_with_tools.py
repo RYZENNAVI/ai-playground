@@ -1,6 +1,4 @@
-"""Let the model pick tools to answer database questions, via function calling.
-
-This script gives a chat model four tools through function calling (also called
+"""This script gives a chat model four tools through function calling (also called
 tool calling): run a query, draw a bar chart, fit a linear regression, and
 rank factors with a decision tree. The system message holds the schema, what
 each stored code means and three settled questions. A hand-written loop sends

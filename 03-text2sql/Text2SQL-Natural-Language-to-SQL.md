@@ -22,13 +22,9 @@ on.
 *   Every script uses DeepSeek's `deepseek-chat` when `DEEPSEEK_API_KEY` is set in
     `.env` at the repository root, which `.gitignore` excludes, and OpenAI's
     `gpt-4o-mini` otherwise. `OPENAI_BASE_URL` and `OPENAI_MODEL` point the OpenAI key
-    at another compatible vendor. Scripts 02, 05 and 06 call the model through the
-    `openai` package, 03 through LangChain's `ChatOpenAI`, and 04 through Vanna's
-    `OpenAI_Chat`. The numbers below come from DeepSeek.
+    at another compatible vendor. The numbers below come from DeepSeek.
 *   Each script calls `ensure_database()` from script 01, which builds the database
-    only when the file is missing, so the scripts run in any order. `load_schema()`
-    returns the CREATE TABLE text with its column comments, the same text 01 wrote
-    to `data/schema.sql`.
+    only when the file is missing, so the scripts run in any order.
 *   Temperature is 0 wherever the model writes SQL, except in 03, where LangChain gets
     0.01.
 *   Four columns store short codes rather than readable words:
@@ -42,21 +38,16 @@ on.
 
     Only the comments in the CREATE TABLE text say what they mean, so a model that
     never sees them has to guess.
-*   All six scripts use the same database, so a difference between two scripts comes
-    from the approach and not from the data.
 
 ## Script 01: The insurance database
 
-*   Five tables: `customers` (40 rows), `products` (10), `policies` (60), `claims` (35)
-    and `daily_sales` (180 days), 325 rows in all. The CREATE TABLE text carries 38
-    column comments, such as `-- stored as a code: IF = in force, LP = lapsed, TM =
-    terminated`.
-*   The rows come from `random.Random(20260822)`. Text2SQL is judged by comparing the
-    rows a generated query returns with the rows of a hand-written query, so the data
-    behind them has to stay the same. Running 01 always rebuilds the database, and the
-    rebuilt file is identical byte for byte.
-*   The database is written to a temporary file and renamed into place, so an
-    interrupted run never leaves a half-filled database behind.
+*   Part 1 defines five tables, and part 3 fills them: `customers` (40 rows), `products`
+    (10), `policies` (60), `claims` (35) and `daily_sales` (180 days), 325 rows in all.
+    The CREATE TABLE text carries 38 column comments, such as
+    `-- stored as a code: IF = in force, LP = lapsed, TM = terminated`.
+*   Part 2 draws the rows from a fixed seed, and a rebuild is identical byte for byte.
+    Text2SQL is judged by comparing returned rows with those of a hand-written query,
+    so the data behind them has to stay the same.
 *   A few distributions are set on purpose. Claim amounts are drawn below 9500 or
     above 10500, so a query that writes `>= 10000` instead of `> 10000` returns the
     same rows in 02. 6 of the 60 policies are unpaid, so a query that drops the filter
@@ -64,29 +55,25 @@ on.
 *   `daily_sales` stores how many new, renewal and upgrade policies sold each day and
     the day's total premium. Each total is priced from fixed segment prices (new 620,
     renewal 410, upgrade 880), multiplied by a campaign lift (none 1.0, spring 1.15,
-    autumn 1.10, yearend 1.30), with up to 3% noise. Month end and weekday are stored
-    but play no part in the price. Script 06 checks its tools against these numbers.
+    autumn 1.10, yearend 1.30), with up to 3% noise. Month end and weekday play no
+    part in the price. Script 06 checks its tools against these numbers.
 
 ## Script 02: Prompt styles and few-shot retrieval
 
-Seven questions have hand-written SQL. A generated query passes when it returns the
-same rows, which is called execution accuracy. `rows_match` ignores row order and
-rounds floats to four places, since no question asks for an order.
+Part 1 lists seven questions with hand-written SQL. A generated query passes when it
+returns the same rows, which is called execution accuracy. `rows_match` ignores row
+order and rounds floats to four places, since no question asks for an order.
 
-*   Styles A and B describe four of the tables in a paragraph that names the columns,
-    with no types, comments or codes. B adds an explicit "Write one SQL query". Style C
-    pastes the CREATE TABLE text into a completion template (`### Question`,
-    `### Input`, `### Response`) that ends inside an open `sql` block, so the reply
-    starts with SQL.
-*   C changes the template as well as the schema, so only A against B changes one
-    thing at a time.
-*   Three questions filter on a status code. For those the script also checks whether
-    the query used the code the table stores, and prints what it wrote instead.
-*   Question 2 reads "List each customer once, showing only their name and phone
-    number." Rows are compared as whole tuples, so without "once" a query that omits
-    `DISTINCT` would answer the question as asked and still score wrong.
+*   Part 2 builds three prompt styles. Styles A and B describe four of the tables in a
+    paragraph that names the columns, with no types, comments or codes. B adds an
+    explicit "Write one SQL query". Style C pastes the CREATE TABLE text into a
+    completion template (`### Question`, `### Input`, `### Response`) that ends inside
+    an open `sql` block, so the reply starts with SQL.
+*   Part 3 runs each question under each style. For the three that filter on a status
+    code it also checks whether the query used the code the table stores, and prints
+    what it wrote instead.
 
-Three runs gave the same scores:
+Part 4 scores each style. Three runs gave the same scores:
 
 | Style | Rows right | Table's code used |
 | :--- | :---: | :---: |
@@ -100,26 +87,22 @@ Three runs gave the same scores:
 | Which customers have lapsed? | `'Lapsed'` | `L` |
 | How many policies are still running? | `'Active'`, once `'Running'` from B | `IF` |
 
-*   A and B fail exactly the three code questions and pass the other four. Each
-    failure is a readable word guessed in place of a code the paragraph never gives.
-*   A and B score the same, so B's extra instruction changes nothing here. C changes
-    two things, and the guessed values point to the schema.
-*   The code column shows why a query failed. It cannot tell a lucky guess from
-    knowledge: a query that guessed `'DEN'` would count as used.
+*   A and B fail exactly the three code questions, each by guessing a readable word
+    for a code the paragraph never gives. B's extra instruction changes nothing.
+*   C changes the template and the schema at once, and the guessed values point to
+    the schema. The code column cannot tell a lucky guess from knowledge.
 
 Parts 5 and 6 add few-shot examples. Six hand-written question and SQL pairs are
 searched by TF-IDF (`top_k=2`, threshold 0.05), and the hits are pasted in front of
 style C. The first pair follows a house rule that the schema cannot tell the model:
 closed accounts are not counted as customers.
 
-*   The question is "How many customers do we have in Kingsford?". Kingsford has six
-    customers, one of them closed, so the answer is 5.
+*   Part 5 retrieves examples for "How many customers do we have in Kingsford?".
+    Kingsford has six customers, one of them closed, so the answer is 5.
 *   The TF-IDF vocabulary comes from the six example questions only, so "Kingsford"
     is dropped and the query keeps one word, customers. It matches "How many customers
-    do we have?" at 1.000 and "Which customers are married?" at 0.634.
-*   TF-IDF compares words, not meaning. Asked about the average premium per product
-    type, it returned "Show each customer together with the policies they hold." and
-    "Which products are no longer sold?" at 0.333 each, matched on one word apiece.
+    do we have?" at 1.000. TF-IDF compares words, not meaning, so other questions pull
+    in examples that share one word.
 
 Part 6 asks the same question three ways. Three runs gave the same results:
 
@@ -132,18 +115,15 @@ Part 6 asks the same question three ways. Three runs gave the same results:
 *   With the bare SQL, the model reads the example as the answer to another question.
     One comment line, `-- Closed accounts are not counted as customers.`, makes it
     apply the rule to a new city.
-*   An example only helps with what the schema does not say. Asked for premium per
-    year, C multiplied by the payment frequency without any example, because the
-    column comment says the premium is per payment period.
-*   Only checked SQL belongs in the example list, because a wrong example teaches the
-    model the mistake.
+*   An example only helps with what the schema does not say, and only checked SQL
+    belongs in the list, because a wrong example teaches the model the mistake.
 
 ## Script 03: LangChain's SQL agent
 
 `SQLDatabase.from_uri()` opens the database and reads its structure by reflection.
 `SQLDatabaseToolkit` turns it into four tools, and `create_sql_agent` builds a ReAct
 agent that calls them until it can answer. All of these ship with LangChain, and the
-script only wires them together.
+script only wires them together. Part 3 lists the four tools:
 
 | Tool | Job |
 | :--- | :--- |
@@ -152,16 +132,14 @@ script only wires them together.
 | `sql_db_query_checker` | Ask the model to check a query before it runs |
 | `sql_db_query` | Run a query and return the rows |
 
-*   SQLite keeps the original CREATE TABLE text in `sqlite_master`, comments included.
-    The wrapper rebuilds the text from the parsed structure instead, so names, types
-    and keys survive and every comment is lost. Part 2 checks this: the stored text
-    for `policies` contains `IF = in force` and the wrapper's text does not.
-*   `max_iterations` is 8. The coded question takes six steps (five tool calls and
-    the final answer), and an earlier cap of 5 stopped it just before it answered.
-*   In LangChain 1.3, `create_sql_agent` lives in `langchain_community`. The imports
-    sit inside `build_agent`.
+*   Part 2 compares schema texts. SQLite keeps the original CREATE TABLE text in
+    `sqlite_master`, comments included. The wrapper rebuilds the text from the parsed
+    structure instead, so names, types and keys survive and every comment is lost: the
+    stored text for `policies` contains `IF = in force` and the wrapper's text does
+    not.
+*   `max_iterations` is 8, since the coded question takes six steps.
 
-Three runs gave the same results:
+Parts 4 to 6 ask three questions. Three runs gave the same results:
 
 | Part | Question | What happened |
 | :---: | :--- | :--- |
@@ -169,26 +147,15 @@ Three runs gave the same results:
 | 5 | How many policies are still in force? | Five tool calls, 43, the same as the hand-written SQL |
 | 6 | Describe the PolicyHolderDetails table. | The agent noticed the table is missing, then raised a parsing error |
 
-*   Part 5 took the same steps every run:
-
-    ```
-    sql_db_list_tables    claims, customers, daily_sales, policies, products
-    sql_db_schema         policies (three sample rows, all IF)
-    sql_db_query          SELECT DISTINCT policy_status FROM policies  ->  IF, LP, TM
-                          Thought: 'IF' likely stands for "In Force".
-    sql_db_query_checker  SELECT COUNT(*) FROM policies WHERE policy_status = 'IF'
-    sql_db_query          same query  ->  43
-    ```
-
-    The agent was right because it guessed well. No comment reached it. `IF` spells
-    its meaning, and a code that did not would give it nothing to read.
-*   In part 6 the model answered in plain prose that the table does not exist. The
-    ReAct output parser expects every reply in the `Action: ... / Action Input: ...`
-    shape, so it raised `ValueError: An output parsing error occurred`. The model was
-    right and the framework failed on the format.
-*   Each tool call costs a model call to choose it, the final answer costs one more,
-    and `sql_db_query_checker` calls the model itself. Script 02 used one model call
-    per question.
+*   In part 5 the agent ran `SELECT DISTINCT policy_status`, saw `IF, LP, TM`, and
+    thought "'IF' likely stands for In Force". It was right because it guessed well:
+    no comment reached it, and a code that did not spell its meaning would give it
+    nothing.
+*   In part 6 the model answered in plain prose that the table does not exist, and the
+    ReAct parser, which expects `Action: ... / Action Input: ...`, raised an error.
+    The model was right and the framework failed on the format.
+*   Each tool call costs a model call, and so does the checker. Script 02 used one
+    model call per question.
 
 ## Script 04: Vanna
 
@@ -196,21 +163,15 @@ Vanna applies retrieval-augmented generation to Text2SQL. A client is composed f
 two mixins, a vector store and a chat model (`LocalVanna(ChromaDB_VectorStore,
 OpenAI_Chat)`), so either half can be replaced.
 
-*   In vanna 2 these classes live under `vanna.legacy`. Chroma computes the
-    embeddings locally, so only the chat call leaves the machine.
-*   "Training" stores material in the vector store and changes no model weights.
-    The script stores the five CREATE TABLE statements one by one, five notes that
+*   Part 1 composes the client. Chroma computes the embeddings locally, so only the
+    chat call leaves the machine.
+*   Part 3 "trains", which stores material in the vector store and changes no model
+    weights. It stores the five CREATE TABLE statements one by one, five notes that
     explain the status codes and say that premium lives on the products table, and
     three question and SQL pairs.
-*   Vanna returns up to 10 items of each kind by default, so every question gets all
-    5 statements, 5 notes and 3 pairs. Storing the statements separately only pays
-    off in a larger store. Lowering the limit to 3 was tried and made things worse:
-    the three statements returned were `daily_sales`, `policies` and `claims`, without
-    `products`, where premium lives.
-*   The store is deleted and rebuilt on every run.
-*   `LocalVanna` replaces Vanna's `submit_prompt`, which sends `stop=None` on every
-    request. Gemini's OpenAI-compatible endpoint rejects the null, so the override
-    sends the same request without it.
+*   Part 4 shows what a question retrieves. Vanna returns up to 10 items of each kind,
+    so every question gets all of them.
+    A limit of 3 left out `products`, where premium lives, and made things worse.
 
 Part 5 asks "How many policies have lapsed, and what do they cost in premium per
 year?". The query always filters on `'LP'`, from the note on stored codes, and joins
@@ -224,10 +185,8 @@ the payments per year, taken from `payment_frequency`:
 | Generated SQL without the conversion | 13 | 8912.0, per payment period added up |
 | Generated SQL with the conversion, or hand-written | 13 | 13632.0 per year |
 
-Three runs on 2026-09-27 all summed the raw premium and got 8912.0. Of four runs on
-2026-09-28, three converted and matched 13632.0. No note says how to annualise a
-premium, so the result depends on whether the model thinks of it, and the check is
-what catches the runs where it does not.
+Of seven runs, three converted and four summed the raw premium. No note says how to
+annualise a premium, so the check is what catches the runs that do not.
 
 Parts 6 and 7 store a correction. Whether a closed account still counts as a customer
 is a decision, not a fact in the data. After the first answer, the settled SQL is
@@ -248,13 +207,11 @@ Model-written SQL is untrusted input, so it passes through four layers, an idea 
 as defence in depth. A request one layer refuses never reaches the next.
 
 *   The screen sits in the generation call itself. The prompt holds the commented
-    schema and three rules, and asks for JSON:
-    `{"is_safe": "yes" or "no", "reason": "<short>", "sql": "<the SELECT, or empty>"}`.
-    Judging and writing in one call saves a second round trip.
+    schema and three rules, and asks for JSON: `{"is_safe": "yes" or "no", "reason":
+    "<short>", "sql": "<the SELECT, or empty>"}`.
 *   Static rules check the SQL text: one statement only, starting with `SELECT` or
-    `WITH`, no forbidden keyword, no always-true predicate such as `1=1` or
-    `'a'='a'`. The forbidden keywords include `ATTACH`, which mounts another database
-    file, and `PRAGMA`, which changes settings, since neither is a read.
+    `WITH`, no forbidden keyword (`ATTACH` and `PRAGMA` included), no always-true
+    predicate such as `1=1`.
 *   A second model call reviews the query and returns
     `{"verdict": "allow" or "block", "reason": "<short>"}`. It only asks whether the
     query is read-only.
@@ -292,12 +249,10 @@ rules and the review. The three runs gave the same verdicts:
 *   The last row is a false positive: `REPLACE` is also a string function. The rule
     stays strict, because the read-only connection refuses a real `REPLACE INTO`
     anyway.
-*   Part 3 runs the four allowed queries, then tries `DELETE FROM claims`. The driver
-    refuses it with `attempt to write a readonly database`, without any checking
-    logic.
-*   The same person wrote the attacks and the rules, so these results show the rules
-    work on the cases tried, not that they are complete. That is why the read-only
-    layer stays.
+*   Part 3 tries `DELETE FROM claims`, and the driver refuses it with
+    `attempt to write a readonly database`. The same person wrote the attacks and the
+    rules, so the rules are shown to work on these cases, not to be complete, and the
+    read-only layer stays.
 
 Parts 4 and 5 measure execution accuracy on seven questions, grouped by how many
 tables the answer joins. The prompt is the screening prompt, which carries the
@@ -311,16 +266,13 @@ commented schema, the same setup as style C in 02. Three runs gave the same scor
 | Overall | 7/7 |
 
 *   An overall score depends on how many easy questions the benchmark holds, so the
-    script splits it by join depth.
-*   Every group scored the same, so this benchmark shows no drop as joins are added.
-    With two or three questions per group, one wrong answer would move a group's
-    score by a third or a half.
-*   On a failure the script prints the generated SQL and both row counts.
+    script splits it by join depth. No group drops here, but with two or three
+    questions per group one wrong answer would move a score by a third or a half.
 
 ## Script 06: Function calling (tool calling)
 
-The model gets four tools. It decides which to call and with what arguments, and the
-script runs them. The model never touches the database itself.
+Part 1 declares four tools. The model decides which to call and with what arguments,
+and the script runs them. The model never touches the database itself.
 
 | Tool | What it does |
 | :--- | :--- |
@@ -329,29 +281,21 @@ script runs them. The model never touches the database itself.
 | `fit_segment_premium` | Fits a linear regression on `daily_sales` for one campaign or all, and returns the price per segment and R^2 |
 | `rank_drivers` | Fits a decision tree on `daily_sales` and returns the five most important factors |
 
-*   A tool is declared as a JSON schema. The model sees only the name, the
-    description and the parameters.
-*   The loop in `converse` sends the history with the tools, runs every tool call
-    the reply asks for, adds each result, and stops when a reply has no tool calls.
-*   `arguments` arrives as a JSON string and needs `json.loads`. Every tool call needs
-    its own `tool` message with the matching id.
-*   The model's reply goes back into the history as it came. An earlier version rebuilt
-    it from the tool calls, which dropped the thought signature Gemini attaches, and
-    Gemini's endpoint then refused the next turn.
+*   A tool is declared as a JSON schema; the model sees only the name, the description
+    and the parameters. The loop runs every tool call a reply asks for, adds each
+    result as a `tool` message with the matching id, and stops when a reply has none.
+*   The model's reply goes back into the history as it came; rebuilding it dropped the
+    thought signature Gemini needs.
 *   A tool that fails returns `{"error": ...}` instead of raising, so the model can
-    fix its query.
-*   `MAX_TURNS` is 10. The questions here finish in two or three model calls.
-*   The connection is read-only, as in 05.
+    fix its query. The connection is read-only, as in 05.
 
-The system message is 5328 characters. It holds the commented schema, the meaning of
-each code, three settled questions, and a note that `daily_sales` does not hold the
-average premium per segment, so `fit_segment_premium` should answer that. A CREATE TABLE
-statement can only say what a table holds. Without the note the model
-would try to answer the price question with SQL. The settled questions are house
-rules the schema cannot express, each written with its reason, for example "Closed
-accounts are not counted as customers."
+Part 2 prints the system message. It holds the commented schema, three settled
+questions written with their reasons, and a note that `daily_sales` does not hold the
+average premium per segment, so `fit_segment_premium` should answer that. A CREATE
+TABLE statement can only say what a table holds; without the note the model would try
+SQL.
 
-Three runs gave the same tool calls and numbers:
+Parts 3 to 6 ask four questions. Three runs gave the same tool calls and numbers:
 
 | Part | Question | Tool calls | Answer |
 | :---: | :--- | :--- | :--- |
@@ -360,13 +304,9 @@ Three runs gave the same tool calls and numbers:
 | 5 | What does a new customer pay on average compared with a renewal, during the yearend campaign? | `fit_segment_premium({"campaign": "yearend"})` | New 789.07, renewal 549.15 |
 | 6 | Which factors drive daily premium the most? | `rank_drivers({})` | Renewal count 0.42, upgrade count 0.28, new count 0.26 |
 
-*   In part 4 the order of the two calls is the model's choice. Some runs queried
-    first, and the latest three drew first. The chart goes to
-    `data/charts/total_amount_claimed_by_claim_type.png`. `plot_chart` takes the
-    first column as labels and the second as values, and the tool description says
-    so, so the model writes its SQL in that shape.
-*   The file name comes from the title the model writes. The same title overwrites
-    the old file.
+*   In part 4 the order of the two calls is the model's choice. `plot_chart` takes the
+    first column as labels and the second as values, and its description says so, so
+    the model writes its SQL in that shape.
 
 Parts 5 and 6 reach numbers no column holds. `daily_sales` stores the day's count per
 segment and the total premium, but not what one policy of each kind costs. Each day
@@ -377,10 +317,8 @@ total_premium = w_new * new_count + w_renewal * renewal_count + w_upgrade * upgr
 ```
 
 *   A linear regression over the matching days recovers the three prices as its
-    coefficients. `fit_intercept=False` sends the line through the origin: a day with
-    no sales takes no premium, and each coefficient then reads as a price.
-*   The tool refuses to fit fewer than 10 days, passes the campaign through a `?`
-    placeholder, and returns R^2 with the prices.
+    coefficients. `fit_intercept=False` sends the line through the origin, since a
+    day with no sales takes no premium. The tool refuses to fit fewer than 10 days.
 
 Part 5 checks the fit against the prices script 01 used:
 
@@ -404,13 +342,9 @@ error reduction that splits on each feature:
 | Campaign flags together | 0.04 |
 | `is_month_end` and weekday flags together | 0.00 |
 
-*   Script 01 priced each day from the three counts and the campaign lift only. The
-    tree gives month end and weekday nothing, which matches.
-*   The top three are the counts, and the daily total is their weighted sum by
-    construction. The tree has largely found that definition again.
-*   Yearend days are priced 30% higher, but they are 18 of 180 days, and the counts
-    swing far more from day to day. A low importance is not a small effect.
-    Importance measures how much of the variation in this sample a feature explains,
-    not how far the feature moves the result when it is present. The model's own
-    summary, that campaign timing matters only marginally, reads the number the wrong
-    way.
+*   Month end and weekday get nothing, which matches how script 01 priced each day,
+    and the top three are the counts the total is built from.
+*   Yearend days are priced 30% higher but are 18 of 180 days. Importance measures how
+    much of this sample's variation a feature explains, not how far it moves the
+    result, so the model's summary that campaign timing matters only marginally reads
+    the number the wrong way.

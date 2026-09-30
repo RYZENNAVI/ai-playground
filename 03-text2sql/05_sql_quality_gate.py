@@ -1,6 +1,4 @@
-"""Screen generated SQL in layers, then measure its execution accuracy.
-
-This script puts model-written SQL through a layered safety gate, an idea
+"""This script puts model-written SQL through a layered safety gate, an idea
 known as defence in depth. The model judges each request and writes the SQL in
 the same call. Fixed rules then check the SQL text, and a second model call
 reviews it. Every query runs through a read-only connection, so the database

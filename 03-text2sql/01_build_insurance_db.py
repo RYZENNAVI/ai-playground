@@ -1,11 +1,11 @@
-"""Build the SQLite database that the other Text2SQL scripts in this module query.
-
-Text2SQL turns a question into a SQL query. The model writes that query from the
-schema it is shown, and this script writes that schema. It has five tables for an
-insurance company: customers, products, policies, claims and daily sales. Columns
-that need explaining carry a comment inside the CREATE TABLE text. The status
-columns store short codes such as 'DEN' for a denied claim, so only the comments
-tell the model what the codes mean. Script 02 measures how much that matters.
+"""This script builds a small insurance database in SQLite, which the other Text2SQL
+scripts in this module query. Text2SQL turns a question into a SQL query. The
+model writes that query from the schema it is shown, and this script writes that
+schema. It has five tables for an insurance company: customers, products,
+policies, claims and daily sales. Columns that need explaining carry a comment
+inside the CREATE TABLE text. The status columns store short codes such as 'DEN'
+for a denied claim, so only the comments tell the model what the codes mean.
+Script 02 measures how much that matters.
 
 The rows come from a fixed seed, so every build produces the same 325 rows.
 Running this script always rebuilds the database. The other scripts call

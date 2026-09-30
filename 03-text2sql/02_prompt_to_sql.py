@@ -1,11 +1,11 @@
-"""Compare three prompt styles for Text2SQL, then add retrieved few-shot examples.
-
-Text2SQL asks a model to turn a question into a SQL query. Here the model answers
-7 questions about the insurance database from script 01, under three prompt
-styles. Styles A and B describe four of the tables in a paragraph that names the
-columns only. Style C pastes the CREATE TABLE text, with its column comments,
-into a completion template that ends inside an open ```sql block. C changes both
-the template and the schema, while A and B differ only in wording.
+"""This script asks a chat model to write SQL for 7 questions about the insurance
+database from script 01, and scores the queries by running them. Turning a
+question into SQL is called Text2SQL. The questions are asked under three prompt
+styles, and the last two parts add few-shot examples found by retrieval. Styles A
+and B describe four of the tables in a paragraph that names the columns only.
+Style C pastes the CREATE TABLE text, with its column comments, into a completion
+template that ends inside an open ```sql block. C changes both the template and
+the schema, while A and B differ only in wording.
 
 Scoring is by execution accuracy: the generated query runs, and its rows are
 compared with the rows of a hand-written query. Three questions filter on a

@@ -1,4 +1,5 @@
-"""Answer questions with LangChain's SQL agent, which reads the schema itself.
+"""This script asks three questions about the insurance database through LangChain's
+SQL agent, which reads the schema from the database itself instead of the prompt.
 
 Script 02 pasted the schema into the prompt. Here LangChain's SQLDatabaseToolkit
 reads it from the database by reflection, and create_sql_agent builds a ReAct
