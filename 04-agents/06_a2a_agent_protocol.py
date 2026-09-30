@@ -1,12 +1,12 @@
-"""Discover another agent from its agent card and delegate a task to it, A2A style.
-
-A2A (Agent2Agent) is a protocol for one agent to find and use another. The
-provider publishes an agent card at a well-known URL. The caller reads the
-card to learn where to send a task, what inputs it takes and how to
-authenticate. Here both sides run locally: a FastAPI provider that knows which
-rooms are free, and a caller that decides whether a workshop goes ahead. The
-card and the task format are simplified. A2A's own card lists skills and
-security schemes, and its tasks go through the SendMessage operation.
+"""This script has one agent find another through its agent card and ask it
+which rooms are free for a workshop, in the style of the A2A (Agent2Agent)
+protocol. A2A is a protocol for one agent to find and use another. The provider
+publishes an agent card at a well-known URL. The caller reads the card to learn
+where to send a task, what inputs it takes and how to authenticate. Here both
+sides run locally: a FastAPI provider that holds the room list, and a caller
+that decides whether a workshop goes ahead. The card and the task format are
+simplified. A2A's own card lists skills and security schemes, and its tasks go
+through the SendMessage operation.
 
 The run prints six parts:
     1. The capability card. The endpoint, required inputs and auth scheme

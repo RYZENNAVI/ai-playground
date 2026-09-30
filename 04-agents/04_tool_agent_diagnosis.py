@@ -1,11 +1,10 @@
-"""Run a tool-calling agent with LangChain's create_agent on a simulated incident.
-
-create_agent runs the ReAct loop from script 03 over the model's native
-function calling: each tool's name, docstring and argument types become a
-schema, the model returns tool calls instead of text to parse, and the
-framework runs them and sends the results back. The four tools probe a small
-simulated network: resolve a hostname, ping a host, check a local interface
-and search the service log.
+"""This script diagnoses a simulated network incident with a tool-calling agent
+built by LangChain's create_agent. create_agent runs the ReAct loop from script
+03 over the model's native function calling: each tool's name, docstring and
+argument types become a schema, the model returns tool calls instead of text to
+parse, and the framework runs them and sends the results back. The four tools
+probe a small simulated network: resolve a hostname, ping a host, check a local
+interface and search the service log.
 
 The run prints four parts:
     1. Tool schemas handed to the model. The name, arguments and description

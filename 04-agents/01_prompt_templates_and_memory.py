@@ -1,11 +1,9 @@
-"""Build prompts with LangChain prompt templates, and give a chat model memory
-with a LangGraph checkpointer.
-
-A prompt template is text with named slots that LangChain fills in. A chat
+"""This script builds prompts for a chat model with LangChain prompt templates,
+and gives the model memory of the conversation with a LangGraph checkpointer. A
+prompt template is text with named slots that LangChain fills in. A chat
 template also splits the text into a system message and a human message. The
-model remembers nothing between requests. The checkpointer stores each
-thread's messages, and the graph sends all of them again with the next
-question.
+model remembers nothing between requests. The checkpointer stores each thread's
+messages, and the graph sends all of them again with the next question.
 
 The run prints six parts:
     1. Single-variable template. One template filled with two products, and

@@ -1,12 +1,12 @@
-"""Run a ReAct agent loop by hand, with no agent framework.
-
-ReAct (reason and act) has the model write a Thought, then an Action and its
-input. The program runs that tool, adds the result as an Observation, and
-calls the model again, until the model writes a Final Answer. A framework
-hides four jobs that this script does itself. It renders the tool names and
-descriptions into the prompt. It stops the model at "Observation:", so the
-model cannot invent the tool's result. It parses each reply into an action or
-a final answer. It sends the real result back.
+"""This script answers questions about a small compliance rule book with a
+ReAct agent loop written by hand, with no agent framework. ReAct (reason and
+act) has the model write a Thought, then an Action and its input. The program
+runs that tool, adds the result as an Observation, and calls the model again,
+until the model writes a Final Answer. A framework hides four jobs that this
+script does itself. It renders the tool names and descriptions into the prompt.
+It stops the model at "Observation:", so the model cannot invent the tool's
+result. It parses each reply into an action or a final answer. It sends the
+real result back.
 
 The tools search a four-rule compliance rule book, list one category, or read
 one rule by id.

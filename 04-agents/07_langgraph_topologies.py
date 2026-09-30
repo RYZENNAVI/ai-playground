@@ -1,11 +1,11 @@
-"""Run the same nodes as a fixed pipeline and as a routed graph with LangGraph.
-
-LangGraph builds an agent as a StateGraph. Each node is a function that reads
-one shared state and returns the fields it adds, and edges decide which node
-runs next. A conditional edge picks the next node from the state, which is how
-the graph routes. Here five model calls (gather, frame, propose, choose,
-report) form an analysis pipeline. The router puts a triage call in front: a
-shallow question gets one direct answer, and a deep one goes through all five.
+"""This script answers analysis questions with five chained model calls, built
+once as a fixed pipeline and once as a routed graph with LangGraph. LangGraph
+builds an agent as a StateGraph. Each node is a function that reads one shared
+state and returns the fields it adds, and edges decide which node runs next. A
+conditional edge picks the next node from the state, which is how the graph
+routes. Here five model calls (gather, frame, propose, choose, report) form an
+analysis pipeline. The router puts a triage call in front: a shallow question
+gets one direct answer, and a deep one goes through all five.
 
 The run prints four parts:
     1. Fixed pipeline. A deep question through the five nodes, with the

@@ -1,12 +1,12 @@
-"""Serve tools over the Model Context Protocol (MCP) and call them from a model.
-
-MCP is a standard way to publish tools that any client can discover and call.
-This file holds both halves. Run normally, it starts a second copy of itself
-with --serve as a subprocess. That copy is the server, and it speaks JSON-RPC
-over stdin and stdout. The parent is the client. It asks the server for its
-tools, hands their schemas to the chat model, and sends each tool call the
-model makes across to the server. The three tools work on a folder of notes:
-list them, read one, and count its words.
+"""This script lets a chat model answer a question about a folder of notes
+through tools served over the Model Context Protocol (MCP). MCP is a standard
+way to publish tools that any client can discover and call. This file holds
+both halves, each built on the official mcp Python SDK. Run normally, it starts
+a second copy of itself with --serve as a subprocess. That copy is the server,
+and it speaks JSON-RPC over stdin and stdout. The parent is the client. It asks
+the server for its tools, hands their schemas to the chat model, and sends each
+tool call the model makes across to the server. The three tools list the notes,
+read one, and count its words.
 
 The run prints five parts:
     1. Tools this file publishes. The three functions registered on the

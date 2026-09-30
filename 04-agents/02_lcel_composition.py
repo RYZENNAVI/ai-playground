@@ -1,9 +1,9 @@
-"""Compose LangChain runnables with LCEL, the LangChain Expression Language.
-
+"""This script joins LangChain runnables into chains with LCEL, the LangChain
+Expression Language, and runs them on a product review and a few local inputs.
 In LCEL every step is a runnable: a template, a model, a parser, or a plain
 function wrapped in RunnableLambda. The pipe operator | joins runnables into
-one, and the result has the same invoke, stream and batch methods as each
-step. RunnableParallel runs steps side by side, RunnableBranch picks one by a
+one, and the result has the same invoke, stream and batch methods as each step.
+RunnableParallel runs steps side by side, RunnableBranch picks one by a
 condition, and .with_retry() repeats a step that fails.
 
 The run prints six parts:

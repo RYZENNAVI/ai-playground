@@ -12,7 +12,7 @@ behind a triage node. This document explains what each script does and the ideas
 | 01 | `01_prompt_templates_and_memory.py` | Prompt templates, and memory as a transcript a LangGraph checkpointer sends again |
 | 02 | `02_lcel_composition.py` | LCEL: a sequential chain, retry, local functions, parallel branches, routing and streaming |
 | 03 | `03_react_loop_from_scratch.py` | A ReAct loop with no framework, and the run where the prompt never lists the tools |
-| 04 | `04_tool_agent_diagnosis.py` | The same loop with `create_agent` and native function calling, a step limit, and vague tool descriptions |
+| 04 | `04_tool_agent_diagnosis.py` | The same loop with LangChain's `create_agent` and native function calling, a step limit, and vague tool descriptions |
 | 05 | `05_mcp_client_and_server.py` | Both halves of MCP in one file: a stdio server, the handshake, schema translation and a tool-calling loop |
 | 06 | `06_a2a_agent_protocol.py` | A2A-style delegation (simplified): an agent card, a task, and the provider's schema and auth checks |
 | 07 | `07_langgraph_topologies.py` | Five LangGraph nodes as a fixed pipeline and behind a triage node, compared in tokens |
@@ -43,8 +43,8 @@ behind a triage node. This document explains what each script does and the ideas
 
 ## Script 01: Prompt templates and memory
 
-*   A `PromptTemplate` is text with named slots, and LangChain reads the variable names from
-    the text. Declaring `input_variables=[]` by hand changes nothing: the template still
+*   Part 1 fills a `PromptTemplate`, text with named slots. LangChain reads the variable names
+    from the text. Declaring `input_variables=[]` by hand changes nothing: the template still
     reports `['product']`. A missing value raises `KeyError: 'product'`, the same as Python's
     own `str.format`.
 *   A `ChatPromptTemplate` renders to a list of messages, not one string. The instruction goes
@@ -56,14 +56,14 @@ behind a triage node. This document explains what each script does and the ideas
 *   The model is stateless: each request is judged only on the messages it carries. Memory
     here is a LangGraph checkpointer that stores each thread's messages, and a
     `MessagesPlaceholder` that marks where the graph pours them back in.
-*   The test is a follow-up that names nothing. The first turn says "I am building a small tool
-    that renames photo files by date", and the second asks "What should I call it?". In six
-    runs the answer always named the photo tool, most often PhotoDater.
-*   The checkpointer then holds four messages, in order: human, ai, human, ai. The system
+*   Part 4 tests it with a follow-up that names nothing. The first turn says "I am building a
+    small tool that renames photo files by date", and the second asks "What should I call it?".
+    In six runs the answer always named the photo tool, most often PhotoDater.
+*   In part 5, the checkpointer holds four messages, in order: human, ai, human, ai. The system
     message is not stored; the graph adds it on every call.
-*   Sent alone, the same follow-up gets `Could you clarify what "it" refers to?`. Every stored
-    turn is sent again on every later call, so a transcript that keeps growing also grows the
-    cost of each request.
+*   Part 6 sends the same follow-up alone and gets `Could you clarify what "it" refers to?`.
+    Every stored turn is sent again on every later call, so a transcript that keeps growing
+    also grows the cost of each request.
 
 ## Script 02: LCEL composition
 
@@ -117,7 +117,8 @@ a `for` loop, with no agent framework.
 *   The tools answer questions about a rule book of four rules (`R-001` to `R-004`) in two
     categories. One tool searches the text, one lists a category, and one reads a rule by id.
     They are an ordinary dict, and the prompt's `{tools}` and `{tool_names}` are filled from
-    it, so a tool cannot be registered and left out of the prompt.
+    it, so a tool cannot be registered and left out of the prompt. Part 1 prints the rendered
+    listing.
 *   The prompt fixes the format the regex parses:
 
     ```
@@ -157,10 +158,10 @@ a `for` loop, with no agent framework.
     265, 308, 349, 415 and 478 input tokens, 2022 in all, against 1242 if every pass were as
     short as the first.
 
-## Script 04: The same loop with create_agent
+## Script 04: The same loop with LangChain's create_agent
 
-`create_agent` runs the loop from script 03 over the model's native function calling: the
-model returns tool calls, not text to parse.
+LangChain's `create_agent` runs the loop from script 03 over the model's native function
+calling: the model returns tool calls, not text to parse.
 
 *   The `@tool` decorator builds a schema from each function's name, argument types and
     docstring, and part 1 prints what the model receives. The docstring is now runtime input.
@@ -195,13 +196,15 @@ MCP, the Model Context Protocol, is a standard way to publish tools that any cli
 discover and call. The client asks the server what tools it has at runtime instead of
 importing them.
 
-*   The file holds both halves. Run normally, it starts a second copy of itself with `--serve`
-    as a subprocess. That copy is the server, and it speaks JSON-RPC over stdin and stdout. The
-    parent is the client: a `ClientSession` over `stdio_client`. `main()` is the host, the
-    application the model runs in. Nothing listens on a port.
-*   The server publishes three tools over a folder of notes in `data/notes/`: `list_notes`,
-    `read_note` and `count_words`. Parts 2 and 3 are the handshake (protocol `2025-11-25`) and
-    the tool listing. The client did not know the three names before it asked.
+*   The file holds both halves, each built on the official `mcp` Python SDK. Run normally, it
+    starts a second copy of itself with `--serve` as a subprocess. That copy is the server, and
+    it speaks JSON-RPC over stdin and stdout. The parent is the client: a `ClientSession` over
+    `stdio_client`. `main()` is the host, the application the model runs in. Nothing listens on
+    a port.
+*   Part 1 lists the three tools the server publishes over a folder of notes in `data/notes/`:
+    `list_notes`, `read_note` and `count_words`. Parts 2 and 3 are the handshake (protocol
+    `2025-11-25`) and the tool listing. The client did not know the three names before it
+    asked.
 *   A stdio server sends its protocol messages on stdout, so logging belongs on stderr. With
     mcp 2.0.0 a stray line is not fatal: adding `print("server starting")` made the client log
     `Failed to parse JSONRPC message from server`, skip the line, and finish normally.
@@ -227,8 +230,8 @@ importing them.
 *   The client sends the calls of one round with `asyncio.gather`, so several `tool_calls` in
     one reply would go to the server together. None of these runs returned more than one.
 *   The question asks for the follow-up the note recommends. An earlier version asked for "the
-    fix", which the note does not contain: DeepSeek added a caveat, and Gemini labelled the root
-    cause as the fix.
+    fix", which the note does not contain: DeepSeek added a caveat, and Gemini labelled the
+    root cause as the fix.
 
 ## Script 06: A2A-style delegation
 
@@ -238,15 +241,18 @@ task, what inputs it takes and how to authenticate. Script 06 follows that idea 
 simplified form. Its card fields and its task route are its own: A2A 1.0 cards list skills and
 security schemes, and tasks go through the SendMessage operation. No model is called.
 
-*   The provider is a FastAPI app that knows which rooms are free. It runs on
-    `127.0.0.1:8931` in a background thread, and the script polls the card URL until it
-    answers. The card at `/.well-known/agent-card.json` holds a name, a task endpoint, an input
-    schema (`date`, and `attendees` from 1 to 60) and the auth method, `bearer`.
-*   The caller reads the task route and the auth scheme from the card instead of hardcoding
-    them. If the provider moved its endpoint and updated its card, the caller would keep
-    working unchanged.
+*   The provider is a FastAPI app that knows which rooms are free. Part 1 prints the card it
+    publishes at `/.well-known/agent-card.json`: a name, a task endpoint, an input schema
+    (`date`, and `attendees` from 1 to 60) and the auth method, `bearer`. Part 2 starts the
+    provider on `127.0.0.1:8931` in a background thread and polls the card URL until it
+    answers.
+*   In part 3, the caller reads the task route and the auth scheme from the card instead of
+    hardcoding them. If the provider moved its endpoint and updated its card, the caller would
+    keep working unchanged.
 *   The provider's room table is private. What comes back is an artifact derived from it, and
-    the caller makes the decision itself, the smallest room that fits or a cancellation:
+    the caller makes the decision itself, the smallest room that fits or a cancellation. Part 4
+    delegates three tasks, part 5 sends one the card's schema forbids, and part 6 sends one
+    without a bearer token:
 
     | Task | Provider returned | Caller's decision |
     | :--- | :--- | :--- |
