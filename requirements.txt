@@ -1,15 +1,13 @@
-# =============================================================================
-# ai-playground: Unified Dependencies
-# =============================================================================
+# ai-playground dependencies
 # Install all dependencies at once:  pip install -r requirements.txt
 # Each section is tagged by module so you can install selectively if needed.
 
-# --- Core (All Modules) ---
-openai>=1.0.0
-python-dotenv>=1.0.0
-requests>=2.31.0
+# --- Core ---
+openai>=1.0.0             # every script that calls a hosted model
+python-dotenv>=1.0.0      # every script that calls a hosted model
+requests>=2.31.0          # 01-07 -> talks to the local Ollama server
 
-# --- 01-llm-foundation: Local Models ---
+# --- 01-llm-foundation ---
 # Imported lazily inside 07/08, so scripts 01-06 run without any of these.
 # 03 draws its table image with Pillow, which is listed under 02-rag below.
 fastapi>=0.110.0          # 07_ollama_local_chat.py -> build_api_app()
@@ -23,11 +21,11 @@ accelerate>=0.30.0        # 08_transformers_inference.py -> required by device_m
 #                         #   pip install torch --index-url https://download.pytorch.org/whl/cu128
 #                         # Older CUDA GPUs: .../whl/cu124   CPU-only: pip install torch
 
-# --- 02-rag: Embeddings, Vector Stores, Chunking, Multimodal ---
+# --- 02-rag ---
 # Classical NLP baselines (01, 02)
 scikit-learn>=1.4.0       # 01_tfidf_hotel_recommender.py -> TfidfVectorizer, linear_kernel
 pandas>=2.0.0             # 01_tfidf_hotel_recommender.py -> reading the hotel CSV
-jieba>=0.42.1             # 01, 02 -> Chinese word segmentation
+jieba>=0.42.1             # 02 -> Chinese word segmentation
 gensim>=4.3.0             # 02_word2vec_similarity.py -> Word2Vec training
 numpy>=1.24.0             # 03, 07 -> vector maths
 faiss-cpu>=1.8.0          # 03, 06, 07 -> vector index (GPU: conda install -c conda-forge faiss-gpu)
@@ -36,14 +34,14 @@ faiss-cpu>=1.8.0          # 03, 06, 07 -> vector index (GPU: conda install -c co
 modelscope>=1.15.0        # 04 -> ensure_model() downloads the weights
 sentence-transformers>=3.0.0  # 04 -> the high-level encode() path
 #                         # 04 also needs transformers + torch, listed under 01 above.
-#                         # Downloads ~319 MB of weights on first run (bge-small-en-v1.5,
-#                         # 255 MB, CLS pooling + an English GTE small model, 64 MB, mean
-#                         # pooling), cached under 02-rag/weights/. The pair is chosen
-#                         # because their pooling strategies differ.
+#                         # Downloads three models on first run, one per pooling strategy:
+#                         # bge-small-en-v1.5 (CLS), an English GTE small model (mean) and
+#                         # Qwen3-Embedding-0.6B (last token). Cached under 02-rag/weights/,
+#                         # about 1.6 GB on disk here, 1.2 GB of it Qwen3.
 
 # ChatPDF with LangChain (06)
 langchain>=1.3.0          # 06 -> RecursiveCharacterTextSplitter and the LCEL stuff chain
-#                         # (langchain.chains was removed in 1.3.15, so the chain is written by hand)
+#                         # (langchain 1.3.15 has no langchain.chains, so the chain is written by hand)
 #                         # The 1.3 floor is what 04-agents needs: create_agent lives in
 #                         # langchain.agents from 1.3 onwards.
 langchain-community>=0.2.0  # 06 -> FAISS vector store wrapper
@@ -59,6 +57,7 @@ rapidocr-onnxruntime>=1.3.0  # 07 -> OCR. Pure pip, no external binary required.
 #                         # it the model can only say it has no description.
 #                         # Chosen over pytesseract because that is only a wrapper
 #                         # and additionally needs a separate Tesseract system install.
+# 07 also runs CLIP through transformers + torch, listed under 01 above.
 
 # Query rewriting (08)
 # 08 needs nothing beyond Core. Its web search calls the Tavily API through urllib,
@@ -77,14 +76,15 @@ rank_bm25>=0.2.2          # 09, 10 -> BM25Okapi, the cheap first-stage recall
 # Graph retrieval (13)
 # graphrag is NOT installed here: it pins numpy 1.x / pandas 2.x and would conflict
 # with the rest of this file. The script drives it through a separate interpreter at
-# .venv-graphrag and reads the parquet output with pandas, so only pandas is needed
-# in this environment (listed under 01 above). To create that environment:
-#   python -m venv .venv-graphrag && .venv-graphrag/Scripts/pip install graphrag
+# .venv-graphrag, one level above this repository, and that interpreter also reads the
+# parquet output, so this environment needs nothing extra. To create it, from the
+# folder that contains ai-playground:
+#   python -m venv .venv-graphrag && .venv-graphrag/Scripts/pip install graphrag==2.7.2
 
-# --- 03-text2sql: SQLite, Prompting, SQL Agents, Modelling ---
+# --- 03-text2sql ---
 # The database itself needs nothing: 01 uses sqlite3 from the standard library and
-# generates its own data from a fixed seed. 02 and 05 need only Core plus the
-# scikit-learn already listed under 02-rag.
+# generates its own data from a fixed seed. 02 needs only Core plus the scikit-learn
+# already listed under 02-rag; 05 needs only Core.
 # scikit-learn is reused here:
 #   02_prompt_to_sql.py       -> TfidfVectorizer, cosine_similarity (example retrieval)
 #   06_sql_agent_with_tools.py -> LinearRegression, DecisionTreeRegressor (the two
@@ -112,7 +112,7 @@ vanna[chromadb]>=2.0.0    # 04_vanna_text2sql.py -> ChromaDB_VectorStore + OpenA
 #                         # The vector store it writes is a runtime artefact, rebuilt
 #                         # on first run, and stays out of git.
 
-# --- 04-agents: Composition, Agent Loops, Protocols, Graph Topologies ---
+# --- 04-agents ---
 # 03 and 06 need nothing beyond Core: 03 drives the loop with the OpenAI client alone,
 # and 06 uses only urllib on the caller side.
 # langchain, langchain-core and langchain-openai are already listed under 02-rag above
@@ -163,12 +163,13 @@ ultralytics>=8.3.0        # 14 -> YOLO(...).train() and .predict() on the genera
 # torch and torchvision are listed under 05-fine-tuning and reused:
 #   04 -> the convolutional network, its BatchNorm and Dropout, and both modes
 #   05 -> the detector, and torchvision.ops.batched_nms as the reference for NMS
+#   05b, 05c -> the same detector, retrained to measure its loss
 #   06, 07 -> the segmentation networks and the transformer blocks
 #   12 -> nn.Conv2d with fixed weights, checked against a hand-written convolution
 #   13 -> torchvision.models.resnet50 for the stem trace and the training comparison
 # numpy, Pillow, matplotlib, openai and python-dotenv are listed above and reused:
 #   01-07 -> numpy throughout; Pillow reads the VOC palette masks in 06; matplotlib
-#            draws the XOR loss curves in 04
+#            draws the training curves in 04 to 07
 #   08-10 -> openai + python-dotenv reach the vision model; Pillow renders every input
 #   12-14 -> numpy + Pillow render the test image, the samples and the defect plates
 # Every script generates its own inputs into outputs/ on first run. Scripts 03, 04, 05,
@@ -195,14 +196,14 @@ prophet>=1.1.0            # 04 -> the additive trend/seasonality/holiday model; 
 #                         #   Pulls cmdstanpy, holidays and stanio as transitive dependencies.
 # torch is listed under 05-fine-tuning and reused:
 #   06 -> nn.LSTM over the windowed rows, on CPU
-# pandas, numpy and matplotlib are listed above and reused throughout.
+# pandas and numpy are listed above and reused throughout.
 # No script here reads a shipped dataset: 01 generates all five series from a fixed seed.
 
 # --- 09-lowcode-platforms ---
 # No new package. Every dependency this module needs is already listed above:
 #   01, 03 -> the standard library alone (json, re, xml.etree.ElementTree)
 #   02     -> openai + python-dotenv reach a chat model; any one key is enough
-#   04     -> sentence-transformers + numpy embed the rows locally with
+#   04     -> sentence-transformers + torch + numpy embed the rows locally with
 #             bge-small-en-v1.5, reusing the copy under 02-rag/weights/ if it is
 #             there; modelscope only runs when no sibling module has it yet
 #   05     -> fastapi + uvicorn (listed under 01) serve a local subprocess that
@@ -216,8 +217,9 @@ gradio>=5.0.0             # 10 -> the Blocks page served by `--ui`. The default
 # lightgbm, scikit-learn, pandas, numpy, matplotlib, statsmodels, prophet, rank_bm25,
 # openai and python-dotenv are all listed above and reused here:
 #   01     -> pandas + numpy generate the five sources; sqlite3 is standard library
-#   02, 03 -> pandas only; no model, no API key
-#   04     -> openai + python-dotenv (text only, one provider per script)
+#   02     -> pandas only; no model, no API key
+#   03     -> pandas + numpy; no model, no API key
+#   04     -> pandas + openai + python-dotenv (text only, one provider per script)
 #   05, 06 -> pandas + numpy + matplotlib; the charts go to outputs/
 #   07     -> lightgbm + scikit-learn (train_test_split, roc_auc_score,
 #             permutation_importance). The estimator facade needs a current

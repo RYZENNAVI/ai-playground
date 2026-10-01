@@ -2,14 +2,15 @@
 
 A personal learning playground for hands-on AI engineering, from LLM applications and
 retrieval to vision, classical ML and time series. The ten modules below each hold flat,
-numbered scripts plus a topic write-up that explains the concepts behind them and records
-the numbers those scripts produced.
+numbered scripts plus a topic write-up that explains what each script does and records the
+numbers those scripts produced.
 
 Some scripts call a hosted model. Those all go through the OpenAI SDK, so you can move
 between DeepSeek, Gemini and OpenAI by changing `base_url` and the key. The rest need no
 API key at all: they run local models with Ollama or Transformers, train networks in
 PyTorch on your GPU, or fit models with scikit-learn, gradient boosting and forecasting
-libraries. One script, 02-08, also calls the Tavily search API over plain HTTP.
+libraries. Two scripts also call a web API over plain HTTP: 01-06 searches Wikipedia, which
+needs no key, and 02-08 calls Tavily.
 
 ## Modules
 
@@ -26,15 +27,12 @@ libraries. One script, 02-08, also calls the Tavily search API over plain HTTP.
 | [09-lowcode-platforms](09-lowcode-platforms/) | Workflow engines from a declarative graph · node & plugin contracts · table knowledge bases · platform API protocol |
 | [10-projects](10-projects/) | Join grain & aggregation · reported columns and bands · tool return shapes · chart criteria & index alignment · control-chart rules · label leakage · sample units · cohort analysis · retrieval backends · citation checks |
 
-Where a script needs data, it either generates it with a fixed seed or reads a public
-dataset that the topic write-up links to instead of committing; only small source documents
-with no public download are kept in the repository. The figures and tables the scripts
-produce are kept in each module's `outputs/` folder, so every write-up can be read without
-running anything.
+Where a script needs data, it generates it from a fixed seed or reads a public dataset that
+the topic write-up links to. Only small source documents are kept in the repository. The
+figures and tables the scripts produce are kept in each module's `outputs/` folder, so every
+write-up can be read without running anything.
 
----
-
-## Getting Started
+## Getting started
 
 ### 1. Install dependencies
 
@@ -43,7 +41,8 @@ pip install -r requirements.txt
 ```
 
 PyTorch is deliberately left out of that file, because the right build depends on your
-GPU. Modules 05 to 08 train on it, so install it before running those:
+GPU. Modules 05 to 08 train on it, and 01-08, 02-04, 02-07, 02-09 and 09-04 run local models
+on it, so install it before running any of those:
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cu128   # CUDA 12.8
@@ -55,8 +54,9 @@ torch version.
 
 ### 2. Configure API keys
 
-Only the scripts that call a hosted model need a key. Modules 05 to 08 train and run
-locally and need none, so you can skip this step until you reach a module that asks.
+Only the scripts that call a hosted model need a key. Modules 05, 07 and 08 need none, and in
+module 06 only scripts 08 to 10 do, so you can skip this step until you reach a script that
+asks.
 
 Copy `.env.example` to `.env` at the project root and fill in your keys:
 
@@ -67,7 +67,7 @@ cp .env.example .env          # PowerShell: copy .env.example .env
 | Variable | Purpose |
 |----------|---------|
 | `DEEPSEEK_API_KEY` | Text and reasoning, the primary provider |
-| `GEMINI_API_KEY` | Multimodal vision and long context |
+| `GEMINI_API_KEY` | Vision and embeddings, and the second choice for text when DeepSeek is not set |
 | `OPENAI_API_KEY` | Fallback, used when a script's first-choice key is not set |
 | `OPENAI_BASE_URL` | Where `OPENAI_API_KEY` is sent. Point it at another vendor's OpenAI-compatible endpoint to use that vendor's models instead |
 | `OPENAI_MODEL` | The chat model asked for with `OPENAI_API_KEY`, `gpt-4o-mini` by default. Set it together with `OPENAI_BASE_URL`, since another vendor will not know that name |
@@ -89,34 +89,30 @@ python 01-llm-foundation/03_table_multimodal_extraction.py
 
 ### 4. Local models (optional)
 
-Install [Ollama](https://ollama.com/). Scripts pull the model themselves on first run:
+Install [Ollama](https://ollama.com/). 01-07 pulls its model itself on first run:
 
 ```bash
 python 01-llm-foundation/07_ollama_local_chat.py
 ```
 
----
-
-## Repository Layout
+## Repository layout
 
 ```
 ai-playground/
 ├── README.md                     ← this index
 ├── requirements.txt              ← dependencies for all modules, torch excluded
 ├── .env.example                  ← template for API keys (never commit real keys)
-├── .gitignore                    ← keeps data, secrets & model weights out of git
+├── .gitignore                    ← keeps generated data, secrets and model weights out of git
 └── 01-llm-foundation/ ... 10-projects/
 ```
 
-Every module folder has the same shape: one topic write-up and a set of flat, numbered
-scripts, plus an `outputs/` folder where the modules that produce figures keep them. The
-tables below list the scripts of each.
+Every module folder has the same shape: the topic write-up and its scripts, a `data/` folder
+for what they read or generate, and an `outputs/` folder where the modules that produce
+figures keep them. The tables below list the scripts of each.
 
----
+## Module 01 scripts
 
-## Module 01 Scripts
-
-| # | Script | Feature |
+| # | Script | What it shows |
 |---|--------|---------|
 | 01 | `01_chat_sentiment_analysis.py` | Chat protocol & 3-way sentiment classification |
 | 02 | `02_weather_function_calling.py` | Function calling (tool calling): a local weather function, called once per city |
@@ -127,13 +123,11 @@ tables below list the scripts of each.
 | 07 | `07_ollama_local_chat.py` | Local deployment via Ollama: auto model pull, streaming, reasoning read from the `thinking` field, FastAPI gateway |
 | 08 | `08_transformers_inference.py` | Raw-weight inference with Transformers: HF download, GPU placement, chat template, throughput |
 
-See [LLM-Foundation.md](01-llm-foundation/LLM-Foundation.md) for the concepts behind these scripts.
+See [LLM-Foundation.md](01-llm-foundation/LLM-Foundation.md) for what each script does and what its run shows.
 
----
+## Module 02 scripts
 
-## Module 02 Scripts
-
-| # | Script | Feature |
+| # | Script | What it shows |
 |---|--------|---------|
 | 01 | `01_tfidf_hotel_recommender.py` | TF-IDF + n-grams: content-based recommendation over hotel descriptions |
 | 02 | `02_word2vec_similarity.py` | Word2Vec training, persistence and vector arithmetic |
@@ -149,13 +143,11 @@ See [LLM-Foundation.md](01-llm-foundation/LLM-Foundation.md) for the concepts be
 | 12 | `12_kb_version_management.py` | Version hashing, set-based diffing, A/B and regression testing |
 | 13 | `13_graphrag_vs_vector.py` | One multi-hop question asked of a vector index and of a knowledge graph |
 
-See [RAG-Retrieval-Augmented-Generation.md](02-rag/RAG-Retrieval-Augmented-Generation.md) for the concepts behind these scripts.
+See [RAG-Retrieval-Augmented-Generation.md](02-rag/RAG-Retrieval-Augmented-Generation.md) for what each script does and what its run shows.
 
----
+## Module 03 scripts
 
-## Module 03 Scripts
-
-| # | Script | Feature |
+| # | Script | What it shows |
 |---|--------|---------|
 | 01 | `01_build_insurance_db.py` | Local SQLite from a fixed seed: five tables, commented DDL, idempotent rebuild |
 | 02 | `02_prompt_to_sql.py` | Three prompt styles scored on rows *and* on stored-literal use, then a retrieved example that only helps with its reason |
@@ -164,13 +156,11 @@ See [RAG-Retrieval-Augmented-Generation.md](02-rag/RAG-Retrieval-Augmented-Gener
 | 05 | `05_sql_quality_gate.py` | Screening, static rules, second-opinion review, read-only execution, benchmark by join depth |
 | 06 | `06_sql_agent_with_tools.py` | Tool-calling agent: query, chart, linear fit and driver ranking in one loop |
 
-See [Text2SQL-Natural-Language-to-SQL.md](03-text2sql/Text2SQL-Natural-Language-to-SQL.md) for the concepts behind these scripts.
+See [Text2SQL-Natural-Language-to-SQL.md](03-text2sql/Text2SQL-Natural-Language-to-SQL.md) for what each script does and what its run shows.
 
----
+## Module 04 scripts
 
-## Module 04 Scripts
-
-| # | Script | Feature |
+| # | Script | What it shows |
 |---|--------|---------|
 | 01 | `01_prompt_templates_and_memory.py` | Templates, role-split messages, and a conversation that survives between calls |
 | 02 | `02_lcel_composition.py` | Pipe-operator composition: retries, local steps, parallel branches, routing, streaming |
@@ -180,13 +170,11 @@ See [Text2SQL-Natural-Language-to-SQL.md](03-text2sql/Text2SQL-Natural-Language-
 | 06 | `06_a2a_agent_protocol.py` | A2A-style delegation (simplified): capability card, task submission, schema and auth rejections |
 | 07 | `07_langgraph_topologies.py` | LangGraph: one state, five nodes, two topologies, a fixed pipeline against a conditional router |
 
-See [Agent-Systems-Loops-Protocols-and-Topologies.md](04-agents/Agent-Systems-Loops-Protocols-and-Topologies.md) for the concepts behind these scripts.
+See [Agent-Systems-Loops-Protocols-and-Topologies.md](04-agents/Agent-Systems-Loops-Protocols-and-Topologies.md) for what each script does and what its run shows.
 
----
+## Module 05 scripts
 
-## Module 05 Scripts
-
-| # | Script | Feature |
+| # | Script | What it shows |
 |---|--------|---------|
 | 01 | `01_svd_image_compression.py` | Rank-k reconstruction, paired sign flips, storage accounting, and why energy share flatters |
 | 02 | `02_als_low_rank_factorization.py` | Alternating least squares on a masked matrix: the penalised objective against the printed error |
@@ -196,13 +184,11 @@ See [Agent-Systems-Loops-Protocols-and-Topologies.md](04-agents/Agent-Systems-Lo
 | 06 | `06_thinking_budget_control.py` | Capping and extending a reasoning model's deliberation at decode time, without training |
 | 07 | `07_vision_lora_gauge_reading.py` | A vision-language adapter on rendered panels, scored field by field |
 
-See [Fine-Tuning-Low-Rank-Adaptation.md](05-fine-tuning/Fine-Tuning-Low-Rank-Adaptation.md) for the concepts behind these scripts.
+See [Fine-Tuning-Low-Rank-Adaptation.md](05-fine-tuning/Fine-Tuning-Low-Rank-Adaptation.md) for what each script does and what its run shows.
 
----
+## Module 06 scripts
 
-## Module 06 Scripts
-
-| # | Script | Feature |
+| # | Script | What it shows |
 |---|--------|---------|
 | 01 | `01_color_tracking_and_optical_flow.py` | Colour thresholds, morphology, connected components, mean shift and CAMSHIFT, Harris corners, block matching and Lucas-Kanade |
 | 02 | `02_edges_and_hough_voting.py` | Gaussian smoothing, Sobel, Canny by hand, then lines, circles and an arbitrary shape recovered by voting |
@@ -221,13 +207,11 @@ See [Fine-Tuning-Low-Rank-Adaptation.md](05-fine-tuning/Fine-Tuning-Low-Rank-Ada
 | 13 | `13_cnn_input_resolution_mismatch.py` | A 224-shaped stem on a 32x32 input: what the mismatch costs, and what it does not |
 | 14 | `14_yolo_split_audit_and_submission.py` | A detection split audited before training, and two submission edits that move no box |
 
-See [Multimodal-Vision-From-Pixels-to-Models.md](06-multimodal-vision/Multimodal-Vision-From-Pixels-to-Models.md) for the concepts behind these scripts.
+See [Multimodal-Vision-From-Pixels-to-Models.md](06-multimodal-vision/Multimodal-Vision-From-Pixels-to-Models.md) for what each script does and what its run shows.
 
----
+## Module 07 scripts
 
-## Module 07 Scripts
-
-| # | Script | Feature |
+| # | Script | What it shows |
 |---|--------|---------|
 | 01 | `01_build_tabular_datasets.py` | Four datasets in five files, drawn from explicit formulas, with the coefficients printed so later scripts can be scored |
 | 02 | `02_eda_that_silently_lies.py` | One file loaded two ways, same shape twice, and the check that tells them apart |
@@ -238,13 +222,11 @@ See [Multimodal-Vision-From-Pixels-to-Models.md](06-multimodal-vision/Multimodal
 | 07 | `07_neural_net_from_scratch.py` | A network in numpy alone, its gradients spot-checked against a finite difference |
 | 08 | `08_framework_abstraction_ladder.py` | The same network four times, from hand-derived gradients up to Keras compile and fit |
 
-See [Machine-Learning-and-Deep-Learning-Foundations.md](07-ml-dl-foundation/Machine-Learning-and-Deep-Learning-Foundations.md) for the concepts behind these scripts.
+See [Machine-Learning-and-Deep-Learning-Foundations.md](07-ml-dl-foundation/Machine-Learning-and-Deep-Learning-Foundations.md) for what each script does and what its run shows.
 
----
+## Module 08 scripts
 
-## Module 08 Scripts
-
-| # | Script | Feature |
+| # | Script | What it shows |
 |---|--------|---------|
 | 01 | `01_build_time_series_datasets.py` | Five datasets drawn from mechanisms written down in the script, with every factor and changepoint written to a truth file |
 | 02 | `02_decompose_and_stationarity.py` | Decomposition scored at the right period and three wrong ones, and what a strong cycle does to a unit-root test |
@@ -254,13 +236,11 @@ See [Machine-Learning-and-Deep-Learning-Foundations.md](07-ml-dl-foundation/Mach
 | 06 | `06_lstm_windowed_forecast.py` | A series laid out as supervised rows, and the count of observations a random split puts on both sides |
 | 07 | `07_rolling_origin_backtest.py` | Four cut-off dates, four routes, and a submission file checked after it is written |
 
-See [Time-Series-Forecasting-Baselines-and-Backtests.md](08-time-series/Time-Series-Forecasting-Baselines-and-Backtests.md) for the concepts behind these scripts.
+See [Time-Series-Forecasting-Baselines-and-Backtests.md](08-time-series/Time-Series-Forecasting-Baselines-and-Backtests.md) for what each script does and what its run shows.
 
----
+## Module 09 scripts
 
-## Module 09 Scripts
-
-| # | Script | Feature |
+| # | Script | What it shows |
 |---|--------|---------|
 | 01 | `01_workflow_engine_from_spec.py` | Three declarative graphs validated, ordered and executed, including a batch body, a selector and two sub-workflow calls |
 | 02 | `02_llm_node_output_contract.py` | A model node scored against the vocabulary the next node compares against, and the rows that vanish when it drifts |
@@ -268,13 +248,11 @@ See [Time-Series-Forecasting-Baselines-and-Backtests.md](08-time-series/Time-Ser
 | 04 | `04_table_knowledge_base_retrieval.py` | One table indexed two ways, and a three-condition question similarity cannot answer |
 | 05 | `05_platform_api_protocol.py` | A local server on three endpoints, blocking against streaming, and a client that guesses its way to a wrong diagnosis |
 
-See [Low-Code-Platforms-What-The-Canvas-Runs.md](09-lowcode-platforms/Low-Code-Platforms-What-The-Canvas-Runs.md) for the concepts behind these scripts.
+See [Low-Code-Platforms-What-The-Canvas-Runs.md](09-lowcode-platforms/Low-Code-Platforms-What-The-Canvas-Runs.md) for what each script does and what its run shows.
 
----
+## Module 10 scripts
 
-## Module 10 Scripts
-
-| # | Script | Feature |
+| # | Script | What it shows |
 |---|--------|---------|
 | 01 | `01_build_project_datasets.py` | Five sources generated from an explicit specification, with the answer to every later claim printed alongside them |
 | 02 | `02_join_grain_and_aggregation_audit.py` | A join at the wrong grain, and the same year total three ways: one of them 197x the truth and ranking the districts differently |
@@ -288,6 +266,7 @@ See [Low-Code-Platforms-What-The-Canvas-Runs.md](09-lowcode-platforms/Low-Code-P
 | 10 | `10_search_backends_and_ui.py` | Keyword and vector retrieval over one corpus, fused by RRF and by weighted sum, a cutoff in tokens rather than rows, and a failure isolated one layer at a time |
 | 11 | `11_answer_routing_and_citation.py` | Two routers before answering, a four-field schema, and every cited page checked against the pages actually supplied |
 
-Run `python 10_search_backends_and_ui.py --ui` to serve the same backends behind a small web interface.
+Run `python 10-projects/10_search_backends_and_ui.py --ui` to serve the same backends behind a
+small web interface.
 
-See [Applied-Projects-The-Errors-That-Do-Not-Raise.md](10-projects/Applied-Projects-The-Errors-That-Do-Not-Raise.md) for the concepts behind these scripts.
+See [Applied-Projects-The-Errors-That-Do-Not-Raise.md](10-projects/Applied-Projects-The-Errors-That-Do-Not-Raise.md) for what each script does and what its run shows.
