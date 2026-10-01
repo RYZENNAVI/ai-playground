@@ -32,7 +32,6 @@ FORECAST_DAYS = 365
 
 def fit_quietly(model: Prophet, frame: pd.DataFrame) -> Prophet:
     """Fit a model with the prophet and cmdstanpy loggers silenced.
-
     The filter sits on the logger, so handlers the backend adds later are covered too.
     """
     for noisy in ("prophet", "cmdstanpy"):

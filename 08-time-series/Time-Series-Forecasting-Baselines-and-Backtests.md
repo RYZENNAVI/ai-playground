@@ -354,7 +354,9 @@ and never contains a scored day. The cut-offs are 2014-04-30, 05-31, 06-30 and 0
 *   Part 2 scores periodic factors on each fold, for comparison: 19,793,706, 41,675,398,
     17,100,659 and 37,436,714, a 2.44x spread. The June and August folds each hold a promotion
     day. Without them the folds are within 1.18x, so one day can decide a single score.
-*   Part 3 runs all four routes over all folds:
+*   Part 3 runs all four routes over all folds. Each route keeps a fixed structure (SARIMAX
+    (2,0,2) x (1,0,1,7) as in step 7 of 03, Prophet with the weekly term only); only its
+    weights are refitted on each fold:
 
     | Route | 04-30 | 05-31 | 06-30 | 07-31 | Mean | sd | Ordinary mean |
     | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |

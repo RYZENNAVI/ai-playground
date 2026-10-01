@@ -5,7 +5,9 @@ forecast file. A score is not an estimate of future error, and the run shows the
     1. Lay out the cut-off dates, and check that no route can see past the one it is given.
     2. Score one route on a single holdout, and then on every fold, to see how far one number
        moves. This part is for comparison only, and part 3 scores every fold again.
-    3. Run all routes over all folds and rank them by their averages.
+    3. Run all routes over all folds and rank them by their averages. Each route keeps a fixed
+       structure (SARIMAX (2,0,2) x (1,0,1,7) as in step 7 of 03, Prophet with the weekly term
+       only); only its weights are refitted on each fold.
     4. Put the same routes' training-period errors next to those averages. This part is for
        comparison only and nothing later uses it.
     5. Backtest the redeem column too, pick the best route for each column, refit it on the
