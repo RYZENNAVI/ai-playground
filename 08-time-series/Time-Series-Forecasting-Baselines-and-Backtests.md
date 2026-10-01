@@ -22,7 +22,7 @@ ideas it relies on.
 
 *   Script 01 writes everything the others read into `data/`, so it runs first. The other six
     are independent of each other. Script 07 writes `outputs/cash_flow_forecast.csv`. `data/`
-    and `outputs/` are rebuilt by a rerun and are not tracked.
+    is rebuilt by a rerun and is not tracked; `outputs/` is kept.
 *   Everything runs offline on CPU. No script needs an API key or a download.
 *   The dependencies are numpy, pandas, matplotlib, statsmodels, prophet and torch. Current
     statsmodels has no standalone ARMA class, so an ARMA is written `ARIMA(data, order=(p, 0,

@@ -21,8 +21,8 @@ ideas it relies on.
 ## Shared setup
 
 *   Script 01 writes everything the others read into `data/`, so it runs first. The other seven
-    are independent of each other. `data/` and `outputs/` are rebuilt by a rerun and are not
-    tracked.
+    are independent of each other. `data/` is rebuilt by a rerun and is not tracked; `outputs/`
+    is kept.
 *   Everything runs on CPU and no script calls a hosted model. A cold run of all eight takes
     about three and a half minutes, most of it in script 03.
 *   The dependencies are numpy, pandas, scikit-learn, matplotlib, xgboost, lightgbm, catboost,
