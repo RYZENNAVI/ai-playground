@@ -22,12 +22,9 @@ libraries. One script, 02-08, also calls the Tavily search API over plain HTTP.
 | [05-fine-tuning](05-fine-tuning/) | Low-rank adaptation · supervised fine-tuning · reward-driven training · decode-time thinking budget · vision adapters |
 | [06-multimodal-vision](06-multimodal-vision/) | Classical vision (colour, edges, Hough, HOG, Haar) · optical flow · training mechanics & loss behaviour · detection, segmentation and pose · attention & self-supervision · vision-language auditing · split and submission audits |
 | [07-ml-dl-foundation](07-ml-dl-foundation/) | Classical ML · EDA pitfalls · gradient boosting · leakage & split discipline · thresholds · ensembling · networks from scratch up to frameworks |
-| [08-time-series](08-time-series/) (reviewing) | Seasonal decomposition · stationarity · ARIMA / Prophet · periodic factors · LSTM windowing · rolling-origin backtesting |
-| [09-lowcode-platforms](09-lowcode-platforms/) (reviewing) | Workflow engines from a declarative graph · node & plugin contracts · table knowledge bases · platform API protocol |
-| [10-projects](10-projects/) (reviewing) | Join grain & aggregation · reported columns and bands · tool return shapes · chart criteria & index alignment · control-chart rules · label leakage · sample units · cohort analysis · retrieval backends · citation checks |
-
-Modules marked (reviewing) are still being checked script by script: each script's
-docstring and output against its code, and the write-up against the scripts.
+| [08-time-series](08-time-series/) | Seasonal decomposition · stationarity · ARIMA / Prophet · periodic factors · LSTM windowing · rolling-origin backtesting |
+| [09-lowcode-platforms](09-lowcode-platforms/) | Workflow engines from a declarative graph · node & plugin contracts · table knowledge bases · platform API protocol |
+| [10-projects](10-projects/) | Join grain & aggregation · reported columns and bands · tool return shapes · chart criteria & index alignment · control-chart rules · label leakage · sample units · cohort analysis · retrieval backends · citation checks |
 
 Where a script needs data, it either generates it with a fixed seed or reads a public
 dataset that the topic write-up links to instead of committing; only small source documents
@@ -78,8 +75,7 @@ cp .env.example .env          # PowerShell: copy .env.example .env
 
 The numbers in the write-ups come from each script's first-choice provider, so another
 model will give different ones. Four scripts embed text and need `GEMINI_API_KEY`:
-02-03, 02-12, 02-13 and 10-10. In modules still marked (reviewing), a script may need
-its first-choice key until its review adds the fallback.
+02-03, 02-12, 02-13 and 10-10.
 
 ### 3. Run any script
 
