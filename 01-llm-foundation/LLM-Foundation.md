@@ -187,12 +187,13 @@ RTX 5070 Ti Laptop (128 tokens, warmed up, mean of three runs):
 | Transformers (08) | bfloat16 safetensors | 29 tok/s | 3.55 GB |
 
 When the GPU clocked down, Ollama made 91 tok/s and Transformers 10, so the number to
-trust is the ratio, about 10x. Two things explain it:
+trust is the ratio, about 10x. Only that ratio was measured. The split below is estimated
+from the size of the weights, not tested on its own:
 
 *   Generating a token reads every weight once, so speed is limited by memory bandwidth.
-    4-bit weights are about a third the size of bfloat16 ones, which accounts for
+    4-bit weights are about a third the size of bfloat16 ones, which should account for
     roughly 3x.
-*   The engine accounts for the rest. Ollama builds on the GGML library from llama.cpp,
+*   The engine should account for the rest. Ollama builds on the GGML library from llama.cpp,
     with fused GPU kernels written for generation. Transformers runs a Python loop per
     token and launches many small kernels.
 
